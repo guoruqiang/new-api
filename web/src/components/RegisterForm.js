@@ -113,7 +113,7 @@ const RegisterForm = () => {
               <Card>
                 <Title heading={2} style={{ textAlign: 'center' }}>
                   新用户注册<br />
-                  <span style={{ fontSize: '18px', color: '#3366FF' }}>
+                  <span style={{ fontSize: '14px', color: '#3366FF' }}>
                     本站开放教育邮箱注册，请使用 edu.cn 为后缀的学校邮箱注册！
                   </span>
                 </Title>
