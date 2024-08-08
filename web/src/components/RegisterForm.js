@@ -112,7 +112,10 @@ const RegisterForm = () => {
             <div style={{ width: 500 }}>
               <Card>
                 <Title heading={2} style={{ textAlign: 'center' }}>
-                  新用户注册
+                  新用户注册<br />
+                  <span style={{ fontSize: '18px', color: '#3366FF' }}>
+                    本站开放教育邮箱注册，请使用 edu.cn 为后缀的学校邮箱注册！
+                  </span>
                 </Title>
                 <Form size="large">
                   <Form.Input
@@ -143,7 +146,7 @@ const RegisterForm = () => {
                       <Form.Input
                         field={'email'}
                         label={'邮箱'}
-                        placeholder="输入邮箱地址"
+                        placeholder="请输入校园邮箱地址"
                         onChange={(value) => handleChange('email', value)}
                         name="email"
                         type="email"
