@@ -75,7 +75,7 @@ func AudioHelper(c *gin.Context) *dto.OpenAIErrorWithStatusCode {
 		return service.OpenAIErrorWrapperLocal(err, "get_user_quota_failed", http.StatusInternalServerError)
 	}
 	if userQuota-preConsumedQuota < 0 {
-		return service.OpenAIErrorWrapperLocal(errors.New("您的额度已不足，请在钱包里充值。免费额度将于每月1号刷新！"), "insufficient_user_quota", http.StatusForbidden)
+		return service.OpenAIErrorWrapperLocal(errors.New(fmt.Sprintf("您的额度已不足，请在钱包里充值, 您的额度: %d, 需要额度: %d，免费额度将于每月1号刷新！", userQuota, preConsumedQuota)), "insufficient_user_quota", http.StatusBadRequest)
 	}
 	err = model.CacheDecreaseUserQuota(relayInfo.UserId, preConsumedQuota)
 	if err != nil {
