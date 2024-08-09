@@ -125,7 +125,7 @@ func ImageHelper(c *gin.Context, relayMode int) *dto.OpenAIErrorWithStatusCode {
 	quota := int(imageRatio * groupRatio * common.QuotaPerUnit)
 
 	if userQuota-quota < 0 {
-		return service.OpenAIErrorWrapperLocal(errors.New(fmt.Sprintf("您的额度已不足，请在钱包里充值, 您的额度: %d, 需要额度: %d，免费额度将于每月1号刷新！", userQuota, quota)), "insufficient_user_quota", http.StatusBadRequest)
+		return service.OpenAIErrorWrapperLocal(errors.New("user quota is not enough"), "insufficient_user_quota", http.StatusForbidden)
 	}
 
 	adaptor := GetAdaptor(relayInfo.ApiType)
