@@ -21,6 +21,7 @@ import TopUp from './pages/TopUp';
 import Log from './pages/Log';
 import Chat from './pages/Chat';
 import Chat2Link from './pages/Chat2Link'; 
+import Chat2Link2 from './pages/Chat2Link2'; 
 import { Layout } from '@douyinfe/semi-ui';
 import Midjourney from './pages/Midjourney';
 import Pricing from './pages/Pricing/index.js';
@@ -263,6 +264,16 @@ function App() {
               <PrivateRoute>
                 <Suspense fallback={<Loading></Loading>}>
                     <Chat2Link />
+                </Suspense>
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path='/chat2link2'
+            element={
+              <PrivateRoute>
+                <Suspense fallback={<Loading></Loading>}>
+                    <Chat2Link2 />
                 </Suspense>
               </PrivateRoute>
             }
