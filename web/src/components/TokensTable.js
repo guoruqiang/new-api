@@ -233,22 +233,22 @@ const TokensTable = () => {
                 //     onOpenLink('lobe', record.key);
                 //   },
                 // },
-                {
-                  node: 'item',
-                  key: 'ama',
-                  name: 'AMA 问天（BotGem）',
-                  onClick: () => {
-                    onOpenLink('ama', record.key);
-                  },
-                },
-                {
-                  node: 'item',
-                  key: 'opencat',
-                  name: 'OpenCat',
-                  onClick: () => {
-                    onOpenLink('opencat', record.key);
-                  },
-                },
+                // {
+                //   node: 'item',
+                //   key: 'ama',
+                //   name: 'AMA 问天（BotGem）',
+                //   onClick: () => {
+                //     onOpenLink('ama', record.key);
+                //   },
+                // },
+                // {
+                //   node: 'item',
+                //   key: 'opencat',
+                //   name: 'OpenCat',
+                //   onClick: () => {
+                //     onOpenLink('opencat', record.key);
+                //   },
+                // },
               ]}
             >
               <Button
@@ -418,15 +418,15 @@ const TokensTable = () => {
     }
     let url;
     switch (type) {
-      case 'ama':
-        url = `ama://set-api-key?server=${encodedServerAddress}&key=sk-${key}`;
-        break;
-      case 'opencat':
-        url = `opencat://team/join?domain=${encodedServerAddress}&token=sk-${key}`;
-        break;
-      case 'lobe':
-        url = `https://chat-preview.lobehub.com/?settings={"keyVaults":{"openai":{"apiKey":"sk-${key}","baseURL":"${encodedServerAddress}/v1"}}}`;
-        break;
+      // case 'ama':
+      //   url = `ama://set-api-key?server=${encodedServerAddress}&key=sk-${key}`;
+      //   break;
+      // case 'opencat':
+      //   url = `opencat://team/join?domain=${encodedServerAddress}&token=sk-${key}`;
+      //   break;
+      // case 'lobe':
+      //   url = `https://chat-preview.lobehub.com/?settings={"keyVaults":{"openai":{"apiKey":"sk-${key}","baseURL":"${encodedServerAddress}/v1"}}}`;
+      //   break;
       case 'next-mj':
         url =
           mjLink + `/#/?settings={"key":"sk-${key}","url":"${serverAddress}"}`;
