@@ -12,6 +12,7 @@ import (
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 	"one-api/constant"
+	"one-api/constant"
 )
 
 type LoginRequest struct {
@@ -187,7 +188,7 @@ func Register(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	// 获取插入后的用户ID
 	var insertedUser model.User
 	if err := model.DB.Where("username = ?", cleanUser.Username).First(&insertedUser).Error; err != nil {
@@ -199,23 +200,15 @@ func Register(c *gin.Context) {
 	}
 	// 生成默认令牌
 	if constant.GenerateDefaultToken {
-		var insertedUser model.User
-		if err := model.DB.Where("username = ?", cleanUser.Username).First(&insertedUser).Error; err != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "用户注册失败或用户ID获取失败",
-			})
-			return
-		}
 		// 生成默认令牌
 		token := model.Token{
 			UserId:             insertedUser.Id, // 使用插入后的用户ID
-			Name:               cleanUser.Username + "的初始令牌",  
+			Name:               cleanUser.Username + "的初始令牌",
 			Key:                common.GenerateKey(),
 			CreatedTime:        common.GetTimestamp(),
 			AccessedTime:       common.GetTimestamp(),
-			ExpiredTime:        -1,  // 永不过期
-			RemainQuota:        500000,  // 示例额度
+			ExpiredTime:        -1,     // 永不过期
+			RemainQuota:        500000, // 示例额度
 			UnlimitedQuota:     true,
 			ModelLimitsEnabled: false,
 		}
