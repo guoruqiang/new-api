@@ -12,7 +12,6 @@ import (
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 	"one-api/constant"
-	"one-api/constant"
 )
 
 type LoginRequest struct {
