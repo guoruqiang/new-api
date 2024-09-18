@@ -50,7 +50,7 @@ let buttons = [
     text: '点我聊天',
     itemKey: 'chat',
     to: '/chat',
-    icon: <IconComment />,
+    icon: <IconCommentStroked />,
     onMouseEnter: (e) => {
       e.currentTarget.querySelector('svg').style.color = '#0064FA';
     },
