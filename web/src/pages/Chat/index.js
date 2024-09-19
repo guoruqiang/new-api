@@ -15,7 +15,7 @@ const ChatPage = () => {
   return !isLoading && iframeSrc ? (
     <iframe
       src={iframeSrc}
-      style={{ width: '100%', height: '85vh', border: 'none' }}
+      style={{ width: '100%', height: '85vh', border: 'none', margin: '-22px'}}
       title="Token Frame"
     />
   ) : (

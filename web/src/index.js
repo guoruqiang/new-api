@@ -34,7 +34,7 @@ root.render(
                 </Sider>
                 <Layout>
                   <Content
-                    style={{ overflowY: 'auto', padding: '2px' }}
+                    style={{ overflowY: 'auto', padding: '24px' }}
                   >
                     <App />
                   </Content>
