@@ -87,6 +87,28 @@ docker run --name new-api -d --restart always -p 3000:3000 -e TZ=Asia/Shanghai -
 # 例如：
 docker run --name new-api -d --restart always -p 3000:3000 -e SQL_DSN="root:123456@tcp(localhost:3306)/oneapi" -e TZ=Asia/Shanghai -v /home/ubuntu/data/new-api:/data calciumion/new-api:latest
 ```
+### 手动部署
+1. 从 [GitHub Releases](https://github.com/songquanpeng/one-api/releases/latest) 下载可执行文件或者从源码编译：
+   ```shell
+   git clone https://github.com/Calcium-Ion/new-api.git
+
+   # 构建前端
+   cd new-api/web
+   npm install
+   npm run build
+
+   # 构建后端
+   cd ..
+   go mod download
+   go build -ldflags "-s -w" -o new-api
+   ````
+2. 运行：
+   ```shell
+   chmod u+x new-api
+   ./new-api --port 3000 --log-dir ./logs
+   ```
+3. 访问 [http://localhost:3000/](http://localhost:3000/) 并登录。初始账号用户名为 `root`，密码为 `123456`。
+
 ### 使用宝塔面板Docker功能部署
 ```shell
 # 使用 SQLite 的部署命令：
@@ -97,7 +119,6 @@ docker run --name new-api -d --restart always -p 3000:3000 -e TZ=Asia/Shanghai -
 docker run --name new-api -d --restart always -p 3000:3000 -e SQL_DSN="root:123456@tcp(宝塔的服务器地址:宝塔数据库端口)/宝塔数据库名称" -e TZ=Asia/Shanghai -v /www/wwwroot/new-api:/data calciumion/new-api:latest
 # 注意：数据库要开启远程访问，并且只允许服务器IP访问
 ```
-
 ## 渠道重试
 渠道重试功能已经实现，可以在`设置->运营设置->通用设置`设置重试次数，**建议开启缓存**功能。  
 如果开启了重试功能，第一次重试使用同优先级，第二次重试使用下一个优先级，以此类推。
