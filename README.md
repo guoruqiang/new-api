@@ -93,19 +93,19 @@ docker run --name new-api -d --restart always -p 3000:3000 -e SQL_DSN="root:1234
    git clone https://github.com/songquanpeng/one-api.git
 
    # 构建前端
-   cd one-api/web/default
+   cd new-api/web
    npm install
    npm run build
 
    # 构建后端
-   cd ../..
+   cd ..
    go mod download
-   go build -ldflags "-s -w" -o one-api
+   go build -ldflags "-s -w" -o new-api
    ````
 2. 运行：
    ```shell
-   chmod u+x one-api
-   ./one-api --port 3000 --log-dir ./logs
+   chmod u+x new-api
+   ./new-api --port 3000 --log-dir ./logs
    ```
 3. 访问 [http://localhost:3000/](http://localhost:3000/) 并登录。初始账号用户名为 `root`，密码为 `123456`。
 
