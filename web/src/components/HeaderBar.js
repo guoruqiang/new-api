@@ -57,24 +57,27 @@ let buttons = [
     onMouseLeave: (e) => {
       e.currentTarget.querySelector('svg').style.color = 'black';
     },
-    className: localStorage.getItem('chat_link')
+    className: localStorage.getItem('chat_link') && !isMobile() //移动端不显示
       ? 'semi-navigation-item-normal'
       : 'tableHiddle',
   },
   // chat2link 暂时先不加
-  // {
-  //   text: '新窗口聊天NextWeb',
-  //   itemKey: 'chat2link',
-  //   to: '/chat2link',
-  //   // icon: <IconComment style={{ color: '#9C27B0' }} size="extra-large"/>,
-  //   icon: <IconCommentStroked />,
-  //   onMouseEnter: (e) => {
-  //     e.currentTarget.querySelector('svg').style.color = '#0064FA';
-  //   },
-  //   onMouseLeave: (e) => {
-  //     e.currentTarget.querySelector('svg').style.color = 'black';
-  //   },
-  // },
+  {
+    text: '新窗口聊天',
+    itemKey: 'chat2link',
+    to: '/chat2link',
+    // icon: <IconComment style={{ color: '#9C27B0' }} size="extra-large"/>,
+    icon: <IconCommentStroked />,
+    onMouseEnter: (e) => {
+      e.currentTarget.querySelector('svg').style.color = '#0064FA';
+    },
+    onMouseLeave: (e) => {
+      e.currentTarget.querySelector('svg').style.color = 'black';
+    },
+    className: localStorage.getItem('chat_link') && !isMobile() //移动端不显示
+    ? 'semi-navigation-item-normal'
+    : 'tableHiddle',
+  },
   
   // {
   //   text: '模型价格',
@@ -154,7 +157,7 @@ const HeaderBar = () => {
                 login: '/login',
                 register: '/register',
                 home: '/',
-                // chat2link: 'chat2link',
+                chat2link: 'chat2link',
                 chat: '/chat',
               };
               return (
@@ -162,7 +165,7 @@ const HeaderBar = () => {
                   style={{ textDecoration: 'none' }}
                   to={routerMap[props.itemKey]}
                   // chat2link 新标签页打开
-                  // target={props.itemKey === 'chat2link' ? '_blank' : undefined}
+                  target={props.itemKey === 'chat2link' ? '_blank' : undefined}
                 >
                   {itemElement}
                 </Link>
