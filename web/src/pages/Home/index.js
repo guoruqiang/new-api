@@ -29,15 +29,28 @@ const Home = () => {
     const res = await API.get('/api/home_page_content');
     const { success, message, data } = res.data;
     if (success) {
-      let content = data;
-      if (!data.startsWith('https://')) {
-        content = marked.parse(data);
-      }
-      setHomePageContent(content);
-      localStorage.setItem('home_page_content', content);
+        let content = data;
+        if (!data.startsWith('https://')) {
+            content = marked.parse(data);
+        }
+        setHomePageContent(content);
+        localStorage.setItem('home_page_content', content);
+
+        // 如果返回是url，则发送主题模式
+        if (data.startsWith('https://')) {
+            const iframe = document.querySelector('iframe');
+            if (iframe) {
+                const theme = localStorage.getItem('theme-mode') || 'light';
+                // 测试是否正确传递theme-mode给iframe
+                // console.log('Sending theme-mode to iframe:', theme); 
+                iframe.onload = () => {
+                    iframe.contentWindow.postMessage({ themeMode: theme }, '*');
+                };
+            }
+        }
     } else {
-      showError(message);
-      setHomePageContent('加载首页内容失败...');
+        showError(message);
+        setHomePageContent('加载首页内容失败...');
     }
     setHomePageContentLoaded(true);
   };
