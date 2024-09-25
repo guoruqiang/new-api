@@ -26,7 +26,7 @@ type User struct {
 	WeChatId         string         `json:"wechat_id" gorm:"column:wechat_id;index"`
 	TelegramId       string         `json:"telegram_id" gorm:"column:telegram_id;index"`
 	VerificationCode string         `json:"verification_code" gorm:"-:all"`                                    // this field is only for Email verification, don't save it to database!
-	AccessToken      string         `json:"access_token" gorm:"type:char(32);column:access_token;uniqueIndex"` // this token is for system management
+	AccessToken      *string        `json:"access_token" gorm:"type:char(32);column:access_token;uniqueIndex"` // this token is for system management
 	Quota            int            `json:"quota" gorm:"type:int;default:0"`
 	UsedQuota        int            `json:"used_quota" gorm:"type:int;default:0;column:used_quota"` // used quota
 	RequestCount     int            `json:"request_count" gorm:"type:int;default:0;"`               // request number
@@ -37,6 +37,17 @@ type User struct {
 	AffHistoryQuota  int            `json:"aff_history_quota" gorm:"type:int;default:0;column:aff_history"` // 邀请历史额度
 	InviterId        int            `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
 	DeletedAt        gorm.DeletedAt `gorm:"index"`
+}
+
+func (user *User) GetAccessToken() string {
+	if user.AccessToken == nil {
+		return ""
+	}
+	return *user.AccessToken
+}
+
+func (user *User) SetAccessToken(token string) {
+	user.AccessToken = &token
 }
 
 // CheckUserExistOrDeleted check if user exist or deleted, if not exist, return false, nil, if deleted or exist, return true, nil
@@ -209,7 +220,7 @@ func (user *User) Insert(inviterId int) error {
 
 	// 用户名通过检查后，继续其他注册逻辑
 	user.Quota = common.QuotaForNewUser
-	user.AccessToken = common.GetUUID()
+	//user.SetAccessToken(common.GetUUID())
 	user.AffCode = common.GetRandomString(4)
 	result := DB.Create(user)
 	if result.Error != nil {
@@ -348,14 +359,6 @@ func (user *User) FillUserByWeChatId() error {
 	return nil
 }
 
-func (user *User) FillUserByUsername() error {
-	if user.Username == "" {
-		return errors.New("username 为空！")
-	}
-	DB.Where(User{Username: user.Username}).First(user)
-	return nil
-}
-
 func (user *User) FillUserByTelegramId() error {
 	if user.TelegramId == "" {
 		return errors.New("Telegram id 为空！")
@@ -368,23 +371,19 @@ func (user *User) FillUserByTelegramId() error {
 }
 
 func IsEmailAlreadyTaken(email string) bool {
-	return DB.Where("email = ?", email).Find(&User{}).RowsAffected == 1
+	return DB.Unscoped().Where("email = ?", email).Find(&User{}).RowsAffected == 1
 }
 
 func IsWeChatIdAlreadyTaken(wechatId string) bool {
-	return DB.Where("wechat_id = ?", wechatId).Find(&User{}).RowsAffected == 1
+	return DB.Unscoped().Where("wechat_id = ?", wechatId).Find(&User{}).RowsAffected == 1
 }
 
 func IsGitHubIdAlreadyTaken(githubId string) bool {
-	return DB.Where("github_id = ?", githubId).Find(&User{}).RowsAffected == 1
-}
-
-func IsUsernameAlreadyTaken(username string) bool {
-	return DB.Where("username = ?", username).Find(&User{}).RowsAffected == 1
+	return DB.Unscoped().Where("github_id = ?", githubId).Find(&User{}).RowsAffected == 1
 }
 
 func IsTelegramIdAlreadyTaken(telegramId string) bool {
-	return DB.Where("telegram_id = ?", telegramId).Find(&User{}).RowsAffected == 1
+	return DB.Unscoped().Where("telegram_id = ?", telegramId).Find(&User{}).RowsAffected == 1
 }
 
 func ResetUserPasswordByEmail(email string, password string) error {
