@@ -26,7 +26,7 @@ import { Layout } from '@douyinfe/semi-ui';
 import Midjourney from './pages/Midjourney';
 import Pricing from './pages/Pricing/index.js';
 import Task from "./pages/Task/index.js";
-// import Detail from './pages/Detail';
+import Playground from './components/Playground.js';
 
 const Home = lazy(() => import('./pages/Home'));
 const Detail = lazy(() => import('./pages/Detail'));
@@ -60,8 +60,7 @@ function App() {
   }, []);
 
   return (
-    <Layout>
-      <Layout.Content>
+    <>
         <Routes>
           <Route
             path='/'
@@ -102,6 +101,14 @@ function App() {
                 <Token />
               </PrivateRoute>
             }
+          />
+          <Route
+          path='/playground'
+          element={
+            <PrivateRoute>
+              <Playground />
+            </PrivateRoute>
+          }
           />
           <Route
             path='/redemption'
@@ -280,8 +287,7 @@ function App() {
           />
           <Route path='*' element={<NotFound />} />
         </Routes>
-      </Layout.Content>
-    </Layout>
+    </>
   );
 }
 
