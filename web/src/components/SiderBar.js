@@ -92,9 +92,9 @@ const SiderBar = () => {
         // to: '/chat',
         items: chatItems,
         icon: <IconComment />,
-        // className: isMobile() && localStorage.getItem('chat_link')
-        //   ? 'semi-navigation-item-normal'
-        //   : 'tableHiddle',
+        className: isMobile() && localStorage.getItem('chat_link')
+          ? 'semi-navigation-item-normal'
+          : 'tableHiddle',
       },
       {
         text: '令牌',
