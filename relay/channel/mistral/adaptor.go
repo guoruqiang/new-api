@@ -1,8 +1,7 @@
-package perplexity
+package mistral
 
 import (
 	"errors"
-	"fmt"
 	"github.com/gin-gonic/gin"
 	"io"
 	"net/http"
@@ -29,7 +28,7 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 }
 
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
-	return fmt.Sprintf("%s/chat/completions", info.BaseUrl), nil
+	return relaycommon.GetFullRequestURL(info.BaseUrl, info.RequestURLPath, info.ChannelType), nil
 }
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *relaycommon.RelayInfo) error {
@@ -42,10 +41,9 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, info *relaycommon.RelayInfo, re
 	if request == nil {
 		return nil, errors.New("request is nil")
 	}
-	if request.TopP >= 1 {
-		request.TopP = 0.99
-	}
-	return requestOpenAI2Perplexity(*request), nil
+	mistralReq := requestOpenAI2Mistral(*request)
+	//common.LogJson(c, "body", mistralReq)
+	return mistralReq, nil
 }
 
 func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dto.RerankRequest) (any, error) {
