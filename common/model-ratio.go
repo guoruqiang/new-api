@@ -54,6 +54,7 @@ var defaultModelRatio = map[string]float64{
 	"gpt-4-turbo":                     5, // $0.01 / 1K tokens
 	"gpt-4-turbo-2024-04-09":          5, // $0.01 / 1K tokens
 	//"gpt-3.5-turbo-0301":           0.75, //deprecated
+	"gpt-3.5-turbo":          0.25,
 	"gpt-3.5-turbo-0613":     0.75,
 	"gpt-3.5-turbo-16k":      1.5, // $0.003 / 1K tokens
 	"gpt-3.5-turbo-16k-0613": 1.5,
@@ -424,13 +425,15 @@ func GetCompletionRatio(name string) float64 {
 func GetAudioRatio(name string) float64 {
 	if strings.HasPrefix(name, "gpt-4o-realtime") {
 		return 20
+	} else if strings.HasPrefix(name, "gpt-4o-audio") {
+		return 40
 	}
 	return 20
 }
 
 func GetAudioCompletionRatio(name string) float64 {
 	if strings.HasPrefix(name, "gpt-4o-realtime") {
-		return 10
+		return 2
 	}
 	return 2
 }
