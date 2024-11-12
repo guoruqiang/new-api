@@ -1,8 +1,15 @@
 import React, { useContext, useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { UserContext } from '../context/User';
-import { API, getLogo, showError, showInfo, showSuccess, updateAPI } from '../helpers';
-import { onGitHubOAuthClicked } from './utils';
+import {
+  API,
+  getLogo,
+  showError,
+  showInfo,
+  showSuccess,
+  updateAPI,
+} from '../helpers';
+import { onGitHubOAuthClicked, onLinuxDOOAuthClicked } from './utils';
 import Turnstile from 'react-turnstile';
 import {
   Button,
@@ -17,9 +24,10 @@ import Title from '@douyinfe/semi-ui/lib/es/typography/title';
 import Text from '@douyinfe/semi-ui/lib/es/typography/text';
 import TelegramLoginButton from 'react-telegram-login';
 
-import { IconGithubLogo } from '@douyinfe/semi-icons';
+import { IconGithubLogo, IconAlarm } from '@douyinfe/semi-icons';
 import WeChatIcon from './WeChatIcon';
 import { setUserData } from '../helpers/data.js';
+import LinuxDoIcon from './LinuxDoIcon.js';
 
 const LoginForm = () => {
   const [inputs, setInputs] = useState({
@@ -72,7 +80,7 @@ const LoginForm = () => {
       userDispatch({ type: 'login', payload: data });
       localStorage.setItem('user', JSON.stringify(data));
       setUserData(data);
-      updateAPI()
+      updateAPI();
       navigate('/');
       showSuccess('登录成功！');
       setShowWeChatLoginModal(false);
@@ -103,7 +111,7 @@ const LoginForm = () => {
       if (success) {
         userDispatch({ type: 'login', payload: data });
         setUserData(data);
-        updateAPI()
+        updateAPI();
         showSuccess('登录成功！');
         if (username === 'root' && password === '123456') {
           Modal.error({
@@ -146,7 +154,7 @@ const LoginForm = () => {
       localStorage.setItem('user', JSON.stringify(data));
       showSuccess('登录成功！');
       setUserData(data);
-      updateAPI()
+      updateAPI();
       navigate('/');
     } else {
       showError(message);
@@ -214,7 +222,8 @@ const LoginForm = () => {
                 </div>
                 {status.github_oauth ||
                 status.wechat_login ||
-                status.telegram_oauth ? (
+                status.telegram_oauth ||
+                status.linuxdo_oauth ? (
                   <>
                     <Divider margin='12px' align='center'>
                       第三方登录
@@ -232,6 +241,16 @@ const LoginForm = () => {
                           icon={<IconGithubLogo />}
                           onClick={() =>
                             onGitHubOAuthClicked(status.github_client_id)
+                          }
+                        />
+                      ) : (
+                        <></>
+                      )}
+                      {status.linuxdo_oauth ? (
+                        <Button
+                          icon={<LinuxDoIcon />}
+                          onClick={() =>
+                            onLinuxDOOAuthClicked(status.linuxdo_client_id)
                           }
                         />
                       ) : (

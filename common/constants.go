@@ -41,6 +41,7 @@ var PasswordLoginEnabled = true
 var PasswordRegisterEnabled = true
 var EmailVerificationEnabled = false
 var GitHubOAuthEnabled = false
+var LinuxDOOAuthEnabled = false
 var WeChatAuthEnabled = false
 var TelegramOAuthEnabled = false
 var TurnstileCheckEnabled = false
@@ -74,6 +75,9 @@ var SMTPToken = ""
 
 var GitHubClientId = ""
 var GitHubClientSecret = ""
+
+var LinuxDOClientId = ""
+var LinuxDOClientSecret = ""
 
 var WeChatServerAddress = ""
 var WeChatServerToken = ""
@@ -140,11 +144,13 @@ var (
 // All duration's unit is seconds
 // Shouldn't larger then RateLimitKeyExpirationDuration
 var (
-	GlobalApiRateLimitNum            = GetEnvOrDefault("GLOBAL_API_RATE_LIMIT", 180)
-	GlobalApiRateLimitDuration int64 = 3 * 60
+	GlobalApiRateLimitEnable   = GetEnvOrDefaultBool("GLOBAL_API_RATE_LIMIT_ENABLE", true)
+	GlobalApiRateLimitNum      = GetEnvOrDefault("GLOBAL_API_RATE_LIMIT", 180)
+	GlobalApiRateLimitDuration = int64(GetEnvOrDefault("GLOBAL_API_RATE_LIMIT_DURATION", 180))
 
-	GlobalWebRateLimitNum            = GetEnvOrDefault("GLOBAL_WEB_RATE_LIMIT", 60)
-	GlobalWebRateLimitDuration int64 = 3 * 60
+	GlobalWebRateLimitEnable   = GetEnvOrDefaultBool("GLOBAL_WEB_RATE_LIMIT_ENABLE", true)
+	GlobalWebRateLimitNum      = GetEnvOrDefault("GLOBAL_WEB_RATE_LIMIT", 60)
+	GlobalWebRateLimitDuration = int64(GetEnvOrDefault("GLOBAL_WEB_RATE_LIMIT_DURATION", 180))
 
 	UploadRateLimitNum            = 10
 	UploadRateLimitDuration int64 = 60
