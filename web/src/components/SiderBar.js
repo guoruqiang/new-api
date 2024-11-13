@@ -71,6 +71,7 @@ const SiderBar = () => {
         itemKey: 'playground',
         to: '/playground',
         icon: <IconCommentStroked />,
+        className: isAdmin() ? 'semi-navigation-item-normal' : 'tableHiddle',
       },
       {
         text: '模型价格',
