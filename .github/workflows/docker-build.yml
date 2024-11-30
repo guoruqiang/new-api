@@ -1,31 +1,31 @@
-name: Build and Push Docker images
+name: Publish Docker image build
 
 on:
   push:
     tags:
       - '*'
-      - '!*-alpha'
+      - '!*-alpha*'
   workflow_dispatch:
     inputs:
-      reason:
-        description: 'Reason for manual trigger'
+      name:
+        description: 'reason'
         required: false
 
 jobs:
   push_to_registries:
+    name: Push Docker image to Docker Hub
     runs-on: ubuntu-latest
     permissions:
-      contents: read
       packages: write
-
+      contents: read
     steps:
-      - name: Display build version and date
-        run: |
-          echo "Version tag: ${{ github.ref_name }}"
-          echo "Date tag: $(date +'%m.%d')"
+      - run: |
+          echo 本次构建的版本为：${{ github.ref_name }}
+          echo "Current date: $(date +'%m.%d')"
           echo "DATE_TAG=$(date +'%m.%d')" >> $GITHUB_ENV
+          env
 
-      - name: Checkout code
+      - name: Check out the repo
         uses: actions/checkout@v3
 
       - name: Log in to Docker Hub
@@ -34,19 +34,20 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Set up Docker Metadata
+      - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v4
         with:
-          images: username/repository
-          # 根据触发类型设置标签
+          images: ag471782517/new-api
           tags: |
-            type=ref,event=push
-            type=raw,value=$(date +'%m.%d'),enable={{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=latest
+            type=ref,event=tag
+            type=raw,value=v${{ env.DATE_TAG }}
 
-      - name: Build and push
+      - name: Build and push Docker images
         uses: docker/build-push-action@v3
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
