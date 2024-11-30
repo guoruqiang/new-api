@@ -1,31 +1,31 @@
-name: Publish Docker image build
+name: Build and Push Docker images
 
 on:
   push:
     tags:
       - '*'
-      - '!*-alpha*'
+      - '!*-alpha'
   workflow_dispatch:
     inputs:
-      name:
-        description: 'reason'
+      reason:
+        description: 'Reason for manual trigger'
         required: false
 
 jobs:
   push_to_registries:
-    name: Push Docker image to Docker Hub
     runs-on: ubuntu-latest
     permissions:
-      packages: write
       contents: read
-    steps:
-      - run: |
-          echo 本次构建的版本为：${{ github.ref_name }}
-          echo "Current date: $(date +'%m.%d')"
-          echo "DATE_TAG=$(date +'%m.%d')" >> $GITHUB_ENV
-          env
+      packages: write
 
-      - name: Check out the repo
+    steps:
+      - name: Display build version and date
+        run: |
+          echo "Version tag: ${{ github.ref_name }}"
+          echo "Date tag: $(date +'%m.%d')"
+          echo "DATE_TAG=$(date +'%m.%d')" >> $GITHUB_ENV
+
+      - name: Checkout code
         uses: actions/checkout@v3
 
       - name: Log in to Docker Hub
@@ -34,20 +34,19 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels) for Docker
+      - name: Set up Docker Metadata
         id: meta
         uses: docker/metadata-action@v4
         with:
-          images: ag471782517/new-api
+          images: username/repository
+          # 根据触发类型设置标签
           tags: |
-            type=raw,value=latest
-            type=ref,event=tag
-            type=raw,value=v${{ env.DATE_TAG }}
+            type=ref,event=push
+            type=raw,value=$(date +'%m.%d'),enable={{ github.event_name == 'workflow_dispatch' }}
 
-      - name: Build and push Docker images
+      - name: Build and push
         uses: docker/build-push-action@v3
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
