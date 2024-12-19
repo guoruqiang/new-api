@@ -25,6 +25,7 @@ import {
     Space,
     Tag,
     Typography,
+    Collapsible,
 } from '@douyinfe/semi-ui';
 import {
     getQuotaPerUnit,
@@ -33,10 +34,12 @@ import {
     stringToColor,
 } from '../helpers/render';
 import TelegramLoginButton from 'react-telegram-login';
+import { useTranslation } from 'react-i18next';
 
 const PersonalSetting = () => {
     const [userState, userDispatch] = useContext(UserContext);
     let navigate = useNavigate();
+    const { t } = useTranslation();
 
     const [inputs, setInputs] = useState({
         wechat_verification_code: '',
@@ -62,6 +65,8 @@ const PersonalSetting = () => {
     const [models, setModels] = useState([]);
     const [openTransfer, setOpenTransfer] = useState(false);
     const [transferAmount, setTransferAmount] = useState(0);
+    const [isModelsExpanded, setIsModelsExpanded] = useState(false);
+    const MODELS_DISPLAY_COUNT = 10;  // 默认显示的模型数量
 
     useEffect(() => {
         // let user = localStorage.getItem('user');
@@ -110,7 +115,7 @@ const PersonalSetting = () => {
         if (success) {
             setSystemToken(data);
             await copy(data);
-            showSuccess(`令牌已重置并已复制到剪贴板`);
+            showSuccess(t('令牌已重置并已复制到剪贴板'));
         } else {
             showError(message);
         }
@@ -151,18 +156,18 @@ const PersonalSetting = () => {
     const handleAffLinkClick = async (e) => {
         e.target.select();
         await copy(e.target.value);
-        showSuccess(`邀请链接已复制到剪切板`);
+        showSuccess(t('邀请链接已复制到剪切板'));
     };
 
     const handleSystemTokenClick = async (e) => {
         e.target.select();
         await copy(e.target.value);
-        showSuccess(`系统令牌已复制到剪切板`);
+        showSuccess(t('系统令牌已复制到剪切板'));
     };
 
     const deleteAccount = async () => {
         if (inputs.self_account_deletion_confirmation !== userState.user.username) {
-            showError('请输入你的账户名以确认删除！');
+            showError(t('请输入你的账户名以确认删除！'));
             return;
         }
 
@@ -170,7 +175,7 @@ const PersonalSetting = () => {
         const {success, message} = res.data;
 
         if (success) {
-            showSuccess('账户已删除！');
+            showSuccess(t('账户已删除！'));
             await API.get('/api/user/logout');
             userDispatch({type: 'logout'});
             localStorage.removeItem('user');
@@ -187,7 +192,7 @@ const PersonalSetting = () => {
         );
         const {success, message} = res.data;
         if (success) {
-            showSuccess('微信账户绑定成功！');
+            showSuccess(t('微信账户绑定成功！'));
             setShowWeChatBindModal(false);
         } else {
             showError(message);
@@ -196,7 +201,7 @@ const PersonalSetting = () => {
 
     const changePassword = async () => {
         if (inputs.set_new_password !== inputs.set_new_password_confirmation) {
-            showError('两次输入的密码不一致！');
+            showError(t('两次输入的密码不一致！'));
             return;
         }
         const res = await API.put(`/api/user/self`, {
@@ -204,7 +209,7 @@ const PersonalSetting = () => {
         });
         const {success, message} = res.data;
         if (success) {
-            showSuccess('密码修改成功！');
+            showSuccess(t('密码修改成功！'));
             setShowWeChatBindModal(false);
         } else {
             showError(message);
@@ -214,7 +219,7 @@ const PersonalSetting = () => {
 
     const transfer = async () => {
         if (transferAmount < getQuotaPerUnit()) {
-            showError('划转金额最低为' + renderQuota(getQuotaPerUnit()));
+            showError(t('划转金额最低为') + ' ' + renderQuota(getQuotaPerUnit()));
             return;
         }
         const res = await API.post(`/api/user/aff_transfer`, {
@@ -232,7 +237,7 @@ const PersonalSetting = () => {
 
     const sendVerificationCode = async () => {
         if (inputs.email === '') {
-            showError('请输入邮箱！');
+            showError(t('请输入邮箱！'));
             return;
         }
         setDisableButton(true);
@@ -246,7 +251,7 @@ const PersonalSetting = () => {
         );
         const {success, message} = res.data;
         if (success) {
-            showSuccess('验证码发送成功，请检查邮箱！');
+            showSuccess(t('验证码发送成功，请检查邮箱！'));
         } else {
             showError(message);
         }
@@ -255,7 +260,7 @@ const PersonalSetting = () => {
 
     const bindEmail = async () => {
         if (inputs.email_verification_code === '') {
-            showError('请输入邮箱验证码！');
+            showError(t('请输入邮箱验证码！'));
             return;
         }
         setLoading(true);
@@ -264,7 +269,7 @@ const PersonalSetting = () => {
         );
         const {success, message} = res.data;
         if (success) {
-            showSuccess('邮箱账户绑定成功！');
+            showSuccess(t('邮箱账户绑定成功！'));
             setShowEmailBindModal(false);
             userState.user.email = inputs.email;
         } else {
@@ -287,10 +292,10 @@ const PersonalSetting = () => {
 
     const copyText = async (text) => {
         if (await copy(text)) {
-            showSuccess('已复制：' + text);
+            showSuccess(t('已复制：') + text);
         } else {
             // setSearchKeyword(text);
-            Modal.error({title: '无法复制到剪贴板，请手动复制', content: text});
+            Modal.error({title: t('无法复制到剪贴板，请手动复制'), content: text});
         }
     };
 
@@ -299,7 +304,7 @@ const PersonalSetting = () => {
             <Layout>
                 <Layout.Content>
                     <Modal
-                        title='请输入要划转的数量'
+                        title={t('请输入要划转的数量')}
                         visible={openTransfer}
                         onOk={transfer}
                         onCancel={handleCancel}
@@ -308,7 +313,7 @@ const PersonalSetting = () => {
                         centered={true}
                     >
                         <div style={{marginTop: 20}}>
-                            <Typography.Text>{`可用额度${renderQuotaWithPrompt(userState?.user?.aff_quota)}`}</Typography.Text>
+                            <Typography.Text>{t('可用额度')}{renderQuotaWithPrompt(userState?.user?.aff_quota)}</Typography.Text>
                             <Input
                                 style={{marginTop: 5}}
                                 value={userState?.user?.aff_quota}
@@ -317,8 +322,7 @@ const PersonalSetting = () => {
                         </div>
                         <div style={{marginTop: 20}}>
                             <Typography.Text>
-                                {`划转额度${renderQuotaWithPrompt(transferAmount)} 最低` +
-                                    renderQuota(getQuotaPerUnit())}
+                                {t('划转额度')}{renderQuotaWithPrompt(transferAmount)} {t('最低') + renderQuota(getQuotaPerUnit())}
                             </Typography.Text>
                             <div>
                                 <InputNumber
@@ -348,9 +352,9 @@ const PersonalSetting = () => {
                                     title={<Typography.Text>{getUsername()}</Typography.Text>}
                                     description={
                                         isRoot() ? (
-                                            <Tag color='red'>管理员</Tag>
+                                            <Tag color='red'>{t('管理员')}</Tag>
                                         ) : (
-                                            <Tag color='blue'>普通用户</Tag>
+                                            <Tag color='blue'>{t('普通用户')}</Tag>
                                         )
                                     }
                                 ></Card.Meta>
@@ -364,41 +368,97 @@ const PersonalSetting = () => {
                                 </>
                             }
                             footer={
-                                <Descriptions row>
-                                    <Descriptions.Item itemKey='当前余额'>
-                                        {renderQuota(userState?.user?.quota)}
-                                    </Descriptions.Item>
-                                    <Descriptions.Item itemKey='历史消耗'>
-                                        {renderQuota(userState?.user?.used_quota)}
-                                    </Descriptions.Item>
-                                    <Descriptions.Item itemKey='请求次数'>
-                                        {userState.user?.request_count}
-                                    </Descriptions.Item>
-                                </Descriptions>
+                            <>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    <Typography.Title heading={6}>{t('可用模型')}</Typography.Title>
+                                </div>
+                                <div style={{marginTop: 10}}>
+                                    {models.length <= MODELS_DISPLAY_COUNT ? (
+                                        <Space wrap>
+                                            {models.map((model) => (
+                                                <Tag
+                                                    key={model}
+                                                    color='cyan'
+                                                    onClick={() => {
+                                                        copyText(model);
+                                                    }}
+                                                >
+                                                    {model}
+                                                </Tag>
+                                            ))}
+                                        </Space>
+                                    ) : (
+                                        <>
+                                            <Collapsible isOpen={isModelsExpanded}>
+                                                <Space wrap>
+                                                    {models.map((model) => (
+                                                        <Tag
+                                                            key={model}
+                                                            color='cyan'
+                                                            onClick={() => {
+                                                                copyText(model);
+                                                            }}
+                                                        >
+                                                            {model}
+                                                        </Tag>
+                                                    ))}
+                                                    <Tag 
+                                                        color='blue' 
+                                                        type="light"
+                                                        style={{ cursor: 'pointer' }}
+                                                        onClick={() => setIsModelsExpanded(false)}
+                                                    >
+                                                        {t('收起')}
+                                                    </Tag>
+                                                </Space>
+                                            </Collapsible>
+                                            {!isModelsExpanded && (
+                                                <Space wrap>
+                                                    {models.slice(0, MODELS_DISPLAY_COUNT).map((model) => (
+                                                        <Tag
+                                                            key={model}
+                                                            color='cyan'
+                                                            onClick={() => {
+                                                                copyText(model);
+                                                            }}
+                                                        >
+                                                            {model}
+                                                        </Tag>
+                                                    ))}
+                                                    <Tag 
+                                                        color='blue'
+                                                        type="light"
+                                                        style={{ cursor: 'pointer' }}
+                                                        onClick={() => setIsModelsExpanded(true)}
+                                                    >
+                                                        {t('更多')} {models.length - MODELS_DISPLAY_COUNT} {t('个模型')}
+                                                    </Tag>
+                                                </Space>
+                                            )}
+                                        </>
+                                    )}
+                                </div>
+                            </>
+
                             }
                         >
-                            <Typography.Title heading={6}>可用模型</Typography.Title>
-                            <div style={{marginTop: 10}}>
-                                <Space wrap>
-                                    {models.map((model) => (
-                                        <Tag
-                                            key={model}
-                                            color='cyan'
-                                            onClick={() => {
-                                                copyText(model);
-                                            }}
-                                        >
-                                            {model}
-                                        </Tag>
-                                    ))}
-                                </Space>
-                            </div>
+                            <Descriptions row>
+                                <Descriptions.Item itemKey={t('当前余额')}>
+                                    {renderQuota(userState?.user?.quota)}
+                                </Descriptions.Item>
+                                <Descriptions.Item itemKey={t('历史消耗')}>
+                                    {renderQuota(userState?.user?.used_quota)}
+                                </Descriptions.Item>
+                                <Descriptions.Item itemKey={t('请求次数')}>
+                                    {userState.user?.request_count}
+                                </Descriptions.Item>
+                            </Descriptions>
                         </Card>
                         <Card
                             style={{marginTop: 10}}
                             footer={
                                 <div>
-                                    <Typography.Text>邀请链接</Typography.Text>
+                                    <Typography.Text>{t('邀请链接')}</Typography.Text>
                                     <Input
                                         style={{marginTop: 10}}
                                         value={affLink}
@@ -408,35 +468,35 @@ const PersonalSetting = () => {
                                 </div>
                             }
                         >
-                            <Typography.Title heading={6}>邀请信息</Typography.Title>
+                            <Typography.Title heading={6}>{t('邀请信息')}</Typography.Title>
                             <div style={{marginTop: 10}}>
                                 <Descriptions row>
-                                    <Descriptions.Item itemKey='待使用收益'>
-                    <span style={{color: 'rgba(var(--semi-red-5), 1)'}}>
-                      {renderQuota(userState?.user?.aff_quota)}
-                    </span>
+                                    <Descriptions.Item itemKey={t('待使用收益')}>
+                                        <span style={{color: 'rgba(var(--semi-red-5), 1)'}}>
+                                            {renderQuota(userState?.user?.aff_quota)}
+                                        </span>
                                         <Button
                                             type={'secondary'}
                                             onClick={() => setOpenTransfer(true)}
                                             size={'small'}
                                             style={{marginLeft: 10}}
                                         >
-                                            划转
+                                            {t('划转')}
                                         </Button>
                                     </Descriptions.Item>
-                                    <Descriptions.Item itemKey='总收益'>
+                                    <Descriptions.Item itemKey={t('总收益')}>
                                         {renderQuota(userState?.user?.aff_history_quota)}
                                     </Descriptions.Item>
-                                    <Descriptions.Item itemKey='邀请人数'>
+                                    <Descriptions.Item itemKey={t('邀请人数')}>
                                         {userState?.user?.aff_count}
                                     </Descriptions.Item>
                                 </Descriptions>
                             </div>
                         </Card>
                         <Card style={{marginTop: 10}}>
-                            <Typography.Title heading={6}>个人信息</Typography.Title>
+                            <Typography.Title heading={6}>{t('个人信息')}</Typography.Title>
                             <div style={{marginTop: 20}}>
-                                <Typography.Text strong>邮箱</Typography.Text>
+                                <Typography.Text strong>{t('邮箱')}</Typography.Text>
                                 <div
                                     style={{display: 'flex', justifyContent: 'space-between'}}
                                 >
@@ -445,7 +505,7 @@ const PersonalSetting = () => {
                                             value={
                                                 userState.user && userState.user.email !== ''
                                                     ? userState.user.email
-                                                    : '未绑定'
+                                                    : t('未绑定')
                                             }
                                             readonly={true}
                                         ></Input>
@@ -457,14 +517,14 @@ const PersonalSetting = () => {
                                             }}
                                         >
                                             {userState.user && userState.user.email !== ''
-                                                ? '修改绑定'
-                                                : '绑定邮箱'}
+                                                ? t('修改绑定')
+                                                : t('绑定邮箱')}
                                         </Button>
                                     </div>
                                 </div>
                             </div>
                             <div style={{marginTop: 10}}>
-                                <Typography.Text strong>微信</Typography.Text>
+                                <Typography.Text strong>{t('微信')}</Typography.Text>
                                 <div
                                     style={{display: 'flex', justifyContent: 'space-between'}}
                                 >
@@ -472,8 +532,8 @@ const PersonalSetting = () => {
                                         <Input
                                             value={
                                                 userState.user && userState.user.wechat_id !== ''
-                                                    ? '已绑定'
-                                                    : '未绑定'
+                                                    ? t('已绑定')
+                                                    : t('未绑定')
                                             }
                                             readonly={true}
                                         ></Input>
@@ -485,13 +545,13 @@ const PersonalSetting = () => {
                                                 !status.wechat_login
                                             }
                                         >
-                                            {status.wechat_login ? '绑定' : '未启用'}
+                                            {status.wechat_login ? t('绑定') : t('未启用')}
                                         </Button>
                                     </div>
                                 </div>
                             </div>
                             <div style={{marginTop: 10}}>
-                                <Typography.Text strong>GitHub</Typography.Text>
+                                <Typography.Text strong>{t('GitHub')}</Typography.Text>
                                 <div
                                     style={{display: 'flex', justifyContent: 'space-between'}}
                                 >
@@ -500,7 +560,7 @@ const PersonalSetting = () => {
                                             value={
                                                 userState.user && userState.user.github_id !== ''
                                                     ? userState.user.github_id
-                                                    : '未绑定'
+                                                    : t('未绑定')
                                             }
                                             readonly={true}
                                         ></Input>
@@ -515,13 +575,13 @@ const PersonalSetting = () => {
                                                 !status.github_oauth
                                             }
                                         >
-                                            {status.github_oauth ? '绑定' : '未启用'}
+                                            {status.github_oauth ? t('绑定') : t('未启用')}
                                         </Button>
                                     </div>
                                 </div>
                             </div>
                             <div style={{marginTop: 10}}>
-                                <Typography.Text strong>Telegram</Typography.Text>
+                                <Typography.Text strong>{t('Telegram')}</Typography.Text>
                                 <div
                                     style={{display: 'flex', justifyContent: 'space-between'}}
                                 >
@@ -530,7 +590,7 @@ const PersonalSetting = () => {
                                             value={
                                                 userState.user && userState.user.telegram_id !== ''
                                                     ? userState.user.telegram_id
-                                                    : '未绑定'
+                                                    : t('未绑定')
                                             }
                                             readonly={true}
                                         ></Input>
@@ -538,7 +598,7 @@ const PersonalSetting = () => {
                                     <div>
                                         {status.telegram_oauth ? (
                                             userState.user.telegram_id !== '' ? (
-                                                <Button disabled={true}>已绑定</Button>
+                                                <Button disabled={true}>{t('已绑定')}</Button>
                                             ) : (
                                                 <TelegramLoginButton
                                                     dataAuthUrl='/api/oauth/telegram/bind'
@@ -546,13 +606,13 @@ const PersonalSetting = () => {
                                                 />
                                             )
                                         ) : (
-                                            <Button disabled={true}>未启用</Button>
+                                            <Button disabled={true}>{t('未启用')}</Button>
                                         )}
                                     </div>
                                 </div>
                             </div>
                             <div style={{marginTop: 10}}>
-                                <Typography.Text strong>LinuxDO</Typography.Text>
+                                <Typography.Text strong>{t('LinuxDO')}</Typography.Text>
                                 <div
                                     style={{display: 'flex', justifyContent: 'space-between'}}
                                 >
@@ -561,7 +621,7 @@ const PersonalSetting = () => {
                                             value={
                                                 userState.user && userState.user.linux_do_id !== ''
                                                     ? userState.user.linux_do_id
-                                                    : '未绑定'
+                                                    : t('未绑定')
                                             }
                                             readonly={true}
                                         ></Input>
@@ -576,7 +636,7 @@ const PersonalSetting = () => {
                                                 !status.linuxdo_oauth
                                             }
                                         >
-                                            {status.linuxdo_oauth ? '绑定' : '未启用'}
+                                            {status.linuxdo_oauth ? t('绑定') : t('未启用')}
                                         </Button>
                                     </div>
                                 </div>
@@ -584,14 +644,14 @@ const PersonalSetting = () => {
                             <div style={{marginTop: 10}}>
                                 <Space>
                                     <Button onClick={generateAccessToken}>
-                                        生成系统访问令牌
+                                        {t('生成系统访问令牌')}
                                     </Button>
                                     <Button
                                         onClick={() => {
                                             setShowChangePasswordModal(true);
                                         }}
                                     >
-                                        修改密码
+                                        {t('修改密码')}
                                     </Button>
                                     <Button
                                         type={'danger'}
@@ -599,7 +659,7 @@ const PersonalSetting = () => {
                                             setShowAccountDeleteModal(true);
                                         }}
                                     >
-                                        删除个人账户
+                                        {t('删除个人账户')}
                                     </Button>
                                 </Space>
 
@@ -617,7 +677,7 @@ const PersonalSetting = () => {
                                             setShowWeChatBindModal(true);
                                         }}
                                     >
-                                        绑定微信账号
+                                        {t('绑定微信账号')}
                                     </Button>
                                 )}
                                 <Modal
@@ -641,7 +701,7 @@ const PersonalSetting = () => {
                                         }
                                     />
                                     <Button color='' fluid size='large' onClick={bindWeChat}>
-                                        绑定
+                                        {t('绑定')}
                                     </Button>
                                 </Modal>
                             </div>
@@ -655,7 +715,7 @@ const PersonalSetting = () => {
                             centered={true}
                             maskClosable={false}
                         >
-                            <Typography.Title heading={6}>绑定邮箱地址</Typography.Title>
+                            <Typography.Title heading={6}>{t('绑定邮箱地址')}</Typography.Title>
                             <div
                                 style={{
                                     marginTop: 20,
@@ -747,7 +807,7 @@ const PersonalSetting = () => {
                             <div style={{marginTop: 20}}>
                                 <Input
                                     name='set_new_password'
-                                    placeholder='新密码'
+                                    placeholder={t('新密码')}
                                     value={inputs.set_new_password}
                                     onChange={(value) =>
                                         handleInputChange('set_new_password', value)
@@ -756,7 +816,7 @@ const PersonalSetting = () => {
                                 <Input
                                     style={{marginTop: 20}}
                                     name='set_new_password_confirmation'
-                                    placeholder='确认新密码'
+                                    placeholder={t('确认新密码')}
                                     value={inputs.set_new_password_confirmation}
                                     onChange={(value) =>
                                         handleInputChange('set_new_password_confirmation', value)

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useContext, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { API, getLogo, showError, showInfo, showSuccess, updateAPI } from '../helpers';
 import Turnstile from 'react-turnstile';
@@ -11,8 +11,11 @@ import LinuxDoIcon from './LinuxDoIcon.js';
 import WeChatIcon from './WeChatIcon.js';
 import TelegramLoginButton from 'react-telegram-login/src';
 import { setUserData } from '../helpers/data.js';
+import { UserContext } from '../context/User/index.js';
+import { useTranslation } from 'react-i18next';
 
 const RegisterForm = () => {
+  const { t } = useTranslation();
   const [inputs, setInputs] = useState({
     username: '',
     password: '',
@@ -22,6 +25,7 @@ const RegisterForm = () => {
   });
   const { username, password, password2 } = inputs;
   const [showEmailVerification, setShowEmailVerification] = useState(false);
+  const [userState, userDispatch] = useContext(UserContext);
   const [turnstileEnabled, setTurnstileEnabled] = useState(false);
   const [turnstileSiteKey, setTurnstileSiteKey] = useState('');
   const [turnstileToken, setTurnstileToken] = useState('');
@@ -133,6 +137,38 @@ const RegisterForm = () => {
     setLoading(false);
   };
 
+  const onTelegramLoginClicked = async (response) => {
+    const fields = [
+      'id',
+      'first_name',
+      'last_name',
+      'username',
+      'photo_url',
+      'auth_date',
+      'hash',
+      'lang',
+    ];
+    const params = {};
+    fields.forEach((field) => {
+      if (response[field]) {
+        params[field] = response[field];
+      }
+    });
+    const res = await API.get(`/api/oauth/telegram/login`, { params });
+    const { success, message, data } = res.data;
+    if (success) {
+      userDispatch({ type: 'login', payload: data });
+      localStorage.setItem('user', JSON.stringify(data));
+      showSuccess('登录成功！');
+      setUserData(data);
+      updateAPI();
+      navigate('/');
+    } else {
+      showError(message);
+    }
+  };
+
+
   return (
     <div>
       <Layout>
@@ -148,7 +184,7 @@ const RegisterForm = () => {
             <div style={{ width: 500 }}>
               <Card>
                 <Title heading={2} style={{ textAlign: 'center' }}>
-                  新用户注册<br />
+                {t('新用户注册')}<br />
                   <span style={{ fontSize: '14px', color: '#3366FF' }}>
                     本站开放教育邮箱注册，请使用 edu.cn 为后缀的学校邮箱注册！
                   </span>
@@ -156,23 +192,23 @@ const RegisterForm = () => {
                 <Form size="large">
                   <Form.Input
                     field={'username'}
-                    label={'用户名'}
-                    placeholder="用户名"
+                    label={t('用户名')}
+                    placeholder={t('用户名')}
                     name="username"
                     onChange={(value) => handleChange('username', value)}
                   />
                   <Form.Input
                     field={'password'}
-                    label={'密码'}
-                    placeholder="密码，最短 8 位，最长 20 位"
+                    label={t('密码')}
+                    placeholder={t('输入密码，最短 8 位，最长 20 位')}
                     name="password"
                     type="password"
                     onChange={(value) => handleChange('password', value)}
                   />
                   <Form.Input
                     field={'password2'}
-                    label={'确认密码'}
-                    placeholder="确认密码"
+                    label={t('确认密码')}
+                    placeholder={t('确认密码')}
                     name="password2"
                     type="password"
                     onChange={(value) => handleChange('password2', value)}
@@ -181,21 +217,21 @@ const RegisterForm = () => {
                     <>
                       <Form.Input
                         field={'email'}
-                        label={'邮箱'}
-                        placeholder="请输入校园邮箱地址"
+                        label={t('邮箱')}
+                        placeholder={t('输入校园邮箱地址')}
                         onChange={(value) => handleChange('email', value)}
                         name="email"
                         type="email"
                         suffix={
                           <Button onClick={sendVerificationCode} disabled={loading}>
-                            获取验证码
+                            {t('获取验证码')}
                           </Button>
                         }
                       />
                       <Form.Input
                         field={'verification_code'}
-                        label={'验证码'}
-                        placeholder="输入验证码"
+                        label={t('验证码')}
+                        placeholder={t('输入验证码')}
                         onChange={(value) => handleChange('verification_code', value)}
                         name="verification_code"
                       />
@@ -211,7 +247,7 @@ const RegisterForm = () => {
                     htmlType={'submit'}
                     onClick={handleSubmit}
                   >
-                    注册
+                    {t('注册')}
                   </Button>
                 </Form>
                 <div
@@ -222,9 +258,9 @@ const RegisterForm = () => {
                   }}
                 >
                   <Text>
-                    已有账户？
+                    {t('已有账户？')}
                     <Link to="/login">
-                      点击登录
+                      {t('点击登录')}
                     </Link>
                   </Text>
                 </div>
@@ -234,7 +270,7 @@ const RegisterForm = () => {
                 status.linuxdo_oauth ? (
                   <>
                     <Divider margin='12px' align='center'>
-                      第三方登录
+                      {t('第三方登录')}
                     </Divider>
                     <div
                       style={{
@@ -299,12 +335,12 @@ const RegisterForm = () => {
                 )}
               </Card>
               <Modal
-                title='微信扫码登录'
+                title={t('微信扫码登录')}
                 visible={showWeChatLoginModal}
                 maskClosable={true}
                 onOk={onSubmitWeChatVerificationCode}
                 onCancel={() => setShowWeChatLoginModal(false)}
-                okText={'登录'}
+                okText={t('登录')}
                 size={'small'}
                 centered={true}
               >
@@ -319,14 +355,14 @@ const RegisterForm = () => {
                 </div>
                 <div style={{ textAlign: 'center' }}>
                   <p>
-                    微信扫码关注公众号，输入「验证码」获取验证码（三分钟内有效）
+                    {t('微信扫码关注公众号，输入「验证码」获取验证码（三分钟内有效）')}
                   </p>
                 </div>
                 <Form size='large'>
                   <Form.Input
                     field={'wechat_verification_code'}
-                    placeholder='验证码'
-                    label={'验证码'}
+                    placeholder={t('验证码')}
+                    label={t('验证码')}
                     value={inputs.wechat_verification_code}
                     onChange={(value) =>
                       handleChange('wechat_verification_code', value)

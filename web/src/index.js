@@ -13,6 +13,9 @@ import { Layout } from '@douyinfe/semi-ui';
 import SiderBar from './components/SiderBar';
 import { ThemeProvider } from './context/Theme';
 import FooterBar from './components/Footer';
+import { StyleProvider } from './context/Style/index.js';
+import PageLayout from './components/PageLayout.js';
+import './i18n/i18n.js';
 
 // initialization
 
@@ -24,27 +27,9 @@ root.render(
       <UserProvider>
         <BrowserRouter>
           <ThemeProvider>
-            <Layout style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
-              <Header>
-                <HeaderBar />
-              </Header>
-              <Layout style={{ flex: 1, overflow: 'hidden' }}>
-                <Sider>
-                  <SiderBar />
-                </Sider>
-                <Layout>
-                  <Content
-                    style={{ overflowY: 'auto', padding: '24px' }}
-                  >
-                    <App />
-                  </Content>
-                  <Layout.Footer>
-                    <FooterBar></FooterBar>
-                  </Layout.Footer>
-                </Layout>
-              </Layout>
-              <ToastContainer />
-            </Layout>
+            <StyleProvider>
+              <PageLayout/>
+            </StyleProvider>
           </ThemeProvider>
         </BrowserRouter>
       </UserProvider>

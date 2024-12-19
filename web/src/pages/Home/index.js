@@ -3,11 +3,15 @@ import { Card, Col, Row } from '@douyinfe/semi-ui';
 import { API, showError, showNotice, timestamp2string } from '../../helpers';
 import { StatusContext } from '../../context/Status';
 import { marked } from 'marked';
+import { StyleContext } from '../../context/Style/index.js';
+import { useTranslation } from 'react-i18next';
 
 const Home = () => {
+  const { t, i18n } = useTranslation();
   const [statusState] = useContext(StatusContext);
   const [homePageContentLoaded, setHomePageContentLoaded] = useState(false);
   const [homePageContent, setHomePageContent] = useState('');
+  const [styleState, styleDispatch] = useContext(StyleContext);
 
   const displayNotice = async () => {
     const res = await API.get('/api/notice');
@@ -29,14 +33,14 @@ const Home = () => {
     const res = await API.get('/api/home_page_content');
     const { success, message, data } = res.data;
     if (success) {
-        let content = data;
-        if (!data.startsWith('https://')) {
-            content = marked.parse(data);
-        }
-        setHomePageContent(content);
-        localStorage.setItem('home_page_content', content);
+      let content = data;
+      if (!data.startsWith('https://')) {
+        content = marked.parse(data);
+      }
+      setHomePageContent(content);
+      localStorage.setItem('home_page_content', content);
 
-        // 如果返回是url，则发送主题模式
+        // 如果内容是 URL，则发送主题模式
         if (data.startsWith('https://')) {
             const iframe = document.querySelector('iframe');
             if (iframe) {
@@ -45,6 +49,7 @@ const Home = () => {
                 // console.log('Sending theme-mode to iframe:', theme); 
                 iframe.onload = () => {
                     iframe.contentWindow.postMessage({ themeMode: theme }, '*');
+                    iframe.contentWindow.postMessage({ lang: i18n.language }, '*');
                 };
             }
         }
@@ -63,7 +68,8 @@ const Home = () => {
   useEffect(() => {
     displayNotice().then();
     displayHomePageContent().then();
-  }, []);
+  });
+
   return (
     <>
       {homePageContentLoaded && homePageContent === '' ? (
@@ -71,13 +77,13 @@ const Home = () => {
           <Card
             bordered={false}
             headerLine={false}
-            title='系统状况'
+            title={t('系统状况')}
             bodyStyle={{ padding: '10px 20px' }}
           >
             <Row gutter={16}>
               <Col span={12}>
                 <Card
-                  title='系统信息'
+                  title={t('系统信息')}
                   headerExtraContent={
                     <span
                       style={{
@@ -85,19 +91,19 @@ const Home = () => {
                         color: 'var(--semi-color-text-1)',
                       }}
                     >
-                      系统信息总览
+                      {t('系统信息总览')}
                     </span>
                   }
                 >
-                  <p>名称：{statusState?.status?.system_name}</p>
+                  <p>{t('名称')}：{statusState?.status?.system_name}</p>
                   <p>
-                    版本：
+                    {t('版本')}：
                     {statusState?.status?.version
                       ? statusState?.status?.version
                       : 'unknown'}
                   </p>
                   <p>
-                    源码：
+                    {t('源码')}：
                     <a
                       href='https://github.com/Calcium-Ion/new-api'
                       target='_blank'
@@ -107,7 +113,7 @@ const Home = () => {
                     </a>
                   </p>
                   <p>
-                    协议：
+                    {t('协议')}：
                     <a
                       href='https://www.apache.org/licenses/LICENSE-2.0'
                       target='_blank'
@@ -116,12 +122,12 @@ const Home = () => {
                       Apache-2.0 License
                     </a>
                   </p>
-                  <p>启动时间：{getStartTimeString()}</p>
+                  <p>{t('启动时间')}：{getStartTimeString()}</p>
                 </Card>
               </Col>
               <Col span={12}>
                 <Card
-                  title='系统配置'
+                  title={t('系统配置')}
                   headerExtraContent={
                     <span
                       style={{
@@ -129,45 +135,45 @@ const Home = () => {
                         color: 'var(--semi-color-text-1)',
                       }}
                     >
-                      系统配置总览
+                      {t('系统配置总览')}
                     </span>
                   }
                 >
                   <p>
-                    邮箱验证：
+                    {t('邮箱验证')}：
                     {statusState?.status?.email_verification === true
-                      ? '已启用'
-                      : '未启用'}
+                      ? t('已启用')
+                      : t('未启用')}
                   </p>
                   <p>
-                    GitHub 身份验证：
+                    {t('GitHub 身份验证')}：
                     {statusState?.status?.github_oauth === true
-                      ? '已启用'
-                      : '未启用'}
+                      ? t('已启用')
+                      : t('未启用')}
                   </p>
                   <p>
-                    微信身份验证：
+                    {t('微信身份验证')}：
                     {statusState?.status?.wechat_login === true
-                      ? '已启用'
-                      : '未启用'}
+                      ? t('已启用')
+                      : t('未启用')}
                   </p>
                   <p>
-                    Turnstile 用户校验：
+                    {t('Turnstile 用户校验')}：
                     {statusState?.status?.turnstile_check === true
-                      ? '已启用'
-                      : '未启用'}
+                      ? t('已启用')
+                      : t('未启用')}
                   </p>
                   <p>
-                    Telegram 身份验证：
+                    {t('Telegram 身份验证')}：
                     {statusState?.status?.telegram_oauth === true
-                      ? '已启用'
-                      : '未启用'}
+                      ? t('已启用')
+                      : t('未启用')}
                   </p>
                   <p>
-                    Linux DO 身份验证：
+                    {t('Linux DO 身份验证')}：
                     {statusState?.status?.linuxdo_oauth === true
-                      ? '已启用'
-                      : '未启用'}
+                      ? t('已启用')
+                      : t('未启用')}
                   </p>
                 </Card>
               </Col>

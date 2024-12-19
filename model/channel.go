@@ -34,6 +34,7 @@ type Channel struct {
 	AutoBan           *int    `json:"auto_ban" gorm:"default:1"`
 	OtherInfo         string  `json:"other_info"`
 	Tag               *string `json:"tag" gorm:"index"`
+	Setting           string  `json:"setting" gorm:"type:text"`
 }
 
 func (channel *Channel) GetModels() []string {
@@ -100,9 +101,13 @@ func GetAllChannels(startIdx int, num int, selectAll bool, idSort bool) ([]*Chan
 	return channels, err
 }
 
-func GetChannelsByTag(tag string) ([]*Channel, error) {
+func GetChannelsByTag(tag string, idSort bool) ([]*Channel, error) {
 	var channels []*Channel
-	err := DB.Where("tag = ?", tag).Find(&channels).Error
+	order := "priority desc"
+	if idSort {
+		order = "id desc"
+	}
+	err := DB.Where("tag = ?", tag).Order(order).Find(&channels).Error
 	return channels, err
 }
 
@@ -362,7 +367,7 @@ func EditChannelByTag(tag string, newTag *string, modelMapping *string, models *
 		return err
 	}
 	if shouldReCreateAbilities {
-		channels, err := GetChannelsByTag(updatedTag)
+		channels, err := GetChannelsByTag(updatedTag, false)
 		if err == nil {
 			for _, channel := range channels {
 				err = channel.UpdateAbilities()
@@ -450,10 +455,13 @@ func SearchTags(keyword string, group string, model string, idSort bool) ([]*str
 		args = append(args, common.String2Int(keyword), "%"+keyword+"%", keyword, "%"+model+"%")
 	}
 
-	err := baseQuery.Where(whereClause, args...).
-		Select("DISTINCT tag").
+	subQuery := baseQuery.Where(whereClause, args...).
+		Select("tag").
 		Where("tag != ''").
-		Order(order).
+		Order(order)
+
+	err := DB.Table("(?) as sub", subQuery).
+		Select("DISTINCT tag").
 		Find(&tags).Error
 
 	if err != nil {
@@ -461,4 +469,24 @@ func SearchTags(keyword string, group string, model string, idSort bool) ([]*str
 	}
 
 	return tags, nil
+}
+
+func (channel *Channel) GetSetting() map[string]interface{} {
+	setting := make(map[string]interface{})
+	if channel.Setting != "" {
+		err := json.Unmarshal([]byte(channel.Setting), &setting)
+		if err != nil {
+			common.SysError("failed to unmarshal setting: " + err.Error())
+		}
+	}
+	return setting
+}
+
+func (channel *Channel) SetSetting(setting map[string]interface{}) {
+	settingBytes, err := json.Marshal(setting)
+	if err != nil {
+		common.SysError("failed to marshal setting: " + err.Error())
+		return
+	}
+	channel.Setting = string(settingBytes)
 }

@@ -1,3 +1,4 @@
+import i18next from 'i18next';
 import { Tag } from '@douyinfe/semi-ui';
 
 export function renderText(text, limit) {
@@ -16,7 +17,7 @@ export function renderGroup(group) {
   if (group === '') {
     return (
       <Tag size='large' key='default' color='orange'>
-        用户分组
+        {i18next.t('用户分组')}
       </Tag>
     );
   }
@@ -144,14 +145,16 @@ export function renderModelPrice(
   completionRatio,
   groupRatio,
 ) {
-  // 1 ratio = $0.002 / 1K tokens
   if (modelPrice !== -1) {
-    return '模型价格：$' + modelPrice + ' * 分组倍率：' + groupRatio + ' = $' + modelPrice * groupRatio;
+    return i18next.t('模型价格：${{price}} * 分组倍率：{{ratio}} = ${{total}}', {
+      price: modelPrice,
+      ratio: groupRatio,
+      total: modelPrice * groupRatio
+    });
   } else {
     if (completionRatio === undefined) {
       completionRatio = 0;
     }
-    // 这里的 *2 是因为 1倍率=0.002刀，请勿删除
     let inputRatioPrice = modelRatio * 2.0;
     let completionRatioPrice = modelRatio * 2.0 * completionRatio;
     let price =
@@ -160,18 +163,49 @@ export function renderModelPrice(
     return (
       <>
         <article>
-          <p>提示：${inputRatioPrice} * {groupRatio} = ${inputRatioPrice * groupRatio} / 1M tokens</p>
-          <p>补全：${completionRatioPrice} * {groupRatio} = ${completionRatioPrice * groupRatio} / 1M tokens</p>
+          <p>{i18next.t('提示：${{price}} * {{ratio}} = ${{total}} / 1M tokens', {
+            price: inputRatioPrice,
+            ratio: groupRatio,
+            total: inputRatioPrice * groupRatio
+          })}</p>
+          <p>{i18next.t('补全：${{price}} * {{ratio}} = ${{total}} / 1M tokens', {
+            price: completionRatioPrice,
+            ratio: groupRatio,
+            total: completionRatioPrice * groupRatio
+          })}</p>
           <p></p>
           <p>
-            提示 {inputTokens} tokens / 1M tokens * ${inputRatioPrice} + 补全{' '}
-            {completionTokens} tokens / 1M tokens * ${completionRatioPrice} * 分组 {groupRatio} =
-            ${price.toFixed(6)}
+            {i18next.t('提示 {{input}} tokens / 1M tokens * ${{price}} + 补全 {{completion}} tokens / 1M tokens * ${{compPrice}} * 分组 {{ratio}} = ${{total}}', {
+              input: inputTokens,
+              price: inputRatioPrice,
+              completion: completionTokens,
+              compPrice: completionRatioPrice,
+              ratio: groupRatio,
+              total: price.toFixed(6)
+            })}
           </p>
-          <p>仅供参考，以实际扣费为准</p>
+          <p>{i18next.t('仅供参考，以实际扣费为准')}</p>
         </article>
       </>
     );
+  }
+}
+
+export function renderModelPriceSimple(
+  modelRatio,
+  modelPrice = -1,
+  groupRatio,
+) {
+  if (modelPrice !== -1) {
+    return i18next.t('价格：${{price}} * 分组：{{ratio}}', {
+      price: modelPrice,
+      ratio: groupRatio
+    });
+  } else {
+    return i18next.t('模型: {{ratio}} * 分组: {{groupRatio}}', {
+      ratio: modelRatio,
+      groupRatio: groupRatio
+    });
   }
 }
 
@@ -211,8 +245,12 @@ export function renderAudioModelPrice(
           <p>音频补全：${inputRatioPrice} * {groupRatio} * {audioRatio} * {audioCompletionRatio} = ${inputRatioPrice * audioRatio * audioCompletionRatio * groupRatio} / 1M tokens</p>
           <p></p>
           <p>
-            提示 {inputTokens} tokens / 1M tokens * ${inputRatioPrice} + 补全{' '}
-            {completionTokens} tokens / 1M tokens * ${completionRatioPrice} +
+            {i18next.t('提示 {{input}} tokens / 1M tokens * ${{price}} + 补全 {{completion}} tokens / 1M tokens * ${{compPrice}} +', {
+              input: inputTokens,
+              price: inputRatioPrice,
+              completion: completionTokens,
+              compPrice: completionRatioPrice
+            })}
           </p>
           <p>
             音频提示 {audioInputTokens} tokens / 1M tokens * ${inputRatioPrice} * {audioRatio} + 音频补全 {audioCompletionTokens} tokens / 1M tokens * ${inputRatioPrice} * {audioRatio} * {audioCompletionRatio}
@@ -232,7 +270,7 @@ export function renderQuotaWithPrompt(quota, digits) {
   let displayInCurrency = localStorage.getItem('display_in_currency');
   displayInCurrency = displayInCurrency === 'true';
   if (displayInCurrency) {
-    return `（等价金额：${renderQuota(quota, digits)}）`;
+    return '|' + i18next.t('等价金额') + ': ' + renderQuota(quota, digits) + '';
   }
   return '';
 }
@@ -255,6 +293,44 @@ const colors = [
   'yellow',
 ];
 
+// 基础10色色板 (N ≤ 10)
+const baseColors = [
+  '#1664FF', // 主色
+  '#1AC6FF', 
+  '#FF8A00',
+  '#3CC780',
+  '#7442D4',
+  '#FFC400',
+  '#304D77',
+  '#B48DEB',
+  '#009488',
+  '#FF7DDA'
+];
+
+// 扩展20色色板 (10 < N ≤ 20)
+const extendedColors = [
+  '#1664FF',
+  '#B2CFFF',
+  '#1AC6FF',
+  '#94EFFF',
+  '#FF8A00',
+  '#FFCE7A',
+  '#3CC780',
+  '#B9EDCD',
+  '#7442D4',
+  '#DDC5FA',
+  '#FFC400',
+  '#FAE878',
+  '#304D77',
+  '#8B959E',
+  '#B48DEB',
+  '#EFE3FF',
+  '#009488',
+  '#59BAA8',
+  '#FF7DDA',
+  '#FFCFEE'
+];
+
 export const modelColorMap = {
   'dall-e': 'rgb(147,112,219)', // 深紫色
   // 'dall-e-2': 'rgb(147,112,219)', // 介于紫色和蓝色之间的色调
@@ -264,7 +340,7 @@ export const modelColorMap = {
   'gpt-3.5-turbo-0613': 'rgb(60,179,113)', // 海洋绿
   'gpt-3.5-turbo-1106': 'rgb(32,178,170)', // 浅海洋绿
   'gpt-3.5-turbo-16k': 'rgb(149,252,206)', // 淡橙色
-  'gpt-3.5-turbo-16k-0613': 'rgb(119,255,214)', // 淡桃色
+  'gpt-3.5-turbo-16k-0613': 'rgb(119,255,214)', // 淡桃���
   'gpt-3.5-turbo-instruct': 'rgb(175,238,238)', // 粉蓝色
   'gpt-4': 'rgb(135,206,235)', // 天蓝色
   // 'gpt-4-0314': 'rgb(70,130,180)', // 钢蓝色
@@ -287,7 +363,7 @@ export const modelColorMap = {
   'text-embedding-ada-002': 'rgb(255,182,193)', // 浅粉红
   'text-embedding-v1': 'rgb(255,174,185)', // 浅粉红色（略有区别）
   'text-moderation-latest': 'rgb(255,130,171)', // 强粉色
-  'text-moderation-stable': 'rgb(255,160,122)', // 浅珊瑚色（与Babbage相同，表示同一类功能）
+  'text-moderation-stable': 'rgb(255,160,122)', // 浅珊瑚色（���Babbage相同，表示同一类功能）
   'tts-1': 'rgb(255,140,0)', // 深橙色
   'tts-1-1106': 'rgb(255,165,0)', // 橙色
   'tts-1-hd': 'rgb(255,215,0)', // 金色
@@ -299,14 +375,33 @@ export const modelColorMap = {
   'claude-2.1': 'rgb(255,209,190)', // 浅橙色（略有区别）
 };
 
+export function modelToColor(modelName) {
+  // 1. 如果模型在预定义的 modelColorMap 中，使用预定义颜色
+  if (modelColorMap[modelName]) {
+    return modelColorMap[modelName];
+  }
+
+  // 2. 生成一个稳定的数字作为索引
+  let hash = 0;
+  for (let i = 0; i < modelName.length; i++) {
+    hash = ((hash << 5) - hash) + modelName.charCodeAt(i);
+    hash = hash & hash; // Convert to 32-bit integer
+  }
+  hash = Math.abs(hash);
+
+  // 3. 根据模型名称长度选择不同的色板
+  const colorPalette = modelName.length > 10 ? extendedColors : baseColors;
+  
+  // 4. 使用hash值选择颜色
+  const index = hash % colorPalette.length;
+  return colorPalette[index];
+}
+
 export function stringToColor(str) {
   let sum = 0;
-  // 对字符串中的每个字符进行操作
   for (let i = 0; i < str.length; i++) {
-    // 将字符的ASCII值加到sum中
     sum += str.charCodeAt(i);
   }
-  // 使用模运算得到个位数
   let i = sum % colors.length;
   return colors[i];
 }

@@ -45,13 +45,25 @@ func CovertGemini2OpenAI(textRequest dto.GeneralOpenAIRequest) *GeminiChatReques
 	}
 	if textRequest.Tools != nil {
 		functions := make([]dto.FunctionCall, 0, len(textRequest.Tools))
+		googleSearch := false
 		for _, tool := range textRequest.Tools {
+			if tool.Function.Name == "googleSearch" {
+				googleSearch = true
+				continue
+			}
 			functions = append(functions, tool.Function)
 		}
-		geminiRequest.Tools = []GeminiChatTools{
-			{
-				FunctionDeclarations: functions,
-			},
+		if len(functions) > 0 {
+			geminiRequest.Tools = []GeminiChatTools{
+				{
+					FunctionDeclarations: functions,
+				},
+			}
+		}
+		if googleSearch {
+			geminiRequest.Tools = append(geminiRequest.Tools, GeminiChatTools{
+				GoogleSearch: make(map[string]string),
+			})
 		}
 	} else if textRequest.Functions != nil {
 		geminiRequest.Tools = []GeminiChatTools{
@@ -60,21 +72,31 @@ func CovertGemini2OpenAI(textRequest dto.GeneralOpenAIRequest) *GeminiChatReques
 			},
 		}
 	}
-	shouldAddDummyModelMessage := false
+	//shouldAddDummyModelMessage := false
 	for _, message := range textRequest.Messages {
+
+		if message.Role == "system" {
+			geminiRequest.SystemInstructions = &GeminiChatContent{
+				Parts: []GeminiPart{
+					{
+						Text: message.StringContent(),
+					},
+				},
+			}
+			continue
+		}
 		content := GeminiChatContent{
 			Role: message.Role,
-			Parts: []GeminiPart{
-				{
-					Text: message.StringContent(),
-				},
-			},
+			//Parts: []GeminiPart{
+			//	{
+			//		Text: message.StringContent(),
+			//	},
+			//},
 		}
 		openaiContent := message.ParseContent()
 		var parts []GeminiPart
 		imageNum := 0
 		for _, part := range openaiContent {
-
 			if part.Type == dto.ContentTypeText {
 				parts = append(parts, GeminiPart{
 					Text: part.Text,
@@ -115,26 +137,25 @@ func CovertGemini2OpenAI(textRequest dto.GeneralOpenAIRequest) *GeminiChatReques
 			content.Role = "model"
 		}
 		// Converting system prompt to prompt from user for the same reason
-		if content.Role == "system" {
-			content.Role = "user"
-			shouldAddDummyModelMessage = true
-		}
+		//if content.Role == "system" {
+		//	content.Role = "user"
+		//	shouldAddDummyModelMessage = true
+		//}
 		geminiRequest.Contents = append(geminiRequest.Contents, content)
-
-		// If a system message is the last message, we need to add a dummy model message to make gemini happy
-		if shouldAddDummyModelMessage {
-			geminiRequest.Contents = append(geminiRequest.Contents, GeminiChatContent{
-				Role: "model",
-				Parts: []GeminiPart{
-					{
-						Text: "Okay",
-					},
-				},
-			})
-			shouldAddDummyModelMessage = false
-		}
+		//
+		//// If a system message is the last message, we need to add a dummy model message to make gemini happy
+		//if shouldAddDummyModelMessage {
+		//	geminiRequest.Contents = append(geminiRequest.Contents, GeminiChatContent{
+		//		Role: "model",
+		//		Parts: []GeminiPart{
+		//			{
+		//				Text: "Okay",
+		//			},
+		//		},
+		//	})
+		//	shouldAddDummyModelMessage = false
+		//}
 	}
-
 	return &geminiRequest
 }
 
