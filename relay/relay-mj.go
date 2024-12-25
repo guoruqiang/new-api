@@ -15,6 +15,7 @@ import (
 	relaycommon "one-api/relay/common"
 	relayconstant "one-api/relay/constant"
 	"one-api/service"
+	"one-api/setting"
 	"strconv"
 	"strings"
 	"time"
@@ -111,8 +112,8 @@ func coverMidjourneyTaskDto(c *gin.Context, originTask *model.Midjourney) (midjo
 	midjourneyTask.StartTime = originTask.StartTime
 	midjourneyTask.FinishTime = originTask.FinishTime
 	midjourneyTask.ImageUrl = ""
-	if originTask.ImageUrl != "" && constant.MjForwardUrlEnabled {
-		midjourneyTask.ImageUrl = constant.ServerAddress + "/mj/image/" + originTask.MjId
+	if originTask.ImageUrl != "" && setting.MjForwardUrlEnabled {
+		midjourneyTask.ImageUrl = setting.ServerAddress + "/mj/image/" + originTask.MjId
 		if originTask.Status != "SUCCESS" {
 			midjourneyTask.ImageUrl += "?rand=" + strconv.FormatInt(time.Now().UnixNano(), 10)
 		}
@@ -167,7 +168,7 @@ func RelaySwapFace(c *gin.Context) *dto.MidjourneyResponse {
 			modelPrice = defaultPrice
 		}
 	}
-	groupRatio := common.GetGroupRatio(group)
+	groupRatio := setting.GetGroupRatio(group)
 	ratio := modelPrice * groupRatio
 	userQuota, err := model.CacheGetUserQuota(userId)
 	if err != nil {
@@ -207,7 +208,8 @@ func RelaySwapFace(c *gin.Context) *dto.MidjourneyResponse {
 				other := make(map[string]interface{})
 				other["model_price"] = modelPrice
 				other["group_ratio"] = groupRatio
-				model.RecordConsumeLog(ctx, userId, channelId, 0, 0, modelName, tokenName, quota, logContent, tokenId, userQuota, 0, false, other)
+				model.RecordConsumeLog(ctx, userId, channelId, 0, 0, modelName, tokenName,
+					quota, logContent, tokenId, userQuota, 0, false, group, other)
 				model.UpdateUserUsedQuotaAndRequestCount(userId, quota)
 				channelId := c.GetInt("channel_id")
 				model.UpdateChannelUsedQuota(channelId, quota)
@@ -421,7 +423,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *dto.MidjourneyRespons
 		if originTask == nil {
 			return service.MidjourneyErrorWrapper(constant.MjRequestError, "task_not_found")
 		} else { //原任务的Status=SUCCESS，则可以做放大UPSCALE、变换VARIATION等动作，此时必须使用原来的请求地址才能正确处理
-			if constant.MjActionCheckSuccessEnabled {
+			if setting.MjActionCheckSuccessEnabled {
 				if originTask.Status != "SUCCESS" && relayMode != relayconstant.RelayModeMidjourneyModal {
 					return service.MidjourneyErrorWrapper(constant.MjRequestError, "task_status_not_success")
 				}
@@ -472,7 +474,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *dto.MidjourneyRespons
 			modelPrice = defaultPrice
 		}
 	}
-	groupRatio := common.GetGroupRatio(group)
+	groupRatio := setting.GetGroupRatio(group)
 	ratio := modelPrice * groupRatio
 	userQuota, err := model.CacheGetUserQuota(userId)
 	if err != nil {
@@ -512,7 +514,8 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *dto.MidjourneyRespons
 				other := make(map[string]interface{})
 				other["model_price"] = modelPrice
 				other["group_ratio"] = groupRatio
-				model.RecordConsumeLog(ctx, userId, channelId, 0, 0, modelName, tokenName, quota, logContent, tokenId, userQuota, 0, false, other)
+				model.RecordConsumeLog(ctx, userId, channelId, 0, 0, modelName, tokenName,
+					quota, logContent, tokenId, userQuota, 0, false, group, other)
 				model.UpdateUserUsedQuotaAndRequestCount(userId, quota)
 				channelId := c.GetInt("channel_id")
 				model.UpdateChannelUsedQuota(channelId, quota)
