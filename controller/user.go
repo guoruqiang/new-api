@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"one-api/common"
 	"one-api/model"
+	"one-api/setting"
 	"strconv"
 	"strings"
 	"sync"
@@ -454,7 +455,15 @@ func GetUserModels(c *gin.Context) {
 		})
 		return
 	}
-	models := model.GetGroupModels(user.Group)
+	groups := setting.GetUserUsableGroups(user.Group)
+	var models []string
+	for group := range groups {
+		for _, g := range model.GetGroupModels(group) {
+			if !common.StringsContains(models, g) {
+				models = append(models, g)
+			}
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
