@@ -6,7 +6,7 @@ import (
 	"one-api/common"
 	"strconv"
 	"strings"
-
+	"regexp"
 	"github.com/bytedance/gopkg/util/gopool"
 
 	"gorm.io/gorm"
