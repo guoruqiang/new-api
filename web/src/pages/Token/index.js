@@ -10,7 +10,7 @@ const Token = () => {
         <Layout.Header>
         <Banner
           type='warning'
-          description={t('令牌无法精确计算使用额度，只允许自用，请勿直接将令牌分享他人。')}
+          description={t('请确保第一个令牌设置的是无限额度并处于启用状态。请勿直接将令牌分享他人。')}
         />
       </Layout.Header>
       <Layout.Content>
