@@ -18,6 +18,8 @@ type GeneralOpenAIRequest struct {
 	Model               string          `json:"model,omitempty"`
 	Messages            []Message       `json:"messages,omitempty"`
 	Prompt              any             `json:"prompt,omitempty"`
+	Prefix              any             `json:"prefix,omitempty"`
+	Suffix              any             `json:"suffix,omitempty"`
 	Stream              bool            `json:"stream,omitempty"`
 	StreamOptions       *StreamOptions  `json:"stream_options,omitempty"`
 	MaxTokens           uint            `json:"max_tokens,omitempty"`
@@ -86,11 +88,15 @@ func (r GeneralOpenAIRequest) ParseInput() []string {
 }
 
 type Message struct {
-	Role       string          `json:"role"`
-	Content    json.RawMessage `json:"content"`
-	Name       *string         `json:"name,omitempty"`
-	ToolCalls  json.RawMessage `json:"tool_calls,omitempty"`
-	ToolCallId string          `json:"tool_call_id,omitempty"`
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+	// parsedContent not json field
+	parsedContent    []MediaContent
+	Name             *string         `json:"name,omitempty"`
+	Prefix           *bool           `json:"prefix,omitempty"`
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+	ToolCalls        json.RawMessage `json:"tool_calls,omitempty"`
+	ToolCallId       string          `json:"tool_call_id,omitempty"`
 }
 
 type MediaContent struct {
@@ -115,6 +121,17 @@ const (
 	ContentTypeImageURL   = "image_url"
 	ContentTypeInputAudio = "input_audio"
 )
+
+func (m *Message) GetPrefix() bool {
+	if m.Prefix == nil {
+		return false
+	}
+	return *m.Prefix
+}
+
+func (m *Message) SetPrefix(prefix bool) {
+	m.Prefix = &prefix
+}
 
 func (m *Message) ParseToolCalls() []ToolCall {
 	if m.ToolCalls == nil {
@@ -145,6 +162,11 @@ func (m *Message) SetStringContent(content string) {
 	m.Content = jsonContent
 }
 
+func (m *Message) SetMediaContent(content []MediaContent) {
+	jsonContent, _ := json.Marshal(content)
+	m.Content = jsonContent
+}
+
 func (m *Message) IsStringContent() bool {
 	var stringContent string
 	if err := json.Unmarshal(m.Content, &stringContent); err == nil {
@@ -154,7 +176,15 @@ func (m *Message) IsStringContent() bool {
 }
 
 func (m *Message) ParseContent() []MediaContent {
+	if m.parsedContent != nil {
+		return m.parsedContent
+	}
 	var contentList []MediaContent
+	defer func() {
+		if len(contentList) > 0 {
+			m.parsedContent = contentList
+		}
+	}()
 	var stringContent string
 	if err := json.Unmarshal(m.Content, &stringContent); err == nil {
 		contentList = append(contentList, MediaContent{
