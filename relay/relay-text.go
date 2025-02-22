@@ -78,8 +78,9 @@ func TextHelper(c *gin.Context) (openaiErr *dto.OpenAIErrorWithStatusCode) {
 	}
 
 	if setting.ShouldCheckPromptSensitive() {
-		err = checkRequestSensitive(textRequest, relayInfo)
+		words, err := checkRequestSensitive(textRequest, relayInfo)
 		if err != nil {
+			common.LogWarn(c, fmt.Sprintf("user sensitive words detected: %s", strings.Join(words, ", ")))
 			return service.OpenAIErrorWrapperLocal(err, "sensitive_words_detected", http.StatusBadRequest)
 		}
 	}
@@ -219,19 +220,20 @@ func getPromptTokens(textRequest *dto.GeneralOpenAIRequest, info *relaycommon.Re
 	return promptTokens, err
 }
 
-func checkRequestSensitive(textRequest *dto.GeneralOpenAIRequest, info *relaycommon.RelayInfo) error {
+func checkRequestSensitive(textRequest *dto.GeneralOpenAIRequest, info *relaycommon.RelayInfo) ([]string, error) {
 	var err error
+	var words []string
 	switch info.RelayMode {
 	case relayconstant.RelayModeChatCompletions:
-		err = service.CheckSensitiveMessages(textRequest.Messages)
+		words, err = service.CheckSensitiveMessages(textRequest.Messages)
 	case relayconstant.RelayModeCompletions:
-		err = service.CheckSensitiveInput(textRequest.Prompt)
+		words, err = service.CheckSensitiveInput(textRequest.Prompt)
 	case relayconstant.RelayModeModerations:
-		err = service.CheckSensitiveInput(textRequest.Input)
+		words, err = service.CheckSensitiveInput(textRequest.Input)
 	case relayconstant.RelayModeEmbeddings:
-		err = service.CheckSensitiveInput(textRequest.Input)
+		words, err = service.CheckSensitiveInput(textRequest.Input)
 	}
-	return err
+	return words, err
 }
 
 // 预扣费并返回用户剩余配额
@@ -244,7 +246,7 @@ func preConsumeQuota(c *gin.Context, preConsumedQuota int, relayInfo *relaycommo
 		return 0, 0, service.OpenAIErrorWrapperLocal(errors.New("您的额度已不足，请在钱包里充值。免费额度将于每月1号刷新！"), "insufficient_user_quota", http.StatusForbidden)
 	}
 	if userQuota-preConsumedQuota < 0 {
-		return 0, 0, service.OpenAIErrorWrapperLocal(fmt.Errorf("您的额度已不足，请在钱包里充值， 您的额度: %d, 需要额度: %d，免费额度将于每月1号刷新！", common.FormatQuota(userQuota), common.FormatQuota(preConsumedQuota)), "insufficient_user_quota", http.StatusBadRequest)
+		return 0, 0, service.OpenAIErrorWrapperLocal(fmt.Errorf("您的额度已不足，请在钱包里充值， 您的额度: %d, 需要额度: %d，免费额度将于每月1号刷新！", common.FormatQuota(userQuota), common.FormatQuota(preConsumedQuota)), "insufficient_user_quota", http.StatusForbidden)
 	}
 	if userQuota > 100*preConsumedQuota {
 		// 用户额度充足，判断令牌额度是否充足

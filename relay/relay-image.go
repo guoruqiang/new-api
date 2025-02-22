@@ -61,8 +61,9 @@ func getAndValidImageRequest(c *gin.Context, info *relaycommon.RelayInfo) (*dto.
 	//	return service.OpenAIErrorWrapper(errors.New("n must be between 1 and 10"), "invalid_field_value", http.StatusBadRequest)
 	//}
 	if setting.ShouldCheckPromptSensitive() {
-		err := service.CheckSensitiveInput(imageRequest.Prompt)
+		words, err := service.CheckSensitiveInput(imageRequest.Prompt)
 		if err != nil {
+			common.LogWarn(c, fmt.Sprintf("user sensitive words detected: %s", strings.Join(words, ",")))
 			return nil, err
 		}
 	}
@@ -85,15 +86,13 @@ func ImageHelper(c *gin.Context) *dto.OpenAIErrorWithStatusCode {
 
 	imageRequest.Model = relayInfo.UpstreamModelName
 
-	modelPrice, success := common.GetModelPrice(imageRequest.Model, true)
-	if !success {
-		modelRatio := common.GetModelRatio(imageRequest.Model)
+	priceData := helper.ModelPriceHelper(c, relayInfo, 0, 0)
+	if !priceData.UsePrice {
 		// modelRatio 16 = modelPrice $0.04
 		// per 1 modelRatio = $0.04 / 16
-		modelPrice = 0.0025 * modelRatio
+		priceData.ModelPrice = 0.0025 * priceData.ModelRatio
 	}
 
-	groupRatio := setting.GetGroupRatio(relayInfo.Group)
 	userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
 
 	sizeRatio := 1.0
@@ -116,11 +115,11 @@ func ImageHelper(c *gin.Context) *dto.OpenAIErrorWithStatusCode {
 		}
 	}
 
-	imageRatio := modelPrice * sizeRatio * qualityRatio * float64(imageRequest.N)
-	quota := int(imageRatio * groupRatio * common.QuotaPerUnit)
+	priceData.ModelPrice *= sizeRatio * qualityRatio * float64(imageRequest.N)
+	quota := int(priceData.ModelPrice * priceData.GroupRatio * common.QuotaPerUnit)
 
 	if userQuota-quota < 0 {
-		return service.OpenAIErrorWrapperLocal(errors.New(fmt.Sprintf("您的额度已不足，请在钱包里充值, 您的额度: %d, 需要额度: %d，免费额度将于每月1号刷新！", userQuota, quota)), "insufficient_user_quota", http.StatusBadRequest)
+		return service.OpenAIErrorWrapperLocal(fmt.Errorf("您的额度已不足，请在钱包里充值, 您的额度: %d, 需要额度: %d，免费额度将于每月1号刷新！", common.FormatQuota(userQuota), common.FormatQuota(quota)), "insufficient_user_quota", http.StatusForbidden)
 	}
 
 	adaptor := GetAdaptor(relayInfo.ApiType)
@@ -175,14 +174,6 @@ func ImageHelper(c *gin.Context) *dto.OpenAIErrorWithStatusCode {
 	quality := "standard"
 	if imageRequest.Quality == "hd" {
 		quality = "hd"
-	}
-
-	priceData := helper.PriceData{
-		UsePrice:               true,
-		GroupRatio:             groupRatio,
-		ModelPrice:             modelPrice,
-		ModelRatio:             0,
-		ShouldPreConsumedQuota: 0,
 	}
 
 	logContent := fmt.Sprintf("大小 %s, 品质 %s", imageRequest.Size, quality)
