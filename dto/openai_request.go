@@ -1,6 +1,9 @@
 package dto
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 type ResponseFormat struct {
 	Type       string            `json:"type,omitempty"`
@@ -15,49 +18,52 @@ type FormatJsonSchema struct {
 }
 
 type GeneralOpenAIRequest struct {
-	Model               string          `json:"model,omitempty"`
-	Messages            []Message       `json:"messages,omitempty"`
-	Prompt              any             `json:"prompt,omitempty"`
-	Prefix              any             `json:"prefix,omitempty"`
-	Suffix              any             `json:"suffix,omitempty"`
-	Stream              bool            `json:"stream,omitempty"`
-	StreamOptions       *StreamOptions  `json:"stream_options,omitempty"`
-	MaxTokens           uint            `json:"max_tokens,omitempty"`
-	MaxCompletionTokens uint            `json:"max_completion_tokens,omitempty"`
-	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
-	Temperature         *float64        `json:"temperature,omitempty"`
-	TopP                float64         `json:"top_p,omitempty"`
-	TopK                int             `json:"top_k,omitempty"`
-	Stop                any             `json:"stop,omitempty"`
-	N                   int             `json:"n,omitempty"`
-	Input               any             `json:"input,omitempty"`
-	Instruction         string          `json:"instruction,omitempty"`
-	Size                string          `json:"size,omitempty"`
-	Functions           any             `json:"functions,omitempty"`
-	FrequencyPenalty    float64         `json:"frequency_penalty,omitempty"`
-	PresencePenalty     float64         `json:"presence_penalty,omitempty"`
-	ResponseFormat      *ResponseFormat `json:"response_format,omitempty"`
-	EncodingFormat      any             `json:"encoding_format,omitempty"`
-	Seed                float64         `json:"seed,omitempty"`
-	Tools               []ToolCall      `json:"tools,omitempty"`
-	ToolChoice          any             `json:"tool_choice,omitempty"`
-	User                string          `json:"user,omitempty"`
-	LogProbs            bool            `json:"logprobs,omitempty"`
-	TopLogProbs         int             `json:"top_logprobs,omitempty"`
-	Dimensions          int             `json:"dimensions,omitempty"`
-	Modalities          any             `json:"modalities,omitempty"`
-	Audio               any             `json:"audio,omitempty"`
+	Model               string            `json:"model,omitempty"`
+	Messages            []Message         `json:"messages,omitempty"`
+	Prompt              any               `json:"prompt,omitempty"`
+	Prefix              any               `json:"prefix,omitempty"`
+	Suffix              any               `json:"suffix,omitempty"`
+	Stream              bool              `json:"stream,omitempty"`
+	StreamOptions       *StreamOptions    `json:"stream_options,omitempty"`
+	MaxTokens           uint              `json:"max_tokens,omitempty"`
+	MaxCompletionTokens uint              `json:"max_completion_tokens,omitempty"`
+	ReasoningEffort     string            `json:"reasoning_effort,omitempty"`
+	Temperature         *float64          `json:"temperature,omitempty"`
+	TopP                float64           `json:"top_p,omitempty"`
+	TopK                int               `json:"top_k,omitempty"`
+	Stop                any               `json:"stop,omitempty"`
+	N                   int               `json:"n,omitempty"`
+	Input               any               `json:"input,omitempty"`
+	Instruction         string            `json:"instruction,omitempty"`
+	Size                string            `json:"size,omitempty"`
+	Functions           any               `json:"functions,omitempty"`
+	FrequencyPenalty    float64           `json:"frequency_penalty,omitempty"`
+	PresencePenalty     float64           `json:"presence_penalty,omitempty"`
+	ResponseFormat      *ResponseFormat   `json:"response_format,omitempty"`
+	EncodingFormat      any               `json:"encoding_format,omitempty"`
+	Seed                float64           `json:"seed,omitempty"`
+	Tools               []ToolCallRequest `json:"tools,omitempty"`
+	ToolChoice          any               `json:"tool_choice,omitempty"`
+	User                string            `json:"user,omitempty"`
+	LogProbs            bool              `json:"logprobs,omitempty"`
+	TopLogProbs         int               `json:"top_logprobs,omitempty"`
+	Dimensions          int               `json:"dimensions,omitempty"`
+	Modalities          any               `json:"modalities,omitempty"`
+	Audio               any               `json:"audio,omitempty"`
+	ExtraBody           any               `json:"extra_body,omitempty"`
 }
 
-type OpenAITools struct {
-	Type     string         `json:"type"`
-	Function OpenAIFunction `json:"function"`
+type ToolCallRequest struct {
+	ID       string          `json:"id,omitempty"`
+	Type     string          `json:"type"`
+	Function FunctionRequest `json:"function"`
 }
 
-type OpenAIFunction struct {
+type FunctionRequest struct {
 	Description string `json:"description,omitempty"`
 	Name        string `json:"name"`
 	Parameters  any    `json:"parameters,omitempty"`
+	Arguments   string `json:"arguments,omitempty"`
 }
 
 type StreamOptions struct {
@@ -133,11 +139,11 @@ func (m *Message) SetPrefix(prefix bool) {
 	m.Prefix = &prefix
 }
 
-func (m *Message) ParseToolCalls() []ToolCall {
+func (m *Message) ParseToolCalls() []ToolCallRequest {
 	if m.ToolCalls == nil {
 		return nil
 	}
-	var toolCalls []ToolCall
+	var toolCalls []ToolCallRequest
 	if err := json.Unmarshal(m.ToolCalls, &toolCalls); err == nil {
 		return toolCalls
 	}
@@ -153,11 +159,24 @@ func (m *Message) StringContent() string {
 	if m.parsedStringContent != nil {
 		return *m.parsedStringContent
 	}
+
 	var stringContent string
 	if err := json.Unmarshal(m.Content, &stringContent); err == nil {
+		m.parsedStringContent = &stringContent
 		return stringContent
 	}
-	return string(m.Content)
+
+	contentStr := new(strings.Builder)
+	arrayContent := m.ParseContent()
+	for _, content := range arrayContent {
+		if content.Type == ContentTypeText {
+			contentStr.WriteString(content.Text)
+		}
+	}
+	stringContent = contentStr.String()
+	m.parsedStringContent = &stringContent
+
+	return stringContent
 }
 
 func (m *Message) SetStringContent(content string) {

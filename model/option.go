@@ -3,6 +3,7 @@ package model
 import (
 	"one-api/common"
 	"one-api/setting"
+	"one-api/setting/model_setting"
 	"strconv"
 	"strings"
 	"time"
@@ -85,6 +86,9 @@ func InitOptionMap() {
 	common.OptionMap["QuotaForInvitee"] = strconv.Itoa(common.QuotaForInvitee)
 	common.OptionMap["QuotaRemindThreshold"] = strconv.Itoa(common.QuotaRemindThreshold)
 	common.OptionMap["ShouldPreConsumedQuota"] = strconv.Itoa(common.PreConsumedQuota)
+	common.OptionMap["ModelRequestRateLimitCount"] = strconv.Itoa(setting.ModelRequestRateLimitCount)
+	common.OptionMap["ModelRequestRateLimitDurationMinutes"] = strconv.Itoa(setting.ModelRequestRateLimitDurationMinutes)
+	common.OptionMap["ModelRequestRateLimitSuccessCount"] = strconv.Itoa(setting.ModelRequestRateLimitSuccessCount)
 	common.OptionMap["ModelRatio"] = common.ModelRatio2JSONString()
 	common.OptionMap["ModelPrice"] = common.ModelPrice2JSONString()
 	common.OptionMap["GroupRatio"] = setting.GroupRatio2JSONString()
@@ -105,12 +109,15 @@ func InitOptionMap() {
 	common.OptionMap["MjActionCheckSuccessEnabled"] = strconv.FormatBool(setting.MjActionCheckSuccessEnabled)
 	common.OptionMap["CheckSensitiveEnabled"] = strconv.FormatBool(setting.CheckSensitiveEnabled)
 	common.OptionMap["DemoSiteEnabled"] = strconv.FormatBool(setting.DemoSiteEnabled)
+	common.OptionMap["ModelRequestRateLimitEnabled"] = strconv.FormatBool(setting.ModelRequestRateLimitEnabled)
 	common.OptionMap["CheckSensitiveOnPromptEnabled"] = strconv.FormatBool(setting.CheckSensitiveOnPromptEnabled)
 	//common.OptionMap["CheckSensitiveOnCompletionEnabled"] = strconv.FormatBool(constant.CheckSensitiveOnCompletionEnabled)
 	common.OptionMap["StopOnSensitiveEnabled"] = strconv.FormatBool(setting.StopOnSensitiveEnabled)
 	common.OptionMap["SensitiveWords"] = setting.SensitiveWordsToString()
 	common.OptionMap["StreamCacheQueueLength"] = strconv.Itoa(setting.StreamCacheQueueLength)
 	common.OptionMap["AutomaticDisableKeywords"] = setting.AutomaticDisableKeywordsToString()
+	common.OptionMap["GeminiSafetySettings"] = model_setting.GeminiSafetySettingsJsonString()
+	common.OptionMap["GeminiVersionSettings"] = model_setting.GeminiVersionSettingsJsonString()
 
 	common.OptionMapRWMutex.Unlock()
 	loadOptionsFromDatabase()
@@ -226,6 +233,9 @@ func updateOptionMap(key string, value string) (err error) {
 			setting.DemoSiteEnabled = boolValue
 		case "CheckSensitiveOnPromptEnabled":
 			setting.CheckSensitiveOnPromptEnabled = boolValue
+		case "ModelRequestRateLimitEnabled":
+			setting.ModelRequestRateLimitEnabled = boolValue
+
 		//case "CheckSensitiveOnCompletionEnabled":
 		//	constant.CheckSensitiveOnCompletionEnabled = boolValue
 		case "StopOnSensitiveEnabled":
@@ -308,6 +318,12 @@ func updateOptionMap(key string, value string) (err error) {
 		common.QuotaRemindThreshold, _ = strconv.Atoi(value)
 	case "ShouldPreConsumedQuota":
 		common.PreConsumedQuota, _ = strconv.Atoi(value)
+	case "ModelRequestRateLimitCount":
+		setting.ModelRequestRateLimitCount, _ = strconv.Atoi(value)
+	case "ModelRequestRateLimitDurationMinutes":
+		setting.ModelRequestRateLimitDurationMinutes, _ = strconv.Atoi(value)
+	case "ModelRequestRateLimitSuccessCount":
+		setting.ModelRequestRateLimitSuccessCount, _ = strconv.Atoi(value)
 	case "RetryTimes":
 		common.RetryTimes, _ = strconv.Atoi(value)
 	case "DataExportInterval":
@@ -338,6 +354,10 @@ func updateOptionMap(key string, value string) (err error) {
 		setting.SensitiveWordsFromString(value)
 	case "AutomaticDisableKeywords":
 		setting.AutomaticDisableKeywordsFromString(value)
+	case "GeminiSafetySettings":
+		model_setting.GeminiSafetySettingFromJsonString(value)
+	case "GeminiVersionSettings":
+		model_setting.GeminiVersionSettingFromJsonString(value)
 	case "StreamCacheQueueLength":
 		setting.StreamCacheQueueLength, _ = strconv.Atoi(value)
 	}
