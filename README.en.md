@@ -68,7 +68,7 @@
 
 ## Model Support
 This version additionally supports:
-1. Third-party model **gps** (gpt-4-gizmo-*)
+1. Third-party model **gpts** (gpt-4-gizmo-*)
 2. [Midjourney-Proxy(Plus)](https://github.com/novicezk/midjourney-proxy) interface, [Integration Guide](Midjourney.md)
 3. Custom channels with full API URL support
 4. [Suno API](https://github.com/Suno-API/Suno-API) interface, [Integration Guide](Suno.md)
@@ -162,7 +162,7 @@ docker run --rm -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtow
 
 ## Channel Retry
 Channel retry is implemented, configurable in `Settings->Operation Settings->General Settings`. **Cache recommended**.  
-First retry uses same priority, second retry uses next priority, and so on.
+If retry is enabled, the system will automatically use the next priority channel for the same request after a failed request.
 
 ### Cache Configuration
 1. `REDIS_CONN_STRING`: Use Redis as cache
