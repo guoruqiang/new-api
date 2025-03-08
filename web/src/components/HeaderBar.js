@@ -133,7 +133,7 @@ const HeaderBar = () => {
                 pricing: '/pricing',
                 detail: '/detail',
                 home: '/',
-                chat2link: 'chat2link',
+                chat2link: 'chat/0', // 配合 /chat/0使用
                 chat: '/chat',
               };
               return (
