@@ -67,7 +67,8 @@ const HeaderBar = () => {
       text: '点我聊天',
       itemKey: 'chat2link',
       to: '/chat2link',
-      className: localStorage.getItem('chat_link') && !isMobile() //移动端不显示
+      // className: localStorage.getItem('chat_link') && !isMobile() //移动端不显示
+      className: !isMobile()
       ? 'semi-navigation-item-normal'
       : 'tableHiddle',
     },
