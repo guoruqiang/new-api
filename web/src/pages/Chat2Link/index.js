@@ -23,10 +23,10 @@ const chat2page = () => {
       finalLink = `${chatLink}/#/?settings={"key":"sk-${key}","url":"${encodeURIComponent(serverAddress)}"}`;
     } else {
       // 从chats中获取第一个id的第一个模板
-      const chatsData = localStorage.getItem('chats');
-      if (chatsData) {
+      const chatLinks = localStorage.getItem('chats');
+      if (chatLinks) {
         try {
-          const parsedChats = JSON.parse(chatsData);
+          const parsedChats = JSON.parse(chatLinks);
           if (parsedChats && typeof parsedChats === 'object') {
             // 获取所有id，优先使用路由参数id，否则取第一个id
             const targetId = id || Object.keys(parsedChats)[0];

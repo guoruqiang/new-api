@@ -186,7 +186,7 @@ const SiderBar = () => {
         itemKey: 'chat',
         items: chatItems,
         icon: <IconComment />,
-        className: isMobile() && localStorage.getItem('chat_link')
+        className: isMobile()
           ? 'semi-navigation-item-normal'
           : 'tableHiddle',
       },
