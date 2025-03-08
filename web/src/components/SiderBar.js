@@ -48,6 +48,23 @@ const SiderBar = () => {
   const [chatItems, setChatItems] = useState([]);
   const theme = useTheme();
   const setTheme = useSetTheme();
+  const [isMobile, setIsMobile] = useState(window.innerWidth <= 768); // 新增移动端状态
+
+  // 移动端检测逻辑
+  useEffect(() => {
+    const handleResize = () => {
+      const mobileFlag = window.innerWidth <= 768;
+      setIsMobile(mobileFlag);
+      
+      // 自动折叠侧边栏
+      if (mobileFlag) {
+        setIsCollapsed(true);
+        localStorage.setItem('default_collapse_sidebar', 'true');
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   const routerMap = {
     home: '/',
@@ -142,6 +159,12 @@ const SiderBar = () => {
   const adminItems = useMemo(
     () => [
       {
+        text: 'Playground',
+        itemKey: 'playground',
+        to: '/playground',
+        icon: <IconCommentStroked />,
+      },
+      {
         text: t('渠道'),
         itemKey: 'channel',
         to: '/channel',
@@ -174,24 +197,14 @@ const SiderBar = () => {
   const chatMenuItems = useMemo(
     () => [
       {
-        text: 'Playground',
-        itemKey: 'playground',
-        to: '/playground',
-        icon: <IconCommentStroked />,
-        className: isAdmin() ? 'semi-navigation-item-normal' : 'tableHiddle',
-      },
-      // 修改侧边栏的聊天按钮，当移动端的时候才显示，。
-      {
         text: t('聊天'),
         itemKey: 'chat',
         items: chatItems,
         icon: <IconComment />,
-        className: isMobile()
-          ? 'semi-navigation-item-normal'
-          : 'tableHiddle',
+        className: isMobile ? 'mobile-chat-menu' : '' // 添加移动端样式类
       },
     ],
-    [chatItems, t],
+    [isMobile, t, chatItems] // 修正依赖项
   );
 
   useEffect(() => {
@@ -249,10 +262,11 @@ const SiderBar = () => {
   return (
     <>
       <Nav
-        style={{ maxWidth: 150, height: '100%' }}
+        style={{ maxWidth: 200, height: '100%' }}
         defaultIsCollapsed={
           localStorage.getItem('default_collapse_sidebar') === 'true'
         }
+        // isCollapsed={isCollapsed || isMobile} // 移动端强制折叠
         isCollapsed={isCollapsed}
         onCollapseChange={(collapsed) => {
           setIsCollapsed(collapsed);
@@ -299,7 +313,7 @@ const SiderBar = () => {
         }}
       >
         {/* Chat Section - Only show if there are chat items */}
-        {chatItems.length > 0 && (
+        {isMobile && chatItems.length > 0 && (
           <>
             {chatMenuItems.map((item) => {
               if (item.items && item.items.length > 0) {
