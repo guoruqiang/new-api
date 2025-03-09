@@ -45,6 +45,7 @@ const HeaderBar = () => {
 
   // Check if self-use mode is enabled
   const isSelfUseMode = statusState?.status?.self_use_mode_enabled || false;
+  const docsLink = statusState?.status?.docs_link || '';
   const isDemoSiteMode = statusState?.status?.demo_site_enabled || false;
 
   let buttons = [
@@ -63,6 +64,13 @@ const HeaderBar = () => {
       itemKey: 'pricing',
       to: '/pricing',
     },
+    // Only include the docs button if docsLink exists
+    ...(docsLink ? [{
+      text: t('文档'),
+      itemKey: 'docs',
+      isExternal: true,
+      externalLink: docsLink,
+    }] : []),
     {
       text: '点我聊天',
       itemKey: 'chat2link',
@@ -148,15 +156,27 @@ const HeaderBar = () => {
                     }
                   }
                 }}>
-                <Link
-                  className="header-bar-text"
-                  style={{ textDecoration: 'none' }}
-                  to={routerMap[props.itemKey]}
-                  // chat2link 新标签页打开
-                  target={props.itemKey === 'chat2link' ? '_blank' : undefined}
-                >
-                  {itemElement}
-                </Link>
+                  {props.isExternal ? (
+                    <a
+                      className="header-bar-text"
+                      style={{ textDecoration: 'none' }}
+                      href={props.externalLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {itemElement}
+                    </a>
+                  ) : (
+                    <Link
+                      className="header-bar-text"
+                      style={{ textDecoration: 'none' }}
+                      to={routerMap[props.itemKey]}
+                      // chat2link 新标签页打开
+                      target={props.itemKey === 'chat2link' ? '_blank' : undefined}
+                    >
+                      {itemElement}
+                    </Link>
+                  )}
                 </div>
               );
             }}
