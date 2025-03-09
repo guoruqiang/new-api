@@ -314,7 +314,7 @@ const SiderBar = () => {
       >
         {/* Chat Section - Only show if there are chat items */}
         {isMobile && chatItems.length > 0 && (
-          <>
+          <Nav> 
             {chatMenuItems.map((item) => {
               if (item.items && item.items.length > 0) {
                 return (
@@ -333,19 +333,20 @@ const SiderBar = () => {
                     ))}
                   </Nav.Sub>
                 );
-              } else {
-                return (
-                  <Nav.Item
-                    key={item.itemKey}
-                    itemKey={item.itemKey}
-                    text={item.text}
-                    icon={item.icon}
-                  />
-                );
               }
+              return (
+                <Nav.Item
+                  key={item.itemKey}
+                  itemKey={item.itemKey}
+                  text={item.text}
+                  icon={item.icon}
+                />
+              );
             })}
-          </>
+          </Nav>
         )}
+
+
 
         {/* Divider */}
         <Divider style={dividerStyle} />
