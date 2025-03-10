@@ -62,24 +62,79 @@ const PageLayout = () => {
     if (savedLang) {
       i18n.changeLanguage(savedLang);
     }
+    
+    // 默认显示侧边栏
+    styleDispatch({ type: 'SET_SIDER', payload: true });
   }, [i18n]);
 
+  // 获取侧边栏折叠状态
+  const isSidebarCollapsed = localStorage.getItem('default_collapse_sidebar') === 'true';
+
   return (
-    <Layout style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
-      <Header>
+    <Layout style={{ 
+      height: '100vh', 
+      display: 'flex', 
+      flexDirection: 'column',
+      overflow: 'hidden'
+    }}>
+      <Header style={{ 
+        padding: 0, 
+        height: 'auto', 
+        lineHeight: 'normal', 
+        position: 'fixed', 
+        width: '100%', 
+        top: 0, 
+        zIndex: 100,
+        boxShadow: '0 1px 6px rgba(0, 0, 0, 0.08)'
+      }}>
         <HeaderBar />
       </Header>
-      <Layout style={{ flex: 1, overflow: 'hidden' }}>
-        <Sider>
-          {styleState.showSider ? <SiderBar /> : null}
-        </Sider>
-        <Layout>
+      <Layout style={{ 
+        marginTop: '56px',
+        height: 'calc(100vh - 56px)',
+        overflow: 'auto',
+        display: 'flex',
+        flexDirection: 'column'
+      }}>
+        {styleState.showSider && (
+          <Sider style={{
+            position: 'fixed',
+            left: 0,
+            top: '56px',
+            zIndex: 99,
+            background: 'var(--semi-color-bg-1)',
+            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
+            border: 'none',
+            paddingRight: '0',
+            transition: 'transform 0.3s ease',
+            height: 'calc(100vh - 56px)',
+          }}>
+            <SiderBar />
+          </Sider>
+        )}
+        <Layout style={{ 
+          marginLeft: styleState.isMobile ? '0' : (styleState.showSider ? (styleState.siderCollapsed ? '60px' : '200px') : '0'),
+          transition: 'margin-left 0.3s ease',
+          flex: '1 1 auto',
+          display: 'flex',
+          flexDirection: 'column'
+        }}>
           <Content
-            style={{ overflowY: 'auto', padding: styleState.shouldInnerPadding? '24px': '0' }}
+            style={{ 
+              flex: '1 0 auto',
+              overflowY: 'auto',
+              WebkitOverflowScrolling: 'touch',
+              padding: styleState.shouldInnerPadding? '24px': '0',
+              position: 'relative',
+              paddingBottom: styleState.isMobile ? '80px' : '0' // 移动端底部额外内边距
+            }}
           >
             <App />
           </Content>
-          <Layout.Footer>
+          <Layout.Footer style={{ 
+            flex: '0 0 auto',
+            width: '100%'
+          }}>
             <FooterBar />
           </Layout.Footer>
         </Layout>

@@ -1,5 +1,5 @@
 import React, { useContext, useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { UserContext } from '../context/User';
 import { StatusContext } from '../context/Status';
 import { useTranslation } from 'react-i18next';
@@ -33,8 +33,36 @@ import { setStatusData } from '../helpers/data.js';
 import { stringToColor } from '../helpers/render.js';
 import { useSetTheme, useTheme } from '../context/Theme/index.js';
 import { StyleContext } from '../context/Style/index.js';
+import Text from '@douyinfe/semi-ui/lib/es/typography/text';
 
-// HeaderBar Buttons
+// 自定义侧边栏按钮样式
+const navItemStyle = {
+  borderRadius: '6px',
+  margin: '4px 8px',
+  transition: 'all 0.3s ease'
+};
+
+// 自定义侧边栏按钮悬停样式
+const navItemHoverStyle = {
+  backgroundColor: 'var(--semi-color-primary-light-default)',
+  color: 'var(--semi-color-primary)'
+};
+
+// 自定义侧边栏按钮选中样式
+const navItemSelectedStyle = {
+  backgroundColor: 'var(--semi-color-primary-light-default)',
+  color: 'var(--semi-color-primary)',
+  fontWeight: '600'
+};
+
+// 自定义图标样式
+const iconStyle = (itemKey, selectedKeys) => {
+  return {
+    fontSize: '18px',
+    color: selectedKeys.includes(itemKey) ? 'var(--semi-color-primary)' : 'var(--semi-color-text-2)',
+    transition: 'all 0.3s ease'
+  };
+};
 
 const SiderBar = () => {
   const { t } = useTranslation();
@@ -46,25 +74,30 @@ const SiderBar = () => {
   const [selectedKeys, setSelectedKeys] = useState(['home']);
   const [isCollapsed, setIsCollapsed] = useState(defaultIsCollapsed);
   const [chatItems, setChatItems] = useState([]);
+  const [openedKeys, setOpenedKeys] = useState([]);
   const theme = useTheme();
   const setTheme = useSetTheme();
-  const [isMobile, setIsMobile] = useState(window.innerWidth <= 768); // 新增移动端状态
+  const location = useLocation();
 
-  // 移动端检测逻辑
-  useEffect(() => {
-    const handleResize = () => {
-      const mobileFlag = window.innerWidth <= 768;
-      setIsMobile(mobileFlag);
-      
-      // 自动折叠侧边栏
-      if (mobileFlag) {
-        setIsCollapsed(true);
-        localStorage.setItem('default_collapse_sidebar', 'true');
-      }
-    };
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
+  // 预先计算所有可能的图标样式
+  const allItemKeys = useMemo(() => {
+    const keys = ['home', 'channel', 'token', 'redemption', 'topup', 'user', 'log', 'midjourney', 
+                 'setting', 'about', 'chat', 'detail', 'pricing', 'task', 'playground', 'personal'];
+    // 添加聊天项的keys
+    for (let i = 0; i < chatItems.length; i++) {
+      keys.push('chat' + i);
+    }
+    return keys;
+  }, [chatItems]);
+
+  // 使用useMemo一次性计算所有图标样式
+  const iconStyles = useMemo(() => {
+    const styles = {};
+    allItemKeys.forEach(key => {
+      styles[key] = iconStyle(key, selectedKeys);
+    });
+    return styles;
+  }, [allItemKeys, selectedKeys]);
 
   const routerMap = {
     home: '/',
@@ -195,24 +228,30 @@ const SiderBar = () => {
   );
 
   const chatMenuItems = useMemo(
-    () => [
-      {
-        text: t('聊天'),
-        itemKey: 'chat',
-        items: chatItems,
-        icon: <IconComment />,
-        className: isMobile ? 'mobile-chat-menu' : '' // 添加移动端样式类
-      },
-    ],
-    [isMobile, t, chatItems] // 修正依赖项
+    () => {
+      if (!isMobile()) return []; // 如果不是移动端，返回空数组
+      return [
+        {
+          text: t('聊天'),
+          itemKey: 'chat',
+          items: chatItems,
+          icon: <IconComment />,
+        },
+      ];
+    },
+    [chatItems, t],
   );
+  
 
   useEffect(() => {
-    let localKey = window.location.pathname.split('/')[1];
-    if (localKey === '') {
-      localKey = 'home';
+    const currentPath = location.pathname;
+    const matchingKey = Object.keys(routerMap).find(key => routerMap[key] === currentPath);
+    
+    if (matchingKey) {
+      setSelectedKeys([matchingKey]);
+    } else if (currentPath.startsWith('/chat/')) {
+      setSelectedKeys(['chat']);
     }
-    setSelectedKeys([localKey]);
 
     let chats = localStorage.getItem('chats');
     if (chats) {
@@ -240,7 +279,7 @@ const SiderBar = () => {
     }
 
     setIsCollapsed(localStorage.getItem('default_collapse_sidebar') === 'true');
-  }, []);
+  }, [location.pathname]);
 
   // Custom divider style
   const dividerStyle = {
@@ -253,22 +292,56 @@ const SiderBar = () => {
     padding: '8px 16px',
     color: 'var(--semi-color-text-2)',
     fontSize: '12px',
-    fontWeight: 'normal',
+    fontWeight: 'bold',
+    textTransform: 'uppercase',
+    letterSpacing: '0.5px',
   };
 
   return (
     <>
       <Nav
-        style={{ maxWidth: 200, height: '100%' }}
+        className="custom-sidebar-nav"
+        style={{ 
+          width: isCollapsed ? '60px' : '200px',
+          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
+          borderRight: '1px solid var(--semi-color-border)',
+          background: 'var(--semi-color-bg-1)',
+          borderRadius: styleState.isMobile ? '0' : '0 8px 8px 0',
+          transition: 'all 0.3s ease',
+          position: 'relative',
+          zIndex: 95,
+          height: '100%',
+          overflowY: 'auto',
+          WebkitOverflowScrolling: 'touch', // Improve scrolling on iOS devices
+        }}
         defaultIsCollapsed={
           localStorage.getItem('default_collapse_sidebar') === 'true'
         }
-        // isCollapsed={isCollapsed || isMobile} // 移动端强制折叠
         isCollapsed={isCollapsed}
         onCollapseChange={(collapsed) => {
           setIsCollapsed(collapsed);
+          // styleDispatch({ type: 'SET_SIDER', payload: true });
+          styleDispatch({ type: 'SET_SIDER_COLLAPSED', payload: collapsed });
+          localStorage.setItem('default_collapse_sidebar', collapsed);
+
+          // 确保在收起侧边栏时有选中的项目，避免不必要的计算
+          if (selectedKeys.length === 0) {
+            const currentPath = location.pathname;
+            const matchingKey = Object.keys(routerMap).find(key => routerMap[key] === currentPath);
+            
+            if (matchingKey) {
+              setSelectedKeys([matchingKey]);
+            } else if (currentPath.startsWith('/chat/')) {
+              setSelectedKeys(['chat']);
+            } else {
+              setSelectedKeys(['detail']); // 默认选中首页
+            }
+          }
         }}
         selectedKeys={selectedKeys}
+        itemStyle={navItemStyle}
+        hoverStyle={navItemHoverStyle}
+        selectedStyle={navItemSelectedStyle}
         renderWrapper={({ itemElement, isSubNav, isInSubNav, props }) => {
           let chats = localStorage.getItem('chats');
           if (chats) {
@@ -303,71 +376,61 @@ const SiderBar = () => {
           } else {
             styleDispatch({ type: 'SET_INNER_PADDING', payload: true });
           }
+          
+          // 如果点击的是已经展开的子菜单的父项，则收起子菜单
+          if (openedKeys.includes(key.itemKey)) {
+            setOpenedKeys(openedKeys.filter(k => k !== key.itemKey));
+          }
+          
           setSelectedKeys([key.itemKey]);
+        }}
+        openKeys={openedKeys}
+        onOpenChange={(data) => {
+          setOpenedKeys(data.openKeys);
         }}
       >
         {/* Chat Section - Only show if there are chat items */}
-        {isMobile && chatItems.length > 0 && (
-          <Nav> 
-            {chatMenuItems.map((item) => {
-              if (item.items && item.items.length > 0) {
-                return (
-                  <Nav.Sub
-                    key={item.itemKey}
-                    itemKey={item.itemKey}
-                    text={item.text}
-                    icon={item.icon}
-                  >
-                    {item.items.map((subItem) => (
-                      <Nav.Item
-                        key={subItem.itemKey}
-                        itemKey={subItem.itemKey}
-                        text={subItem.text}
-                      />
-                    ))}
-                  </Nav.Sub>
-                );
-              }
-              return (
-                <Nav.Item
-                  key={item.itemKey}
-                  itemKey={item.itemKey}
-                  text={item.text}
-                  icon={item.icon}
-                />
-              );
-            })}
-          </Nav>
-        )}
-
-
+        {chatMenuItems.map((item) => {
+          if (item.items && item.items.length > 0) {
+            return (
+              <Nav.Sub
+                key={item.itemKey}
+                itemKey={item.itemKey}
+                text={item.text}
+                icon={React.cloneElement(item.icon, { style: iconStyles[item.itemKey] })}
+              >
+                {item.items.map((subItem) => (
+                  <Nav.Item
+                    key={subItem.itemKey}
+                    itemKey={subItem.itemKey}
+                    text={subItem.text}
+                  />
+                ))}
+              </Nav.Sub>
+            );
+          } else {
+            return (
+              <Nav.Item
+                key={item.itemKey}
+                itemKey={item.itemKey}
+                text={item.text}
+                icon={React.cloneElement(item.icon, { style: iconStyles[item.itemKey] })}
+              />
+            );
+          }
+        })}
 
         {/* Divider */}
         <Divider style={dividerStyle} />
 
         {/* Workspace Section */}
-        {!isCollapsed && <div style={groupLabelStyle}>{t('控制台')}</div>}
+        {!isCollapsed && <Text style={groupLabelStyle}>{t('控制台')}</Text>}
         {workspaceItems.map((item) => (
           <Nav.Item
             key={item.itemKey}
             itemKey={item.itemKey}
             text={item.text}
-            icon={item.icon}
-            className={item.className}
-          />
-        ))}
-
-        {/* Divider */}
-        <Divider style={dividerStyle} />
-
-        {/* Finance Management Section */}
-        {!isCollapsed && <div style={groupLabelStyle}>{t('个人中心')}</div>}
-        {financeItems.map((item) => (
-          <Nav.Item
-            key={item.itemKey}
-            itemKey={item.itemKey}
-            text={item.text}
-            icon={item.icon}
+            icon={React.cloneElement(item.icon, { style: iconStyles[item.itemKey] })}
             className={item.className}
           />
         ))}
@@ -378,19 +441,38 @@ const SiderBar = () => {
             <Divider style={dividerStyle} />
 
             {/* Admin Section */}
+            {!isCollapsed && <Text style={groupLabelStyle}>{t('管理员')}</Text>}
             {adminItems.map((item) => (
               <Nav.Item
                 key={item.itemKey}
                 itemKey={item.itemKey}
                 text={item.text}
-                icon={item.icon}
+                icon={React.cloneElement(item.icon, { style: iconStyles[item.itemKey] })}
                 className={item.className}
               />
             ))}
           </>
         )}
 
+        {/* Divider */}
+        <Divider style={dividerStyle} />
+
+        {/* Finance Management Section */}
+        {!isCollapsed && <Text style={groupLabelStyle}>{t('个人中心')}</Text>}
+        {financeItems.map((item) => (
+          <Nav.Item
+            key={item.itemKey}
+            itemKey={item.itemKey}
+            text={item.text}
+            icon={React.cloneElement(item.icon, { style: iconStyles[item.itemKey] })}
+            className={item.className}
+          />
+        ))}
+
         <Nav.Footer
+          style={{
+            paddingBottom: styleState?.isMobile ? '112px' : '20px',
+          }}
           collapseButton={true}
           collapseText={(collapsed)=>
             {
