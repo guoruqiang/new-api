@@ -107,7 +107,7 @@ func testChannel(channel *model.Channel, testModel string) (err error, openAIErr
 
 	adaptor.Init(info)
 
-	convertedRequest, err := adaptor.ConvertRequest(c, info, request)
+	convertedRequest, err := adaptor.ConvertOpenAIRequest(c, info, request)
 	if err != nil {
 		return err, nil
 	}
@@ -125,7 +125,7 @@ func testChannel(channel *model.Channel, testModel string) (err error, openAIErr
 	if resp != nil {
 		httpResp = resp.(*http.Response)
 		if httpResp.StatusCode != http.StatusOK {
-			err := service.RelayErrorHandler(httpResp)
+			err := service.RelayErrorHandler(httpResp, true)
 			return fmt.Errorf("status code %d: %s", httpResp.StatusCode, err.Error.Message), err
 		}
 	}
