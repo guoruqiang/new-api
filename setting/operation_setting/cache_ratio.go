@@ -14,6 +14,8 @@ var defaultCacheRatio = map[string]float64{
 	"o1-preview":                          0.5,
 	"o1-mini-2024-09-12":                  0.5,
 	"o1-mini":                             0.5,
+	"o3-mini":                             0.5,
+	"o3-mini-2025-01-31":                  0.5,
 	"gpt-4o-2024-11-20":                   0.5,
 	"gpt-4o-2024-08-06":                   0.5,
 	"gpt-4o":                              0.5,
@@ -21,6 +23,8 @@ var defaultCacheRatio = map[string]float64{
 	"gpt-4o-mini":                         0.5,
 	"gpt-4o-realtime-preview":             0.5,
 	"gpt-4o-mini-realtime-preview":        0.5,
+	"gpt-4.5-preview":                     0.5,
+	"gpt-4.5-preview-2025-02-27":          0.5,
 	"deepseek-chat":                       0.25,
 	"deepseek-reasoner":                   0.25,
 	"deepseek-coder":                      0.25,
@@ -52,17 +56,15 @@ var cacheRatioMapMutex sync.RWMutex
 
 // GetCacheRatioMap returns the cache ratio map
 func GetCacheRatioMap() map[string]float64 {
-	cacheRatioMapMutex.Lock()
-	defer cacheRatioMapMutex.Unlock()
-	if cacheRatioMap == nil {
-		cacheRatioMap = defaultCacheRatio
-	}
+	cacheRatioMapMutex.RLock()
+	defer cacheRatioMapMutex.RUnlock()
 	return cacheRatioMap
 }
 
 // CacheRatio2JSONString converts the cache ratio map to a JSON string
 func CacheRatio2JSONString() string {
-	GetCacheRatioMap()
+	cacheRatioMapMutex.RLock()
+	defer cacheRatioMapMutex.RUnlock()
 	jsonBytes, err := json.Marshal(cacheRatioMap)
 	if err != nil {
 		common.SysError("error marshalling cache ratio: " + err.Error())
@@ -80,10 +82,11 @@ func UpdateCacheRatioByJSONString(jsonStr string) error {
 
 // GetCacheRatio returns the cache ratio for a model
 func GetCacheRatio(name string) (float64, bool) {
-	GetCacheRatioMap()
+	cacheRatioMapMutex.RLock()
+	defer cacheRatioMapMutex.RUnlock()
 	ratio, ok := cacheRatioMap[name]
 	if !ok {
-		return 1, false // Default to 0.5 if not found
+		return 1, false // Default to 1 if not found
 	}
 	return ratio, true
 }

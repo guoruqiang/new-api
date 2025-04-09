@@ -68,7 +68,7 @@ const Home = () => {
   useEffect(() => {
     displayNotice().then();
     displayHomePageContent().then();
-  });
+  }, []);
 
   return (
     <>
@@ -112,6 +112,7 @@ const Home = () => {
                       https://github.com/Calcium-Ion/new-api
                     </a>
                   </p>
+                  
                   <p>
                     {t('协议')}：
                     <a
