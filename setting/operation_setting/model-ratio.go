@@ -134,8 +134,8 @@ var defaultModelRatio = map[string]float64{
 	"gemini-1.5-pro-latest":               1.25, // $3.5 / 1M tokens
 	"gemini-1.5-flash-latest":             0.075,
 	"gemini-2.0-flash":                    0.05,
-	"gemini-2.5-pro-exp-03-25":            1.25,
-	"gemini-2.5-pro-preview-03-25":        1.25,
+	"gemini-2.5-pro-exp-03-25":            0.625,
+	"gemini-2.5-pro-preview-03-25":        0.625,
 	"text-embedding-004":                  0.001,
 	"chatglm_turbo":                       0.3572,     // ￥0.005 / 1k tokens
 	"chatglm_pro":                         0.7143,     // ￥0.01 / 1k tokens
@@ -199,6 +199,15 @@ var defaultModelRatio = map[string]float64{
 	"llama-3-sonar-small-32k-online": 0.2 / 1000 * USD,
 	"llama-3-sonar-large-32k-chat":   1 / 1000 * USD,
 	"llama-3-sonar-large-32k-online": 1 / 1000 * USD,
+	// grok
+	"grok-3-beta":           1.5,
+	"grok-3-mini-beta":      0.15,
+	"grok-2":                1,
+	"grok-2-vision":         1,
+	"grok-beta":             2.5,
+	"grok-vision-beta":      2.5,
+	"grok-3-fast-beta":      2.5,
+	"grok-3-mini-fast-beta": 0.3,
 }
 
 var defaultModelPrice = map[string]float64{
@@ -449,7 +458,7 @@ func getHardcodedCompletionModelRatio(name string) (float64, bool) {
 		} else if strings.HasPrefix(name, "gemini-2.0") {
 			return 4, true
 		} else if strings.HasPrefix(name, "gemini-2.5-pro-preview") {
-			return 6, true
+			return 8, true
 		}
 		return 4, false
 	}
