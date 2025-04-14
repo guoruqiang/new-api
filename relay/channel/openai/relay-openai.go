@@ -117,6 +117,7 @@ func OaiStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 	model := info.UpstreamModelName
 
 	var responseTextBuilder strings.Builder
+	var toolCount int
 	var usage = &dto.Usage{}
 	var streamItems []string // store stream items
 	var forceFormat bool
@@ -130,8 +131,6 @@ func OaiStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 		thinkToContent = think2Content
 	}
 
-	toolCount := 0
-
 	var (
 		lastStreamData string
 	)
@@ -142,7 +141,6 @@ func OaiStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 			if err != nil {
 				common.SysError("error handling stream format: " + err.Error())
 			}
-			info.SetFirstResponseTime()
 		}
 		lastStreamData = data
 		streamItems = append(streamItems, data)
