@@ -61,14 +61,7 @@ const chat2page = () => {
 
   return (
     <div>
-      <Layout>
-        <Layout.Header>
-          <Banner
-              description={"正在跳转......"}
-              type={"warning"}
-          />
-        </Layout.Header>
-      </Layout>
+      <h3>正在加载，请稍候...</h3>
     </div>
   );
 };
