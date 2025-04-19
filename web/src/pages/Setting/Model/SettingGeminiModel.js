@@ -9,6 +9,7 @@ import {
   verifyJSON,
 } from '../../../helpers';
 import { useTranslation } from 'react-i18next';
+import Text from '@douyinfe/semi-ui/lib/es/typography/text.js';
 
 const GEMINI_SETTING_EXAMPLE = {
   default: 'OFF',
@@ -27,6 +28,8 @@ export default function SettingGeminiModel(props) {
     'gemini.safety_settings': '',
     'gemini.version_settings': '',
     'gemini.supported_imagine_models': [],
+    'gemini.thinking_adapter_enabled': false,
+    'gemini.thinking_adapter_budget_tokens_percentage': 0.6,
   });
   const refForm = useRef();
   const [inputsRow, setInputsRow] = useState(inputs);
@@ -35,12 +38,7 @@ export default function SettingGeminiModel(props) {
     const updateArray = compareObjects(inputs, inputsRow);
     if (!updateArray.length) return showWarning(t('你似乎并没有修改什么'));
     const requestQueue = updateArray.map((item) => {
-      let value = '';
-      if (typeof inputs[item.key] === 'boolean') {
-        value = String(inputs[item.key]);
-      } else {
-        value = inputs[item.key];
-      }
+      let value = String(inputs[item.key]);
       return API.put('/api/option/', {
         key: item.key,
         value,
@@ -151,13 +149,68 @@ export default function SettingGeminiModel(props) {
                 />
               </Col>
             </Row>
+          </Form.Section>
 
+          <Form.Section text={t('Gemini思考适配设置')}>
             <Row>
-              <Button size='default' onClick={onSubmit}>
-                {t('保存')}
-              </Button>
+              <Col span={16}>
+                <Text>
+                  {t(
+                    "和Claude不同，默认情况下Gemini的思考模型会自动决定要不要思考，就算不开启适配模型也可以正常使用，" +
+                    "如果您需要计费，推荐设置无后缀模型价格按思考价格设置"
+                  )}
+                </Text>
+              </Col>
+            </Row>
+            <Row>
+              <Col span={16}>
+                <Form.Switch
+                  label={t('启用Gemini思考后缀适配')}
+                  field={'gemini.thinking_adapter_enabled'}
+                  extraText={"适配-thinking和-nothinking后缀"}
+                  onChange={(value) =>
+                    setInputs({
+                      ...inputs,
+                      'gemini.thinking_adapter_enabled': value,
+                    })
+                  }
+                />
+              </Col>
+            </Row>
+            <Row>
+              <Col span={16}>
+                <Text>
+                  {t(
+                    'Gemini思考适配 BudgetTokens = MaxTokens * BudgetTokens 百分比',
+                  )}
+                </Text>
+              </Col>
+            </Row>
+            <Row>
+              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                <Form.InputNumber
+                  label={t('请求模型带-thinking后缀的BudgetTokens数（超出24576的部分将被忽略）')}
+                  field={'gemini.thinking_adapter_budget_tokens_percentage'}
+                  initValue={''}
+                  extraText={t('0.1-1之间的小数')}
+                  min={0.1}
+                  max={1}
+                  onChange={(value) =>
+                    setInputs({
+                      ...inputs,
+                      'gemini.thinking_adapter_budget_tokens_percentage': value,
+                    })
+                  }
+                />
+              </Col>
             </Row>
           </Form.Section>
+
+          <Row>
+            <Button size='default' onClick={onSubmit}>
+              {t('保存')}
+            </Button>
+          </Row>
         </Form>
       </Spin>
     </>
