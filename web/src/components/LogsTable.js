@@ -920,7 +920,6 @@ const LogsTable = () => {
                 other.completion_ratio,
                 other.model_price,
                 other.group_ratio,
-                other.user_group_ratio,
                 other.cache_ratio || 1.0,
                 other.cache_creation_ratio || 1.0,
               )
@@ -929,7 +928,7 @@ const LogsTable = () => {
                 other.completion_ratio,
                 other.model_price,
                 other.group_ratio,
-                other.user_group_ratio,
+                other?.user_group_ratio,
               ),
         });
       }
@@ -987,7 +986,9 @@ const LogsTable = () => {
             other?.group_ratio,
             other?.cache_tokens || 0,
             other?.cache_ratio || 1.0,
-          );
+          other?.image || false,
+              other?.image_ratio || 0,
+              other?.image_output || 0,);
         }
         expandDataLocal.push({
           key: t('计费过程'),

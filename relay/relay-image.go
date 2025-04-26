@@ -5,21 +5,83 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/gin-gonic/gin"
 	"io"
 	"net/http"
 	"one-api/common"
 	"one-api/dto"
 	"one-api/model"
 	relaycommon "one-api/relay/common"
+	relayconstant "one-api/relay/constant"
 	"one-api/relay/helper"
 	"one-api/service"
 	"one-api/setting"
 	"strings"
+
+	"github.com/gin-gonic/gin"
 )
 
 func getAndValidImageRequest(c *gin.Context, info *relaycommon.RelayInfo) (*dto.ImageRequest, error) {
 	imageRequest := &dto.ImageRequest{}
+
+	switch info.RelayMode {
+	case relayconstant.RelayModeImagesEdits:
+		_, err := c.MultipartForm()
+		if err != nil {
+			return nil, err
+		}
+		formData := c.Request.PostForm
+		imageRequest.Prompt = formData.Get("prompt")
+		imageRequest.Model = formData.Get("model")
+		imageRequest.N = common.String2Int(formData.Get("n"))
+		imageRequest.Quality = formData.Get("quality")
+		imageRequest.Size = formData.Get("size")
+
+		if imageRequest.Model == "gpt-image-1" {
+			if imageRequest.Quality == "" {
+				imageRequest.Quality = "standard"
+			}
+		}
+	default:
+		err := common.UnmarshalBodyReusable(c, imageRequest)
+		if err != nil {
+			return nil, err
+		}
+		// Not "256x256", "512x512", or "1024x1024"
+		if imageRequest.Model == "dall-e-2" || imageRequest.Model == "dall-e" {
+			if imageRequest.Size != "" && imageRequest.Size != "256x256" && imageRequest.Size != "512x512" && imageRequest.Size != "1024x1024" {
+				return nil, errors.New("size must be one of 256x256, 512x512, or 1024x1024, dall-e-3 1024x1792 or 1792x1024")
+			}
+		} else if imageRequest.Model == "dall-e-3" {
+			if imageRequest.Size != "" && imageRequest.Size != "1024x1024" && imageRequest.Size != "1024x1792" && imageRequest.Size != "1792x1024" {
+				return nil, errors.New("size must be one of 256x256, 512x512, or 1024x1024, dall-e-3 1024x1792 or 1792x1024")
+			}
+			if imageRequest.Quality == "" {
+				imageRequest.Quality = "standard"
+			}
+			// N should between 1 and 10
+			//if imageRequest.N != 0 && (imageRequest.N < 1 || imageRequest.N > 10) {
+			//	return service.OpenAIErrorWrapper(errors.New("n must be between 1 and 10"), "invalid_field_value", http.StatusBadRequest)
+			//}
+		}
+	}
+
+	if imageRequest.Prompt == "" {
+		return nil, errors.New("prompt is required")
+	}
+
+	if imageRequest.Model == "" {
+		imageRequest.Model = "dall-e-2"
+	}
+	if strings.Contains(imageRequest.Size, "×") {
+		return nil, errors.New("size an unexpected error occurred in the parameter, please use 'x' instead of the multiplication sign '×'")
+	}
+	if imageRequest.N == 0 {
+		imageRequest.N = 1
+	}
+	if imageRequest.Size == "" {
+		imageRequest.Size = "1024x1024"
+	}
+
 	err := common.UnmarshalBodyReusable(c, imageRequest)
 	if err != nil {
 		return nil, err
@@ -38,6 +100,10 @@ func getAndValidImageRequest(c *gin.Context, info *relaycommon.RelayInfo) (*dto.
 	}
 	if imageRequest.Model == "" {
 		imageRequest.Model = "dall-e-2"
+	}
+	// x.ai grok-2-image not support size, quality or style
+	if imageRequest.Size == "empty" {
+		imageRequest.Size = ""
 	}
 
 	// Not "256x256", "512x512", or "1024x1024"
@@ -86,43 +152,59 @@ func ImageHelper(c *gin.Context) *dto.OpenAIErrorWithStatusCode {
 
 	imageRequest.Model = relayInfo.UpstreamModelName
 
-	priceData, err := helper.ModelPriceHelper(c, relayInfo, 0, 0)
+	priceData, err := helper.ModelPriceHelper(c, relayInfo, len(imageRequest.Prompt), 0)
 	if err != nil {
 		return service.OpenAIErrorWrapperLocal(err, "model_price_error", http.StatusInternalServerError)
 	}
+	var preConsumedQuota int
+	var quota int
+	var userQuota int
 	if !priceData.UsePrice {
 		// modelRatio 16 = modelPrice $0.04
 		// per 1 modelRatio = $0.04 / 16
-		priceData.ModelPrice = 0.0025 * priceData.ModelRatio
-	}
-
-	userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
-
-	sizeRatio := 1.0
-	// Size
-	if imageRequest.Size == "256x256" {
-		sizeRatio = 0.4
-	} else if imageRequest.Size == "512x512" {
-		sizeRatio = 0.45
-	} else if imageRequest.Size == "1024x1024" {
-		sizeRatio = 1
-	} else if imageRequest.Size == "1024x1792" || imageRequest.Size == "1792x1024" {
-		sizeRatio = 2
-	}
-
-	qualityRatio := 1.0
-	if imageRequest.Model == "dall-e-3" && imageRequest.Quality == "hd" {
-		qualityRatio = 2.0
-		if imageRequest.Size == "1024x1792" || imageRequest.Size == "1792x1024" {
-			qualityRatio = 1.5
+		// priceData.ModelPrice = 0.0025 * priceData.ModelRatio
+		var openaiErr *dto.OpenAIErrorWithStatusCode
+		preConsumedQuota, userQuota, openaiErr = preConsumeQuota(c, priceData.ShouldPreConsumedQuota, relayInfo)
+		if openaiErr != nil {
+			return openaiErr
 		}
-	}
+		defer func() {
+			if openaiErr != nil {
+				returnPreConsumedQuota(c, relayInfo, userQuota, preConsumedQuota)
+			}
+		}()
 
-	priceData.ModelPrice *= sizeRatio * qualityRatio * float64(imageRequest.N)
-	quota := int(priceData.ModelPrice * priceData.GroupRatio * common.QuotaPerUnit)
+	} else {
+		sizeRatio := 1.0
+		// Size
+		if imageRequest.Size == "256x256" {
+			sizeRatio = 0.4
+		} else if imageRequest.Size == "512x512" {
+			sizeRatio = 0.45
+		} else if imageRequest.Size == "1024x1024" {
+			sizeRatio = 1
+		} else if imageRequest.Size == "1024x1792" || imageRequest.Size == "1792x1024" {
+			sizeRatio = 2
+		}
 
-	if userQuota-quota < 0 {
-		return service.OpenAIErrorWrapperLocal(fmt.Errorf("您的额度已不足，请在钱包里充值, 您的额度: %d, 需要额度: %d，免费额度将于每月1号刷新！", common.FormatQuota(userQuota), common.FormatQuota(quota)), "insufficient_user_quota", http.StatusForbidden)
+		qualityRatio := 1.0
+		if imageRequest.Model == "dall-e-3" && imageRequest.Quality == "hd" {
+			qualityRatio = 2.0
+			if imageRequest.Size == "1024x1792" || imageRequest.Size == "1792x1024" {
+				qualityRatio = 1.5
+			}
+		}
+
+		// reset model price
+		priceData.ModelPrice *= sizeRatio * qualityRatio * float64(imageRequest.N)
+		quota = int(priceData.ModelPrice * priceData.GroupRatio * common.QuotaPerUnit)
+		userQuota, err = model.GetUserQuota(relayInfo.UserId, false)
+		if err != nil {
+			return service.OpenAIErrorWrapperLocal(err, "get_user_quota_failed", http.StatusInternalServerError)
+		}
+		if userQuota-quota < 0 {
+			return service.OpenAIErrorWrapperLocal(fmt.Errorf("您的额度已不足，请在钱包里充值, 您的额度: %d, 需要额度: %d，免费额度将于每月1号刷新！", common.FormatQuota(userQuota), common.FormatQuota(quota)), "insufficient_user_quota", http.StatusForbidden)
+		}
 	}
 
 	adaptor := GetAdaptor(relayInfo.ApiType)
@@ -137,12 +219,15 @@ func ImageHelper(c *gin.Context) *dto.OpenAIErrorWithStatusCode {
 	if err != nil {
 		return service.OpenAIErrorWrapperLocal(err, "convert_request_failed", http.StatusInternalServerError)
 	}
-
-	jsonData, err := json.Marshal(convertedRequest)
-	if err != nil {
-		return service.OpenAIErrorWrapperLocal(err, "json_marshal_failed", http.StatusInternalServerError)
+	if relayInfo.RelayMode == relayconstant.RelayModeImagesEdits {
+		requestBody = convertedRequest.(io.Reader)
+	} else {
+		jsonData, err := json.Marshal(convertedRequest)
+		if err != nil {
+			return service.OpenAIErrorWrapperLocal(err, "json_marshal_failed", http.StatusInternalServerError)
+		}
+		requestBody = bytes.NewBuffer(jsonData)
 	}
-	requestBody = bytes.NewBuffer(jsonData)
 
 	statusCodeMappingStr := c.GetString("status_code_mapping")
 
@@ -162,24 +247,25 @@ func ImageHelper(c *gin.Context) *dto.OpenAIErrorWithStatusCode {
 		}
 	}
 
-	_, openaiErr := adaptor.DoResponse(c, httpResp, relayInfo)
+	usage, openaiErr := adaptor.DoResponse(c, httpResp, relayInfo)
 	if openaiErr != nil {
 		// reset status code 重置状态码
 		service.ResetStatusCode(openaiErr, statusCodeMappingStr)
 		return openaiErr
 	}
 
-	usage := &dto.Usage{
-		PromptTokens: imageRequest.N,
-		TotalTokens:  imageRequest.N,
+	if usage.(*dto.Usage).TotalTokens == 0 {
+		usage.(*dto.Usage).TotalTokens = imageRequest.N
 	}
-
+	if usage.(*dto.Usage).PromptTokens == 0 {
+		usage.(*dto.Usage).PromptTokens = imageRequest.N
+	}
 	quality := "standard"
 	if imageRequest.Quality == "hd" {
 		quality = "hd"
 	}
 
 	logContent := fmt.Sprintf("大小 %s, 品质 %s", imageRequest.Size, quality)
-	postConsumeQuota(c, relayInfo, usage, 0, userQuota, priceData, logContent)
+	postConsumeQuota(c, relayInfo, usage.(*dto.Usage), preConsumedQuota, userQuota, priceData, logContent)
 	return nil
 }
