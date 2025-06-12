@@ -131,6 +131,21 @@ func GetHomePageContent(c *gin.Context) {
 	return
 }
 
+// 修改域名检测，采用逐级检查域名
+func isDomainAllowed(domain string, whitelist []string) bool {
+	parts := strings.Split(domain, ".")
+	for i := range parts {
+		subdomain := strings.Join(parts[i:], ".")
+		for _, allowedDomain := range whitelist {
+			if subdomain == allowedDomain {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+
 func SendEmailVerification(c *gin.Context) {
 	email := c.Query("email")
 	if err := common.Validate.Var(email, "required,email"); err != nil {
@@ -151,17 +166,10 @@ func SendEmailVerification(c *gin.Context) {
 	localPart := parts[0]
 	domainPart := parts[1]
 	if common.EmailDomainRestrictionEnabled {
-		allowed := false
-		for _, domain := range common.EmailDomainWhitelist {
-			if domainPart == domain {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
+		if !isDomainAllowed(domainPart, common.EmailDomainWhitelist) {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
-				"message": "The administrator has enabled the email domain name whitelist, and your email address is not allowed due to special symbols or it's not in the whitelist.",
+				"message": "管理员启用了邮箱域名白名单，您的邮箱地址的域名不在白名单中",
 			})
 			return
 		}

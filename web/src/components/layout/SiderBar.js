@@ -143,6 +143,7 @@ const SiderBar = () => {
         text: t('操练场'),
         itemKey: 'playground',
         to: '/playground',
+        className: isAdmin() ? '' : 'tableHiddle',
       },
       {
         text: t('聊天'),
@@ -150,7 +151,7 @@ const SiderBar = () => {
         items: chatItems,
       },
     ],
-    [chatItems, t],
+    [chatItems, t, isAdmin()],
   );
 
   // 更新路由映射，添加聊天路由
@@ -382,12 +383,17 @@ const SiderBar = () => {
         }}
       >
         {/* 聊天区域 */}
-        <div className="sidebar-section">
-          {!isCollapsed && (
-            <div className="sidebar-group-label">{t('聊天')}</div>
-          )}
-          {chatMenuItems.map((item) => renderSubItem(item))}
-        </div>
+        {isAdmin() && (
+          <>
+            <Divider className="sidebar-section" />
+            <div>
+              {!isCollapsed && (
+                <div className="sidebar-group-label">{t('聊天')}</div>
+              )}
+              {chatMenuItems.map((item) => renderSubItem(item))}
+            </div>
+          </>
+        )}
 
         {/* 控制台区域 */}
         <Divider className="sidebar-divider" />

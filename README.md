@@ -155,6 +155,29 @@ docker run --name new-api -d --restart always -p 3000:3000 -e TZ=Asia/Shanghai -
 docker run --name new-api -d --restart always -p 3000:3000 -e SQL_DSN="root:123456@tcp(localhost:3306)/oneapi" -e TZ=Asia/Shanghai -v /home/ubuntu/data/new-api:/data calciumion/new-api:latest
 ```
 
+### 手动部署
+1. 从 [GitHub Releases](https://github.com/QuantumNous/new-api/releases/latest) 下载可执行文件或者从源码编译：
+   ```shell
+   git clone https://github.com/Calcium-Ion/new-api.git
+
+   # 构建前端
+   cd new-api/web
+   npm install
+   npm run build
+
+   # 构建后端
+   cd ..
+   go mod download
+   go build -ldflags "-s -w" -o new-api
+   ````
+2. 运行：
+   ```shell
+   chmod u+x new-api
+   ./new-api --port 3000 --log-dir ./logs
+   ```
+3. 访问 [http://localhost:3000/](http://localhost:3000/) 并登录。初始账号用户名为 `root`，密码为 `123456`。
+
+
 ## 渠道重试与缓存
 渠道重试功能已经实现，可以在`设置->运营设置->通用设置`设置重试次数，**建议开启缓存**功能。
 

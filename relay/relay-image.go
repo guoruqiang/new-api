@@ -168,7 +168,7 @@ func ImageHelper(c *gin.Context) *dto.OpenAIErrorWithStatusCode {
 			return service.OpenAIErrorWrapperLocal(err, "get_user_quota_failed", http.StatusInternalServerError)
 		}
 		if userQuota-quota < 0 {
-			return service.OpenAIErrorWrapperLocal(fmt.Errorf("image pre-consumed quota failed, user quota: %s, need quota: %s", common.FormatQuota(userQuota), common.FormatQuota(quota)), "insufficient_user_quota", http.StatusForbidden)
+			return service.OpenAIErrorWrapperLocal(fmt.Errorf("您的额度已不足，请在钱包里充值, 您的额度: %d, 需要额度: %d，免费额度将于每月1号刷新！", common.FormatQuota(userQuota), common.FormatQuota(quota)), "insufficient_user_quota", http.StatusForbidden)
 		}
 	}
 
