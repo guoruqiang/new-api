@@ -274,6 +274,22 @@ const LoginForm = () => {
             </div>
             <div className="px-2 py-8">
               <div className="space-y-3">
+                <Button
+                  theme="solid"
+                  type="primary"
+                  className="w-full h-12 flex items-center justify-center bg-black text-white !rounded-full hover:bg-gray-800 transition-colors"
+                  icon={<IconMail size="large" />}
+                  size="large"
+                  onClick={handleEmailLoginClick}
+                  loading={emailLoginLoading}
+                >
+                  <span className="ml-3">{t('使用 邮箱或用户名 登录')}</span>
+                </Button>
+
+                <Divider margin='12px' align='center'>
+                  {t('或')}
+                </Divider>
+
                 {status.wechat_login && (
                   <Button
                     theme='outline'
@@ -284,7 +300,7 @@ const LoginForm = () => {
                     onClick={onWeChatLoginClicked}
                     loading={wechatLoading}
                   >
-                    <span className="ml-3">{t('使用 微信 继续')}</span>
+                    <span className="ml-3">{t('使用 微信 登录（已绑定微信）')}</span>
                   </Button>
                 )}
 
@@ -339,21 +355,6 @@ const LoginForm = () => {
                   </div>
                 )}
 
-                <Divider margin='12px' align='center'>
-                  {t('或')}
-                </Divider>
-
-                <Button
-                  theme="solid"
-                  type="primary"
-                  className="w-full h-12 flex items-center justify-center bg-black text-white !rounded-full hover:bg-gray-800 transition-colors"
-                  icon={<IconMail size="large" />}
-                  size="large"
-                  onClick={handleEmailLoginClick}
-                  loading={emailLoginLoading}
-                >
-                  <span className="ml-3">{t('使用 邮箱或用户名 登录')}</span>
-                </Button>
               </div>
 
               <div className="mt-6 text-center text-sm">

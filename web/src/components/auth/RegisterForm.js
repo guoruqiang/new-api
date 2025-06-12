@@ -483,7 +483,7 @@ const RegisterForm = () => {
                 </div>
               </Form>
 
-              {(status.github_oauth || status.oidc_enabled || status.wechat_login || status.linuxdo_oauth || status.telegram_oauth) && (
+              {/* {(status.github_oauth || status.oidc_enabled || status.wechat_login || status.linuxdo_oauth || status.telegram_oauth) && (
                 <>
                   <Divider margin='12px' align='center'>
                     {t('或')}
@@ -502,7 +502,7 @@ const RegisterForm = () => {
                     </Button>
                   </div>
                 </>
-              )}
+              )} */}
 
               <div className="mt-6 text-center text-sm">
                 <Text>{t('已有账户？')} <Link to="/login" className="text-blue-600 hover:text-blue-800 font-medium">{t('登录')}</Link></Text>
@@ -553,9 +553,7 @@ const RegisterForm = () => {
   return (
     <div className="bg-gray-100 flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8">
       <div className="w-full max-w-sm">
-        {showEmailRegister || !(status.github_oauth || status.oidc_enabled || status.wechat_login || status.linuxdo_oauth || status.telegram_oauth)
-          ? renderEmailRegisterForm()
-          : renderOAuthOptions()}
+        {renderEmailRegisterForm()}
         {renderWeChatLoginModal()}
 
         {turnstileEnabled && (
