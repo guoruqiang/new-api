@@ -280,7 +280,7 @@ const RegisterForm = () => {
             </div>
             <div className="flex justify-center px-4 pb-1">
               <Text type="secondary" className="text-sm text-gray-600 dark:text-gray-400">
-                {t('本站仅开放教育邮箱（edu.cn等后缀）注册！')}
+                {t('本站仅限教育邮箱（如edu.cn）注册！')}
               </Text>
             </div>
             <div className="px-2 py-6">
@@ -392,7 +392,7 @@ const RegisterForm = () => {
             </div>
             <div className="flex justify-center px-4 pb-1">
               <Text type="secondary" className="text-sm text-gray-600 dark:text-gray-400">
-                {t('本站仅开放教育邮箱（edu.cn等后缀）注册！')}
+                {t('本站仅限教育邮箱（如edu.cn）注册！')}
               </Text>
             </div>
             <div className="px-2 py-6">
