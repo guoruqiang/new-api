@@ -298,18 +298,27 @@ const EditChannel = (props) => {
     }
   };
 
-  useEffect(() => {
-    let localModelOptions = [...originModelOptions];
-    inputs.models.forEach((model) => {
-      if (!localModelOptions.find((option) => option.label === model)) {
-        localModelOptions.push({
-          label: model,
-          value: model,
-        });
-      }
-    });
-    setModelOptions(localModelOptions);
-  }, [originModelOptions, inputs.models]);
+useEffect(() => {
+  // 使用 Map 来避免重复，以 value 为键
+  const modelMap = new Map();
+  
+  // 先添加原始模型选项
+  originModelOptions.forEach(option => {
+    modelMap.set(option.value, option);
+  });
+  
+  // 再添加当前选中的模型（如果不存在）
+  inputs.models.forEach(model => {
+    if (!modelMap.has(model)) {
+      modelMap.set(model, {
+        label: model,
+        value: model,
+      });
+    }
+  });
+  
+  setModelOptions(Array.from(modelMap.values()));
+}, [originModelOptions, inputs.models]);
 
   useEffect(() => {
     fetchModels().then();
@@ -385,7 +394,7 @@ const EditChannel = (props) => {
 
     let localModels = [...inputs.models];
     let localModelOptions = [...modelOptions];
-    let hasError = false;
+    const addedModels = [];
 
     modelArray.forEach((model) => {
       if (model && !localModels.includes(model)) {
@@ -395,17 +404,24 @@ const EditChannel = (props) => {
           text: model,
           value: model,
         });
-      } else if (model) {
-        showError(t('某些模型已存在！'));
-        hasError = true;
+        addedModels.push(model);
       }
     });
-
-    if (hasError) return;
 
     setModelOptions(localModelOptions);
     setCustomModel('');
     handleInputChange('models', localModels);
+
+    if (addedModels.length > 0) {
+      showSuccess(
+        t('已新增 {{count}} 个模型：{{list}}', {
+          count: addedModels.length,
+          list: addedModels.join(', '),
+        })
+      );
+    } else {
+      showInfo(t('未发现新增模型'));
+    }
   };
 
   return (
@@ -523,7 +539,7 @@ const EditChannel = (props) => {
                         handleInputChange('key', value);
                       }}
                       value={inputs.key}
-                      style={{ minHeight: 150, fontFamily: 'JetBrains Mono, Consolas' }}
+                      autosize={{ minRows: 6, maxRows: 6 }}
                       autoComplete='new-password'
                       className="!rounded-lg"
                     />

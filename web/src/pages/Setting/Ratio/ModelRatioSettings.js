@@ -1,5 +1,13 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Button, Col, Form, Row, Spin } from '@douyinfe/semi-ui';
+import {
+  Button,
+  Col,
+  Form,
+  Popconfirm,
+  Row,
+  Space,
+  Spin,
+} from '@douyinfe/semi-ui';
 import {
   compareObjects,
   API,
@@ -10,16 +18,18 @@ import {
 } from '../../../helpers';
 import { useTranslation } from 'react-i18next';
 
-export default function GroupRatioSettings(props) {
-  const { t } = useTranslation();
+export default function ModelRatioSettings(props) {
   const [loading, setLoading] = useState(false);
   const [inputs, setInputs] = useState({
-    GroupRatio: '',
-    UserUsableGroups: '',
-    GroupGroupRatio: '',
+    ModelPrice: '',
+    ModelRatio: '',
+    CacheRatio: '',
+    CompletionRatio: '',
+    ExposeRatioEnabled: false,
   });
   const refForm = useRef();
   const [inputsRow, setInputsRow] = useState(inputs);
+  const { t } = useTranslation();
 
   async function onSubmit() {
     try {
@@ -75,6 +85,20 @@ export default function GroupRatioSettings(props) {
     }
   }
 
+  async function resetModelRatio() {
+    try {
+      let res = await API.post(`/api/option/rest_model_ratio`);
+      if (res.data.success) {
+        showSuccess(res.data.message);
+        props.refresh();
+      } else {
+        showError(res.data.message);
+      }
+    } catch (error) {
+      showError(error);
+    }
+  }
+
   useEffect(() => {
     const currentInputs = {};
     for (let key in props.options) {
@@ -94,27 +118,27 @@ export default function GroupRatioSettings(props) {
         getFormApi={(formAPI) => (refForm.current = formAPI)}
         style={{ marginBottom: 15 }}
       >
-        <Form.Section text={t('分组设置')}>
+        <Form.Section>
           <Row gutter={16}>
             <Col xs={24} sm={16}>
               <Form.TextArea
-                label={t('分组倍率')}
-                placeholder={t('为一个 JSON 文本，键为分组名称，值为倍率')}
-                extraText={t(
-                  '分组倍率设置，可以在此处新增分组或修改现有分组的倍率，格式为 JSON 字符串，例如：{"vip": 0.5, "test": 1}，表示 vip 分组的倍率为 0.5，test 分组的倍率为 1',
+                label={t('模型固定价格')}
+                extraText={t('一次调用消耗多少刀，优先级大于模型倍率')}
+                placeholder={t(
+                  '为一个 JSON 文本，键为模型名称，值为一次调用消耗多少刀，比如 "gpt-4-gizmo-*": 0.1，一次消耗0.1刀',
                 )}
-                field={'GroupRatio'}
+                field={'ModelPrice'}
                 autosize={{ minRows: 6, maxRows: 12 }}
                 trigger='blur'
                 stopValidateWithError
                 rules={[
                   {
                     validator: (rule, value) => verifyJSON(value),
-                    message: t('不是合法的 JSON 字符串'),
+                    message: '不是合法的 JSON 字符串',
                   },
                 ]}
                 onChange={(value) =>
-                  setInputs({ ...inputs, GroupRatio: value })
+                  setInputs({ ...inputs, ModelPrice: value })
                 }
               />
             </Col>
@@ -122,23 +146,20 @@ export default function GroupRatioSettings(props) {
           <Row gutter={16}>
             <Col xs={24} sm={16}>
               <Form.TextArea
-                label={t('用户可选分组')}
-                placeholder={t('为一个 JSON 文本，键为分组名称，值为分组描述')}
-                extraText={t(
-                  '用户新建令牌时可选的分组，格式为 JSON 字符串，例如：{"vip": "VIP 用户", "test": "测试"}，表示用户可以选择 vip 分组和 test 分组',
-                )}
-                field={'UserUsableGroups'}
+                label={t('模型倍率')}
+                placeholder={t('为一个 JSON 文本，键为模型名称，值为倍率')}
+                field={'ModelRatio'}
                 autosize={{ minRows: 6, maxRows: 12 }}
                 trigger='blur'
                 stopValidateWithError
                 rules={[
                   {
                     validator: (rule, value) => verifyJSON(value),
-                    message: t('不是合法的 JSON 字符串'),
+                    message: '不是合法的 JSON 字符串',
                   },
                 ]}
                 onChange={(value) =>
-                  setInputs({ ...inputs, UserUsableGroups: value })
+                  setInputs({ ...inputs, ModelRatio: value })
                 }
               />
             </Col>
@@ -146,30 +167,71 @@ export default function GroupRatioSettings(props) {
           <Row gutter={16}>
             <Col xs={24} sm={16}>
               <Form.TextArea
-                label={t('分组特殊倍率')}
-                placeholder={t('为一个 JSON 文本')}
-                extraText={t(
-                  '键为分组名称，值为另一个 JSON 对象，键为分组名称，值为该分组的用户的特殊分组倍率，例如：{"vip": {"default": 0.5, "test": 1}}，表示 vip 分组的用户在使用default分组的令牌时倍率为0.5，使用test分组时倍率为1',
-                )}
-                field={'GroupGroupRatio'}
+                label={t('提示缓存倍率')}
+                placeholder={t('为一个 JSON 文本，键为模型名称，值为倍率')}
+                field={'CacheRatio'}
                 autosize={{ minRows: 6, maxRows: 12 }}
                 trigger='blur'
                 stopValidateWithError
                 rules={[
                   {
                     validator: (rule, value) => verifyJSON(value),
-                    message: t('不是合法的 JSON 字符串'),
+                    message: '不是合法的 JSON 字符串',
                   },
                 ]}
                 onChange={(value) =>
-                  setInputs({ ...inputs, GroupGroupRatio: value })
+                  setInputs({ ...inputs, CacheRatio: value })
+                }
+              />
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col xs={24} sm={16}>
+              <Form.TextArea
+                label={t('模型补全倍率（仅对自定义模型有效）')}
+                extraText={t('仅对自定义模型有效')}
+                placeholder={t('为一个 JSON 文本，键为模型名称，值为倍率')}
+                field={'CompletionRatio'}
+                autosize={{ minRows: 6, maxRows: 12 }}
+                trigger='blur'
+                stopValidateWithError
+                rules={[
+                  {
+                    validator: (rule, value) => verifyJSON(value),
+                    message: '不是合法的 JSON 字符串',
+                  },
+                ]}
+                onChange={(value) =>
+                  setInputs({ ...inputs, CompletionRatio: value })
+                }
+              />
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={16}>
+              <Form.Switch
+                label={t('暴露倍率接口')}
+                field={'ExposeRatioEnabled'}
+                onChange={(value) =>
+                  setInputs({ ...inputs, ExposeRatioEnabled: value })
                 }
               />
             </Col>
           </Row>
         </Form.Section>
       </Form>
-      <Button onClick={onSubmit}>{t('保存分组倍率设置')}</Button>
+      <Space>
+        <Button onClick={onSubmit}>{t('保存模型倍率设置')}</Button>
+        <Popconfirm
+          title={t('确定重置模型倍率吗？')}
+          content={t('此修改将不可逆')}
+          okType={'danger'}
+          position={'top'}
+          onConfirm={resetModelRatio}
+        >
+          <Button type={'danger'}>{t('重置模型倍率')}</Button>
+        </Popconfirm>
+      </Space>
     </Spin>
   );
 }

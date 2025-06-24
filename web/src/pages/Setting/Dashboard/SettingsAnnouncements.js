@@ -8,7 +8,8 @@ import {
   Empty,
   Divider,
   Modal,
-  Tag
+  Tag,
+  Switch
 } from '@douyinfe/semi-ui';
 import {
   IllustrationNoResult,
@@ -46,6 +47,9 @@ const SettingsAnnouncements = ({ options, refresh }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
+
+  // 面板启用状态
+  const [panelEnabled, setPanelEnabled] = useState(true);
 
   const typeOptions = [
     { value: 'default', label: t('默认') },
@@ -176,7 +180,7 @@ const SettingsAnnouncements = ({ options, refresh }) => {
     try {
       setLoading(true);
       const announcementsJson = JSON.stringify(announcementsList);
-      await updateOption('Announcements', announcementsJson);
+      await updateOption('console_setting.announcements', announcementsJson);
       setHasChanges(false);
     } catch (error) {
       console.error('系统公告更新失败', error);
@@ -288,10 +292,35 @@ const SettingsAnnouncements = ({ options, refresh }) => {
   };
 
   useEffect(() => {
-    if (options.Announcements !== undefined) {
-      parseAnnouncements(options.Announcements);
+    const annStr = options['console_setting.announcements'] ?? options.Announcements;
+    if (annStr !== undefined) {
+      parseAnnouncements(annStr);
     }
-  }, [options.Announcements]);
+  }, [options['console_setting.announcements'], options.Announcements]);
+
+  useEffect(() => {
+    const enabledStr = options['console_setting.announcements_enabled'];
+    setPanelEnabled(enabledStr === undefined ? true : enabledStr === 'true' || enabledStr === true);
+  }, [options['console_setting.announcements_enabled']]);
+
+  const handleToggleEnabled = async (checked) => {
+    const newValue = checked ? 'true' : 'false';
+    try {
+      const res = await API.put('/api/option/', {
+        key: 'console_setting.announcements_enabled',
+        value: newValue,
+      });
+      if (res.data.success) {
+        setPanelEnabled(checked);
+        showSuccess(t('设置已保存'));
+        refresh?.();
+      } else {
+        showError(res.data.message);
+      }
+    } catch (err) {
+      showError(err.message);
+    }
+  };
 
   const handleBatchDelete = () => {
     if (selectedRowKeys.length === 0) {
@@ -349,15 +378,27 @@ const SettingsAnnouncements = ({ options, refresh }) => {
             {t('保存设置')}
           </Button>
         </div>
+
+        {/* 启用开关 */}
+        <div className="order-1 md:order-2 flex items-center gap-2">
+          <Switch checked={panelEnabled} onChange={handleToggleEnabled} />
+          <Text>{panelEnabled ? t('已启用') : t('已禁用')}</Text>
+        </div>
       </div>
     </div>
   );
 
-  // 计算当前页显示的数据
+  // 计算当前页显示的数据（按发布时间倒序排序，最新优先显示）
   const getCurrentPageData = () => {
+    const sortedList = [...announcementsList].sort((a, b) => {
+      const dateA = new Date(a.publishDate).getTime();
+      const dateB = new Date(b.publishDate).getTime();
+      return dateB - dateA; // 倒序，最新的排在前面
+    });
+
     const startIndex = (currentPage - 1) * pageSize;
     const endIndex = startIndex + pageSize;
-    return announcementsList.slice(startIndex, endIndex);
+    return sortedList.slice(startIndex, endIndex);
   };
 
   const rowSelection = {

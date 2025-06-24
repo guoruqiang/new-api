@@ -53,10 +53,13 @@ type GeneralOpenAIRequest struct {
 	Modalities          json.RawMessage   `json:"modalities,omitempty"`
 	Audio               json.RawMessage   `json:"audio,omitempty"`
 	EnableThinking      any               `json:"enable_thinking,omitempty"` // ali
+	THINKING            json.RawMessage   `json:"thinking,omitempty"`        // doubao
 	ExtraBody           json.RawMessage   `json:"extra_body,omitempty"`
 	WebSearchOptions    *WebSearchOptions `json:"web_search_options,omitempty"`
 	// OpenRouter Params
 	Reasoning json.RawMessage `json:"reasoning,omitempty"`
+	// Ali Qwen Params
+	VlHighResolutionImages json.RawMessage `json:"vl_high_resolution_images,omitempty"`
 }
 
 func (r *GeneralOpenAIRequest) ToMap() map[string]any {

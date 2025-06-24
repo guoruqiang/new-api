@@ -59,7 +59,7 @@ func checkGeminiInputSensitive(textRequest *gemini.GeminiChatRequest) ([]string,
 	return sensitiveWords, err
 }
 
-func getGeminiInputTokens(req *gemini.GeminiChatRequest, info *relaycommon.RelayInfo) (int, error) {
+func getGeminiInputTokens(req *gemini.GeminiChatRequest, info *relaycommon.RelayInfo) int {
 	// 计算输入 token 数量
 	var inputTexts []string
 	for _, content := range req.Contents {
@@ -71,9 +71,9 @@ func getGeminiInputTokens(req *gemini.GeminiChatRequest, info *relaycommon.Relay
 	}
 
 	inputText := strings.Join(inputTexts, "\n")
-	inputTokens, err := service.CountTokenInput(inputText, info.UpstreamModelName)
+	inputTokens := service.CountTokenInput(inputText, info.UpstreamModelName)
 	info.PromptTokens = inputTokens
-	return inputTokens, err
+	return inputTokens
 }
 
 func GeminiHelper(c *gin.Context) (openaiErr *dto.OpenAIErrorWithStatusCode) {
@@ -83,7 +83,7 @@ func GeminiHelper(c *gin.Context) (openaiErr *dto.OpenAIErrorWithStatusCode) {
 		return service.OpenAIErrorWrapperLocal(err, "invalid_gemini_request", http.StatusBadRequest)
 	}
 
-	relayInfo := relaycommon.GenRelayInfo(c)
+	relayInfo := relaycommon.GenRelayInfoGemini(c)
 
 	// 检查 Gemini 流式模式
 	checkGeminiStreamMode(c, relayInfo)
@@ -97,7 +97,7 @@ func GeminiHelper(c *gin.Context) (openaiErr *dto.OpenAIErrorWithStatusCode) {
 	}
 
 	// model mapped 模型映射
-	err = helper.ModelMappedHelper(c, relayInfo)
+	err = helper.ModelMappedHelper(c, relayInfo, req)
 	if err != nil {
 		return service.OpenAIErrorWrapperLocal(err, "model_mapped_error", http.StatusBadRequest)
 	}
@@ -106,7 +106,7 @@ func GeminiHelper(c *gin.Context) (openaiErr *dto.OpenAIErrorWithStatusCode) {
 		promptTokens := value.(int)
 		relayInfo.SetPromptTokens(promptTokens)
 	} else {
-		promptTokens, err := getGeminiInputTokens(req, relayInfo)
+		promptTokens := getGeminiInputTokens(req, relayInfo)
 		if err != nil {
 			return service.OpenAIErrorWrapperLocal(err, "count_input_tokens_error", http.StatusBadRequest)
 		}
@@ -136,19 +136,52 @@ func GeminiHelper(c *gin.Context) (openaiErr *dto.OpenAIErrorWithStatusCode) {
 
 	adaptor.Init(relayInfo)
 
+	// Clean up empty system instruction
+	if req.SystemInstructions != nil {
+		hasContent := false
+		for _, part := range req.SystemInstructions.Parts {
+			if part.Text != "" {
+				hasContent = true
+				break
+			}
+		}
+		if !hasContent {
+			req.SystemInstructions = nil
+		}
+	}
+
 	requestBody, err := json.Marshal(req)
 	if err != nil {
 		return service.OpenAIErrorWrapperLocal(err, "marshal_text_request_failed", http.StatusInternalServerError)
 	}
 
+	if common.DebugEnabled {
+		println("Gemini request body: %s", string(requestBody))
+	}
+
 	resp, err := adaptor.DoRequest(c, relayInfo, bytes.NewReader(requestBody))
 	if err != nil {
 		common.LogError(c, "Do gemini request failed: "+err.Error())
-		return service.OpenAIErrorWrapperLocal(err, "do_request_failed", http.StatusInternalServerError)
+		return service.OpenAIErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
+	}
+
+	statusCodeMappingStr := c.GetString("status_code_mapping")
+
+	var httpResp *http.Response
+	if resp != nil {
+		httpResp = resp.(*http.Response)
+		relayInfo.IsStream = relayInfo.IsStream || strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream")
+		if httpResp.StatusCode != http.StatusOK {
+			openaiErr = service.RelayErrorHandler(httpResp, false)
+			// reset status code 重置状态码
+			service.ResetStatusCode(openaiErr, statusCodeMappingStr)
+			return openaiErr
+		}
 	}
 
 	usage, openaiErr := adaptor.DoResponse(c, resp.(*http.Response), relayInfo)
 	if openaiErr != nil {
+		service.ResetStatusCode(openaiErr, statusCodeMappingStr)
 		return openaiErr
 	}
 
