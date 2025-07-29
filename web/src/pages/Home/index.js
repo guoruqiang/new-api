@@ -267,7 +267,7 @@ const Home = () => {
           </div>
         </div>
       ) : (
-        <div className="overflow-x-hidden w-full">
+        <div className="overflow-x-hidden w-full pt-[40px]">
           {homePageContent.startsWith('https://') ? (
             <iframe
               src={homePageContent}
