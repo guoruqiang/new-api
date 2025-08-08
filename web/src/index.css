@@ -14,21 +14,15 @@
 }
 
 /* ==================== 全局基础样式 ==================== */
-/* 侧边栏宽度相关的 CSS 变量，配合 .sidebar-collapsed 类和媒体查询实现响应式布局 */
 :root {
   --sidebar-width: 180px;
-  /* 展开时宽度 */
-  --sidebar-width-collapsed: 60px;  /* 折叠后宽度，显示图标栏 */
-  /* 折叠后宽度 */
+  --sidebar-width-collapsed: 60px;
   --sidebar-current-width: var(--sidebar-width);
 }
 
-/* 当 body 上存在 .sidebar-collapsed 类时，使用折叠宽度 */
 body.sidebar-collapsed {
   --sidebar-current-width: var(--sidebar-width-collapsed);
 }
-
-/* 移除了在移动端强制设为 0 的限制，改由 React 控制是否渲染侧边栏以实现显示/隐藏 */
 
 body {
   font-family: Lato, 'Helvetica Neue', Arial, Helvetica, 'Microsoft YaHei', sans-serif;
@@ -59,6 +53,7 @@ code {
 
 /* ==================== 导航和侧边栏样式 ==================== */
 /* 导航项样式 */
+.semi-tagInput,
 .semi-input-textarea-wrapper,
 .semi-navigation-sub-title,
 .semi-chat-inputBox-sendButton,
@@ -397,7 +392,8 @@ code {
   background: transparent;
 }
 
-/* 隐藏卡片内容区域的滚动条 */
+/* 隐藏内容区域滚动条 */
+.pricing-scroll-hide,
 .model-test-scroll,
 .card-content-scroll,
 .model-settings-scroll,
@@ -409,6 +405,7 @@ code {
   scrollbar-width: none;
 }
 
+.pricing-scroll-hide::-webkit-scrollbar,
 .model-test-scroll::-webkit-scrollbar,
 .card-content-scroll::-webkit-scrollbar,
 .model-settings-scroll::-webkit-scrollbar,
@@ -436,27 +433,6 @@ code {
 
 .image-list-scroll::-webkit-scrollbar-track {
   background: transparent;
-}
-
-/* ==================== 响应式/移动端样式 ==================== */
-@media only screen and (max-width: 767px) {
-
-  /* 移动端表格样式调整 */
-  .semi-table-tbody,
-  .semi-table-row,
-  .semi-table-row-cell {
-    display: block !important;
-    width: auto !important;
-    padding: 2px !important;
-  }
-
-  .semi-table-row-cell {
-    border-bottom: 0 !important;
-  }
-
-  .semi-table-tbody>.semi-table-row {
-    border-bottom: 1px solid rgba(0, 0, 0, 0.1);
-  }
 }
 
 /* ==================== 同步倍率 - 渠道选择器 ==================== */
@@ -615,4 +591,86 @@ html:not(.dark) .blur-ball-indigo {
 
 html:not(.dark) .blur-ball-teal {
   opacity: 0.2;
+}
+
+/* ==================== 表格卡片滚动设置 ==================== */
+.table-scroll-card {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 110px);
+  max-height: calc(100vh - 110px);
+}
+
+.table-scroll-card .semi-card-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.table-scroll-card .semi-card-body::-webkit-scrollbar {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  .table-scroll-card {
+    height: calc(100vh - 77px);
+    max-height: calc(100vh - 77px);
+  }
+}
+
+/* ==================== 模型定价页面布局 ==================== */
+.pricing-layout {
+  height: calc(100vh - 60px);
+  overflow: hidden;
+  margin-top: 60px;
+}
+
+.pricing-sidebar {
+  min-width: 460px;
+  max-width: 460px;
+  height: calc(100vh - 60px);
+  background-color: var(--semi-color-bg-0);
+  border-right: 1px solid var(--semi-color-border);
+  overflow: auto;
+}
+
+.pricing-content {
+  height: calc(100vh - 60px);
+  background-color: var(--semi-color-bg-0);
+  display: flex;
+  flex-direction: column;
+}
+
+.pricing-pagination-divider {
+  border-color: var(--semi-color-border);
+}
+
+.pricing-content-mobile {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+
+.pricing-search-header {
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--semi-color-border);
+  background-color: var(--semi-color-bg-0);
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.pricing-view-container {
+  flex: 1;
+  overflow: auto;
+}
+
+.pricing-view-container-mobile {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
 }

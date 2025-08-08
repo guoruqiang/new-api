@@ -1,10 +1,29 @@
-import { Toast } from '@douyinfe/semi-ui';
+/*
+Copyright (C) 2025 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+
+import { Toast, Pagination } from '@douyinfe/semi-ui';
 import { toastConstants } from '../constants';
 import React from 'react';
 import { toast } from 'react-toastify';
 import { THINK_TAG_REGEX, MESSAGE_ROLES } from '../constants/playground.constants';
 import { TABLE_COMPACT_MODES_KEY } from '../constants';
-import { MOBILE_BREAKPOINT } from '../hooks/useIsMobile.js';
+import { MOBILE_BREAKPOINT } from '../hooks/common/useIsMobile.js';
 
 const HTMLToastContent = ({ htmlContent }) => {
   return <div dangerouslySetInnerHTML={{ __html: htmlContent }} />;
@@ -538,3 +557,174 @@ export function setTableCompactMode(compact, tableKey = 'global') {
   modes[tableKey] = compact;
   writeTableCompactModes(modes);
 }
+
+// -------------------------------
+// Select 组件统一过滤逻辑
+// 使用方式： <Select filter={selectFilter} ... />
+// 统一的 Select 搜索过滤逻辑 -- 支持同时匹配 option.value 与 option.label
+export const selectFilter = (input, option) => {
+  if (!input) return true;
+
+  const keyword = input.trim().toLowerCase();
+  const valueText = (option?.value ?? '').toString().toLowerCase();
+  const labelText = (option?.label ?? '').toString().toLowerCase();
+
+  return valueText.includes(keyword) || labelText.includes(keyword);
+};
+
+// -------------------------------
+// 模型定价计算工具函数
+export const calculateModelPrice = ({
+  record,
+  selectedGroup,
+  groupRatio,
+  tokenUnit,
+  displayPrice,
+  currency,
+  precision = 4
+}) => {
+  if (record.quota_type === 0) {
+    // 按量计费
+    const inputRatioPriceUSD = record.model_ratio * 2 * groupRatio[selectedGroup];
+    const completionRatioPriceUSD =
+      record.model_ratio * record.completion_ratio * 2 * groupRatio[selectedGroup];
+
+    const unitDivisor = tokenUnit === 'K' ? 1000 : 1;
+    const unitLabel = tokenUnit === 'K' ? 'K' : 'M';
+
+    const rawDisplayInput = displayPrice(inputRatioPriceUSD);
+    const rawDisplayCompletion = displayPrice(completionRatioPriceUSD);
+
+    const numInput = parseFloat(rawDisplayInput.replace(/[^0-9.]/g, '')) / unitDivisor;
+    const numCompletion = parseFloat(rawDisplayCompletion.replace(/[^0-9.]/g, '')) / unitDivisor;
+
+    return {
+      inputPrice: `${currency === 'CNY' ? '¥' : '$'}${numInput.toFixed(precision)}`,
+      completionPrice: `${currency === 'CNY' ? '¥' : '$'}${numCompletion.toFixed(precision)}`,
+      unitLabel,
+      isPerToken: true
+    };
+  } else {
+    // 按次计费
+    const priceUSD = parseFloat(record.model_price) * groupRatio[selectedGroup];
+    const displayVal = displayPrice(priceUSD);
+
+    return {
+      price: displayVal,
+      isPerToken: false
+    };
+  }
+};
+
+// 格式化价格信息（用于卡片视图）
+export const formatPriceInfo = (priceData, t) => {
+  if (priceData.isPerToken) {
+    return (
+      <>
+        <span style={{ color: 'var(--semi-color-text-1)' }}>
+          {t('提示')} {priceData.inputPrice}/{priceData.unitLabel}
+        </span>
+        <span style={{ color: 'var(--semi-color-text-1)' }}>
+          {t('补全')} {priceData.completionPrice}/{priceData.unitLabel}
+        </span>
+      </>
+    );
+  } else {
+    return (
+      <span style={{ color: 'var(--semi-color-text-1)' }}>
+        {t('模型价格')} {priceData.price}
+      </span>
+    );
+  }
+};
+
+// -------------------------------
+// CardPro 分页配置函数
+// 用于创建 CardPro 的 paginationArea 配置
+export const createCardProPagination = ({
+  currentPage,
+  pageSize,
+  total,
+  onPageChange,
+  onPageSizeChange,
+  isMobile = false,
+  pageSizeOpts = [10, 20, 50, 100],
+  showSizeChanger = true,
+  t = (key) => key,
+}) => {
+  if (!total || total <= 0) return null;
+
+  const start = (currentPage - 1) * pageSize + 1;
+  const end = Math.min(currentPage * pageSize, total);
+  const totalText = `${t('显示第')} ${start} ${t('条 - 第')} ${end} ${t('条，共')} ${total} ${t('条')}`;
+
+  return (
+    <>
+      {/* 桌面端左侧总数信息 */}
+      {!isMobile && (
+        <span
+          className="text-sm select-none"
+          style={{ color: 'var(--semi-color-text-2)' }}
+        >
+          {totalText}
+        </span>
+      )}
+
+      {/* 右侧分页控件 */}
+      <Pagination
+        currentPage={currentPage}
+        pageSize={pageSize}
+        total={total}
+        pageSizeOpts={pageSizeOpts}
+        showSizeChanger={showSizeChanger}
+        onPageSizeChange={onPageSizeChange}
+        onPageChange={onPageChange}
+        size={isMobile ? "small" : "default"}
+        showQuickJumper={isMobile}
+        showTotal
+      />
+    </>
+  );
+};
+
+// 模型定价筛选条件默认值
+const DEFAULT_PRICING_FILTERS = {
+  search: '',
+  showWithRecharge: false,
+  currency: 'USD',
+  showRatio: false,
+  viewMode: 'card',
+  tokenUnit: 'M',
+  filterGroup: 'all',
+  filterQuotaType: 'all',
+  filterEndpointType: 'all',
+  filterVendor: 'all',
+  currentPage: 1,
+};
+
+// 重置模型定价筛选条件
+export const resetPricingFilters = ({
+  handleChange,
+  setShowWithRecharge,
+  setCurrency,
+  setShowRatio,
+  setViewMode,
+  setFilterGroup,
+  setFilterQuotaType,
+  setFilterEndpointType,
+  setFilterVendor,
+  setCurrentPage,
+  setTokenUnit,
+}) => {
+  handleChange?.(DEFAULT_PRICING_FILTERS.search);
+  setShowWithRecharge?.(DEFAULT_PRICING_FILTERS.showWithRecharge);
+  setCurrency?.(DEFAULT_PRICING_FILTERS.currency);
+  setShowRatio?.(DEFAULT_PRICING_FILTERS.showRatio);
+  setViewMode?.(DEFAULT_PRICING_FILTERS.viewMode);
+  setTokenUnit?.(DEFAULT_PRICING_FILTERS.tokenUnit);
+  setFilterGroup?.(DEFAULT_PRICING_FILTERS.filterGroup);
+  setFilterQuotaType?.(DEFAULT_PRICING_FILTERS.filterQuotaType);
+  setFilterEndpointType?.(DEFAULT_PRICING_FILTERS.filterEndpointType);
+  setFilterVendor?.(DEFAULT_PRICING_FILTERS.filterVendor);
+  setCurrentPage?.(DEFAULT_PRICING_FILTERS.currentPage);
+};

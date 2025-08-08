@@ -1,8 +1,28 @@
+/*
+Copyright (C) 2025 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+
 import i18next from 'i18next';
-import { Modal, Tag, Typography } from '@douyinfe/semi-ui';
+import { Modal, Tag, Typography, Avatar } from '@douyinfe/semi-ui';
 import { copy, showSuccess } from './utils';
-import { MOBILE_BREAKPOINT } from '../hooks/useIsMobile.js';
+import { MOBILE_BREAKPOINT } from '../hooks/common/useIsMobile.js';
 import { visit } from 'unist-util-visit';
+import * as LobeIcons from '@lobehub/icons';
 import {
   OpenAI,
   Claude,
@@ -50,28 +70,15 @@ import {
   User,
   Settings,
   CircleUser,
+  Package,
 } from 'lucide-react';
-
-// 侧边栏图标颜色映射
-export const sidebarIconColors = {
-  dashboard: '#10B981', // 绿色
-  terminal: '#10B981', // 绿色
-  message: '#06B6D4', // 青色
-  key: '#3B82F6', // 蓝色
-  chart: '#F59E0B', // 琥珀色
-  image: '#EC4899', // 粉色
-  check: '#F59E0B', // 琥珀色
-  credit: '#F97316', // 橙色
-  layers: '#EF4444', // 红色
-  gift: '#F43F5E', // 玫红色
-  user: '#10B981', // 绿色
-  settings: '#F97316', // 橙色
-};
 
 // 获取侧边栏Lucide图标组件
 export function getLucideIcon(key, selected = false) {
   const size = 16;
   const strokeWidth = 2;
+  const SELECTED_COLOR = 'var(--semi-color-primary)';
+  const iconColor = selected ? SELECTED_COLOR : 'currentColor';
   const commonProps = {
     size,
     strokeWidth,
@@ -84,70 +91,70 @@ export function getLucideIcon(key, selected = false) {
       return (
         <LayoutDashboard
           {...commonProps}
-          color={selected ? sidebarIconColors.dashboard : 'currentColor'}
+          color={iconColor}
         />
       );
     case 'playground':
       return (
         <TerminalSquare
           {...commonProps}
-          color={selected ? sidebarIconColors.terminal : 'currentColor'}
+          color={iconColor}
         />
       );
     case 'chat':
       return (
         <MessageSquare
           {...commonProps}
-          color={selected ? sidebarIconColors.message : 'currentColor'}
+          color={iconColor}
         />
       );
     case 'token':
       return (
         <Key
           {...commonProps}
-          color={selected ? sidebarIconColors.key : 'currentColor'}
+          color={iconColor}
         />
       );
     case 'log':
       return (
         <BarChart3
           {...commonProps}
-          color={selected ? sidebarIconColors.chart : 'currentColor'}
+          color={iconColor}
         />
       );
     case 'midjourney':
       return (
         <ImageIcon
           {...commonProps}
-          color={selected ? sidebarIconColors.image : 'currentColor'}
+          color={iconColor}
         />
       );
     case 'task':
       return (
         <CheckSquare
           {...commonProps}
-          color={selected ? sidebarIconColors.check : 'currentColor'}
+          color={iconColor}
         />
       );
     case 'topup':
       return (
         <CreditCard
           {...commonProps}
-          color={selected ? sidebarIconColors.credit : 'currentColor'}
+          color={iconColor}
         />
       );
     case 'channel':
       return (
         <Layers
           {...commonProps}
-          color={selected ? sidebarIconColors.layers : 'currentColor'}
+          color={iconColor}
         />
       );
     case 'redemption':
       return (
         <Gift
           {...commonProps}
-          color={selected ? sidebarIconColors.gift : 'currentColor'}
+          color={iconColor}
         />
       );
     case 'user':
@@ -155,21 +162,28 @@ export function getLucideIcon(key, selected = false) {
       return (
         <User
           {...commonProps}
-          color={selected ? sidebarIconColors.user : 'currentColor'}
+          color={iconColor}
+        />
+      );
+    case 'models':
+      return (
+        <Package
+          {...commonProps}
+          color={iconColor}
         />
       );
     case 'setting':
       return (
         <Settings
           {...commonProps}
-          color={selected ? sidebarIconColors.settings : 'currentColor'}
+          color={iconColor}
         />
       );
     default:
       return (
         <CircleUser
           {...commonProps}
-          color={selected ? sidebarIconColors.user : 'currentColor'}
+          color={iconColor}
         />
       );
   }
@@ -401,6 +415,37 @@ export function getChannelIcon(channelType) {
     default:
       return null; // 未知类型或自定义渠道不显示图标
   }
+}
+
+/**
+ * 根据图标名称动态获取 LobeHub 图标组件
+ * @param {string} iconName - 图标名称
+ * @param {number} size - 图标大小，默认为 14
+ * @returns {JSX.Element} - 对应的图标组件或 Avatar
+ */
+export function getLobeHubIcon(iconName, size = 14) {
+  if (typeof iconName === 'string') iconName = iconName.trim();
+  // 如果没有图标名称，返回 Avatar
+  if (!iconName) {
+    return <Avatar size="extra-extra-small">?</Avatar>;
+  }
+
+  let IconComponent;
+
+  if (iconName.includes('.')) {
+    const [base, variant] = iconName.split('.');
+    const BaseIcon = LobeIcons[base];
+    IconComponent = BaseIcon ? BaseIcon[variant] : undefined;
+  } else {
+    IconComponent = LobeIcons[iconName];
+  }
+
+  if (IconComponent && (typeof IconComponent === 'function' || typeof IconComponent === 'object')) {
+    return <IconComponent size={size} />;
+  }
+
+  const firstLetter = iconName.charAt(0).toUpperCase();
+  return <Avatar size="extra-extra-small">{firstLetter}</Avatar>;
 }
 
 // 颜色列表
@@ -864,12 +909,22 @@ export function renderQuotaWithAmount(amount) {
 }
 
 export function renderQuota(quota, digits = 2) {
+
   let quotaPerUnit = localStorage.getItem('quota_per_unit');
   let displayInCurrency = localStorage.getItem('display_in_currency');
   quotaPerUnit = parseFloat(quotaPerUnit);
   displayInCurrency = displayInCurrency === 'true';
   if (displayInCurrency) {
-    return '$' + (quota / quotaPerUnit).toFixed(digits);
+    const result = quota / quotaPerUnit;
+    const fixedResult = result.toFixed(digits);
+
+    // 如果 toFixed 后结果为 0 但原始值不为 0，显示最小值
+    if (parseFloat(fixedResult) === 0 && quota > 0 && result > 0) {
+      const minValue = Math.pow(10, -digits);
+      return '$' + minValue.toFixed(digits);
+    }
+
+    return '$' + fixedResult;
   }
   return renderNumber(quota);
 }
@@ -1127,6 +1182,7 @@ export function renderLogContent(
   modelPrice = -1,
   groupRatio,
   user_group_ratio,
+  cacheRatio = 1.0,
   image = false,
   imageRatio = 1.0,
   webSearch = false,
@@ -1145,9 +1201,10 @@ export function renderLogContent(
   } else {
     if (image) {
       return i18next.t(
-        '模型倍率 {{modelRatio}}，输出倍率 {{completionRatio}}，图片输入倍率 {{imageRatio}}，{{ratioType}} {{ratio}}',
+        '模型倍率 {{modelRatio}}，缓存倍率 {{cacheRatio}}，输出倍率 {{completionRatio}}，图片输入倍率 {{imageRatio}}，{{ratioType}} {{ratio}}',
         {
           modelRatio: modelRatio,
+          cacheRatio: cacheRatio,
           completionRatio: completionRatio,
           imageRatio: imageRatio,
           ratioType: ratioLabel,
@@ -1156,9 +1213,10 @@ export function renderLogContent(
       );
     } else if (webSearch) {
       return i18next.t(
-        '模型倍率 {{modelRatio}}，输出倍率 {{completionRatio}}，{{ratioType}} {{ratio}}，Web 搜索调用 {{webSearchCallCount}} 次',
+        '模型倍率 {{modelRatio}}，缓存倍率 {{cacheRatio}}，输出倍率 {{completionRatio}}，{{ratioType}} {{ratio}}，Web 搜索调用 {{webSearchCallCount}} 次',
         {
           modelRatio: modelRatio,
+          cacheRatio: cacheRatio,
           completionRatio: completionRatio,
           ratioType: ratioLabel,
           ratio,
@@ -1167,9 +1225,10 @@ export function renderLogContent(
       );
     } else {
       return i18next.t(
-        '模型倍率 {{modelRatio}}，输出倍率 {{completionRatio}}，{{ratioType}} {{ratio}}',
+        '模型倍率 {{modelRatio}}，缓存倍率 {{cacheRatio}}，输出倍率 {{completionRatio}}，{{ratioType}} {{ratio}}',
         {
           modelRatio: modelRatio,
+          cacheRatio: cacheRatio,
           completionRatio: completionRatio,
           ratioType: ratioLabel,
           ratio,
