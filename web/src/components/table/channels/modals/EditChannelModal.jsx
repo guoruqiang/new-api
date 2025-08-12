@@ -131,6 +131,8 @@ const EditChannelModal = (props) => {
     proxy: '',
     pass_through_body_enabled: false,
     system_prompt: '',
+    system_prompt_override: false,
+    settings: '',
   };
   const [batch, setBatch] = useState(false);
   const [multiToSingle, setMultiToSingle] = useState(false);
@@ -186,38 +188,31 @@ const EditChannelModal = (props) => {
     handleInputChange('setting', settingsJson);
   };
 
-  // 解析渠道设置JSON为单独的状态
-  const parseChannelSettings = (settingJson) => {
-    try {
-      if (settingJson && settingJson.trim()) {
-        const parsed = JSON.parse(settingJson);
-        setChannelSettings({
-          force_format: parsed.force_format || false,
-          thinking_to_content: parsed.thinking_to_content || false,
-          proxy: parsed.proxy || '',
-          pass_through_body_enabled: parsed.pass_through_body_enabled || false,
-          system_prompt: parsed.system_prompt || '',
-        });
-      } else {
-        setChannelSettings({
-          force_format: false,
-          thinking_to_content: false,
-          proxy: '',
-          pass_through_body_enabled: false,
-          system_prompt: '',
-        });
-      }
-    } catch (error) {
-      console.error('解析渠道设置失败:', error);
-      setChannelSettings({
-        force_format: false,
-        thinking_to_content: false,
-        proxy: '',
-        pass_through_body_enabled: false,
-        system_prompt: '',
-      });
+  const handleChannelOtherSettingsChange = (key, value) => {
+    // 更新内部状态
+    setChannelSettings(prev => ({ ...prev, [key]: value }));
+
+    // 同步更新到表单字段
+    if (formApiRef.current) {
+      formApiRef.current.setValue(key, value);
     }
-  };
+
+    // 同步更新inputs状态
+    setInputs(prev => ({ ...prev, [key]: value }));
+
+    // 需要更新settings，是一个json，例如{"azure_responses_version": "preview"}
+    let settings = {};
+    if (inputs.settings) {
+      try {
+        settings = JSON.parse(inputs.settings);
+      } catch (error) {
+        console.error('解析设置失败:', error);
+      }
+    }
+    settings[key] = value;
+    const settingsJson = JSON.stringify(settings);
+    handleInputChange('settings', settingsJson);
+  }
 
   const handleInputChange = (name, value) => {
     if (formApiRef.current) {
@@ -340,12 +335,15 @@ const EditChannelModal = (props) => {
           data.proxy = parsedSettings.proxy || '';
           data.pass_through_body_enabled = parsedSettings.pass_through_body_enabled || false;
           data.system_prompt = parsedSettings.system_prompt || '';
+          data.system_prompt_override = parsedSettings.system_prompt_override || false;
         } catch (error) {
           console.error('解析渠道设置失败:', error);
           data.force_format = false;
           data.thinking_to_content = false;
           data.proxy = '';
           data.pass_through_body_enabled = false;
+          data.system_prompt = '';
+          data.system_prompt_override = false;
         }
       } else {
         data.force_format = false;
@@ -353,6 +351,18 @@ const EditChannelModal = (props) => {
         data.proxy = '';
         data.pass_through_body_enabled = false;
         data.system_prompt = '';
+        data.system_prompt_override = false;
+      }
+
+      if (data.settings) {
+        try {
+          const parsedSettings = JSON.parse(data.settings);
+          data.azure_responses_version = parsedSettings.azure_responses_version || '';
+        } catch (error) {
+          console.error('解析其他设置失败:', error);
+          data.azure_responses_version = '';
+          data.region = '';
+        }
       }
 
       setInputs(data);
@@ -372,6 +382,7 @@ const EditChannelModal = (props) => {
         proxy: data.proxy,
         pass_through_body_enabled: data.pass_through_body_enabled,
         system_prompt: data.system_prompt,
+        system_prompt_override: data.system_prompt_override || false,
       });
       // console.log(data);
     } else {
@@ -573,6 +584,7 @@ const EditChannelModal = (props) => {
         proxy: '',
         pass_through_body_enabled: false,
         system_prompt: '',
+        system_prompt_override: false,
       });
       // 重置密钥模式状态
       setKeyMode('append');
@@ -580,6 +592,8 @@ const EditChannelModal = (props) => {
       if (formApiRef.current) {
         formApiRef.current.setValue('key_mode', undefined);
       }
+      // 重置本地输入，避免下次打开残留上一次的 JSON 字段值
+      setInputs(getInitValues());
     }
   }, [props.visible, channelId]);
 
@@ -721,6 +735,7 @@ const EditChannelModal = (props) => {
       proxy: localInputs.proxy || '',
       pass_through_body_enabled: localInputs.pass_through_body_enabled || false,
       system_prompt: localInputs.system_prompt || '',
+      system_prompt_override: localInputs.system_prompt_override || false,
     };
     localInputs.setting = JSON.stringify(channelExtraSettings);
 
@@ -730,6 +745,7 @@ const EditChannelModal = (props) => {
     delete localInputs.proxy;
     delete localInputs.pass_through_body_enabled;
     delete localInputs.system_prompt;
+    delete localInputs.system_prompt_override;
 
     let res;
     localInputs.auto_ban = localInputs.auto_ban ? 1 : 0;
@@ -1248,6 +1264,7 @@ const EditChannelModal = (props) => {
 
                   {inputs.type === 41 && (
                     <JSONEditor
+                      key={`region-${isEdit ? channelId : 'new'}`}
                       field='other'
                       label={t('部署地区')}
                       placeholder={t(
@@ -1362,6 +1379,15 @@ const EditChannelModal = (props) => {
                             label={t('默认 API 版本')}
                             placeholder={t('请输入默认 API 版本，例如：2025-04-01-preview')}
                             onChange={(value) => handleInputChange('other', value)}
+                            showClear
+                          />
+                        </div>
+                        <div>
+                          <Form.Input
+                            field='azure_responses_version'
+                            label={t('默认 Responses API 版本，为空则使用上方版本')}
+                            placeholder={t('例如：preview')}
+                            onChange={(value) => handleChannelOtherSettingsChange('azure_responses_version', value)}
                             showClear
                           />
                         </div>
@@ -1543,6 +1569,7 @@ const EditChannelModal = (props) => {
                   />
 
                   <JSONEditor
+                    key={`model_mapping-${isEdit ? channelId : 'new'}`}
                     field='model_mapping'
                     label={t('模型重定向')}
                     placeholder={
@@ -1646,6 +1673,7 @@ const EditChannelModal = (props) => {
                   />
 
                   <JSONEditor
+                    key={`status_code_mapping-${isEdit ? channelId : 'new'}`}
                     field='status_code_mapping'
                     label={t('状态码复写')}
                     placeholder={
@@ -1721,6 +1749,14 @@ const EditChannelModal = (props) => {
                     autosize
                     showClear
                     extraText={t('用户优先：如果用户在请求中指定了系统提示词，将优先使用用户的设置')}
+                  />
+                  <Form.Switch
+                    field='system_prompt_override'
+                    label={t('系统提示词拼接')}
+                    checkedText={t('开')}
+                    uncheckedText={t('关')}
+                    onChange={(value) => handleChannelSettingsChange('system_prompt_override', value)}
+                    extraText={t('如果用户请求中包含系统提示词，则使用此设置拼接到用户的系统提示词前面')}
                   />
                 </Card>
               </div>

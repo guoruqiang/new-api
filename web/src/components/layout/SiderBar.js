@@ -129,15 +129,15 @@ const SiderBar = ({ onNavigate = () => { } }) => {
   const adminItems = useMemo(
     () => [
       {
-        text: t('模型管理'),
-        itemKey: 'models',
-        to: '/console/models',
-        className: isAdmin() ? '' : 'tableHiddle',
-      },
-      {
         text: t('渠道管理'),
         itemKey: 'channel',
         to: '/channel',
+        className: isAdmin() ? '' : 'tableHiddle',
+      },
+      {
+        text: t('模型管理'),
+        itemKey: 'models',
+        to: '/console/models',
         className: isAdmin() ? '' : 'tableHiddle',
       },
       {
@@ -202,12 +202,20 @@ const SiderBar = ({ onNavigate = () => { } }) => {
         if (Array.isArray(chats)) {
           let chatItems = [];
           for (let i = 0; i < chats.length; i++) {
+            let shouldSkip = false;
             let chat = {};
             for (let key in chats[i]) {
+              let link = chats[i][key];
+              if (typeof link !== 'string') continue; // 确保链接是字符串
+              if (link.startsWith('fluent')) {
+                shouldSkip = true;
+                break; // 跳过 Fluent Read
+              }
               chat.text = key;
               chat.itemKey = 'chat' + i;
               chat.to = '/console/chat/' + i;
             }
+            if (shouldSkip || !chat.text) continue; // 避免推入空项
             chatItems.push(chat);
           }
           setChatItems(chatItems);

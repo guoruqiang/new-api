@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import React from 'react';
-import { Button, Space, Tag, Typography, Modal } from '@douyinfe/semi-ui';
+import { Button, Space, Tag, Typography, Modal, Tooltip } from '@douyinfe/semi-ui';
 import {
   timestamp2string,
   getLobeHubIcon,
@@ -32,6 +32,17 @@ const { Text } = Typography;
 function renderTimestamp(timestamp) {
   return <>{timestamp2string(timestamp)}</>;
 }
+
+// Render model icon column: prefer model.icon, then fallback to vendor icon
+const renderModelIconCol = (record, vendorMap) => {
+  const iconKey = record?.icon || vendorMap[record?.vendor_id]?.icon;
+  if (!iconKey) return '-';
+  return (
+    <div className="flex items-center justify-center">
+      {getLobeHubIcon(iconKey, 20)}
+    </div>
+  );
+};
 
 // Render vendor column with icon
 const renderVendorTag = (vendorId, vendorMap, t) => {
@@ -110,23 +121,34 @@ const renderEndpoints = (value) => {
   }
 };
 
-// Render quota type
-const renderQuotaType = (qt, t) => {
-  if (qt === 1) {
-    return (
-      <Tag color='teal' size='small' shape='circle'>
-        {t('按次计费')}
-      </Tag>
-    );
-  }
-  if (qt === 0) {
-    return (
-      <Tag color='violet' size='small' shape='circle'>
-        {t('按量计费')}
-      </Tag>
-    );
-  }
-  return qt ?? '-';
+// Render quota types (array) using common limited items renderer
+const renderQuotaTypes = (arr, t) => {
+  if (!Array.isArray(arr) || arr.length === 0) return '-';
+  return renderLimitedItems({
+    items: arr,
+    renderItem: (qt, idx) => {
+      if (qt === 1) {
+        return (
+          <Tag key={`${qt}-${idx}`} color='teal' size='small' shape='circle'>
+            {t('按次计费')}
+          </Tag>
+        );
+      }
+      if (qt === 0) {
+        return (
+          <Tag key={`${qt}-${idx}`} color='violet' size='small' shape='circle'>
+            {t('按量计费')}
+          </Tag>
+        );
+      }
+      return (
+        <Tag key={`${qt}-${idx}`} color='white' size='small' shape='circle'>
+          {qt}
+        </Tag>
+      );
+    },
+    maxDisplay: 3,
+  });
 };
 
 // Render bound channels
@@ -196,8 +218,8 @@ const renderOperations = (text, record, setEditingModel, setShowEdit, manageMode
   );
 };
 
-// 名称匹配类型渲染
-const renderNameRule = (rule, t) => {
+// 名称匹配类型渲染（带匹配数量 Tooltip）
+const renderNameRule = (rule, record, t) => {
   const map = {
     0: { color: 'green', label: t('精确') },
     1: { color: 'blue', label: t('前缀') },
@@ -206,10 +228,26 @@ const renderNameRule = (rule, t) => {
   };
   const cfg = map[rule];
   if (!cfg) return '-';
-  return (
+
+  let label = cfg.label;
+  if (rule !== 0 && record.matched_count) {
+    label = `${cfg.label} ${record.matched_count}${t('个模型')}`;
+  }
+
+  const tagElement = (
     <Tag color={cfg.color} size="small" shape='circle'>
-      {cfg.label}
+      {label}
     </Tag>
+  );
+
+  if (rule === 0 || !record.matched_models || record.matched_models.length === 0) {
+    return tagElement;
+  }
+
+  return (
+    <Tooltip content={record.matched_models.join(', ')} showArrow>
+      {tagElement}
+    </Tooltip>
   );
 };
 
@@ -223,6 +261,13 @@ export const getModelsColumns = ({
 }) => {
   return [
     {
+      title: t('图标'),
+      dataIndex: 'icon',
+      width: 70,
+      align: 'center',
+      render: (text, record) => renderModelIconCol(record, vendorMap),
+    },
+    {
       title: t('模型名称'),
       dataIndex: 'model_name',
       render: (text) => (
@@ -234,7 +279,7 @@ export const getModelsColumns = ({
     {
       title: t('匹配类型'),
       dataIndex: 'name_rule',
-      render: (val) => renderNameRule(val, t),
+      render: (val, record) => renderNameRule(val, record, t),
     },
     {
       title: t('描述'),
@@ -268,8 +313,8 @@ export const getModelsColumns = ({
     },
     {
       title: t('计费类型'),
-      dataIndex: 'quota_type',
-      render: (qt) => renderQuotaType(qt, t),
+      dataIndex: 'quota_types',
+      render: (qts) => renderQuotaTypes(qts, t),
     },
     {
       title: t('创建时间'),

@@ -1,7 +1,6 @@
 package gemini
 
 import (
-	"github.com/pkg/errors"
 	"io"
 	"net/http"
 	"one-api/common"
@@ -11,6 +10,8 @@ import (
 	"one-api/service"
 	"one-api/types"
 	"strings"
+
+	"github.com/pkg/errors"
 
 	"github.com/gin-gonic/gin"
 )
@@ -52,15 +53,45 @@ func GeminiTextGenerationHandler(c *gin.Context, info *relaycommon.RelayInfo, re
 		}
 	}
 
-	// 直接返回 Gemini 原生格式的 JSON 响应
-	jsonResponse, err := common.Marshal(geminiResponse)
+	common.IOCopyBytesGracefully(c, resp, responseBody)
+
+	return &usage, nil
+}
+
+func NativeGeminiEmbeddingHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (*dto.Usage, *types.NewAPIError) {
+	defer common.CloseResponseBodyGracefully(resp)
+
+	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 
-	common.IOCopyBytesGracefully(c, resp, jsonResponse)
+	if common.DebugEnabled {
+		println(string(responseBody))
+	}
 
-	return &usage, nil
+	usage := &dto.Usage{
+		PromptTokens: info.PromptTokens,
+		TotalTokens:  info.PromptTokens,
+	}
+
+	if info.IsGeminiBatchEmbedding {
+		var geminiResponse dto.GeminiBatchEmbeddingResponse
+		err = common.Unmarshal(responseBody, &geminiResponse)
+		if err != nil {
+			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+	} else {
+		var geminiResponse dto.GeminiEmbeddingResponse
+		err = common.Unmarshal(responseBody, &geminiResponse)
+		if err != nil {
+			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+	}
+
+	common.IOCopyBytesGracefully(c, resp, responseBody)
+
+	return usage, nil
 }
 
 func GeminiTextGenerationStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {

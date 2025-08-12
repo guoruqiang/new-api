@@ -126,9 +126,26 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 		requestURL = fmt.Sprintf("%s?api-version=%s", requestURL, apiVersion)
 		task := strings.TrimPrefix(requestURL, "/v1/")
 
+		if info.RelayFormat == relaycommon.RelayFormatClaude {
+			task = strings.TrimPrefix(task, "messages")
+			task = "chat/completions" + task
+		}
+
 		// 特殊处理 responses API
 		if info.RelayMode == relayconstant.RelayModeResponses {
-			requestURL = fmt.Sprintf("/openai/v1/responses?api-version=preview")
+			responsesApiVersion := "preview"
+
+			subUrl := "/openai/v1/responses"
+			if strings.Contains(info.BaseUrl, "cognitiveservices.azure.com") {
+				subUrl = "/openai/responses"
+				responsesApiVersion = apiVersion
+			}
+
+			if info.ChannelOtherSettings.AzureResponsesVersion != "" {
+				responsesApiVersion = info.ChannelOtherSettings.AzureResponsesVersion
+			}
+
+			requestURL = fmt.Sprintf("%s?api-version=%s", subUrl, responsesApiVersion)
 			return relaycommon.GetFullRequestURL(info.BaseUrl, requestURL, info.ChannelType), nil
 		}
 
@@ -239,34 +256,34 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 			}
 		}
 	}
-	if strings.HasPrefix(request.Model, "o") || strings.HasPrefix(request.Model, "gpt-5") {
+	if strings.HasPrefix(info.UpstreamModelName, "o") || strings.HasPrefix(info.UpstreamModelName, "gpt-5") {
 		if request.MaxCompletionTokens == 0 && request.MaxTokens != 0 {
 			request.MaxCompletionTokens = request.MaxTokens
 			request.MaxTokens = 0
 		}
 
-		if strings.HasPrefix(request.Model, "o") {
+		if strings.HasPrefix(info.UpstreamModelName, "o") {
 			request.Temperature = nil
 		}
 
-		if strings.HasPrefix(request.Model, "gpt-5") {
-			if request.Model != "gpt-5-chat-latest" {
+		if strings.HasPrefix(info.UpstreamModelName, "gpt-5") {
+			if info.UpstreamModelName != "gpt-5-chat-latest" {
 				request.Temperature = nil
 			}
 		}
 
 		// 转换模型推理力度后缀
-		effort, originModel := parseReasoningEffortFromModelSuffix(request.Model)
+		effort, originModel := parseReasoningEffortFromModelSuffix(info.UpstreamModelName)
 		if effort != "" {
 			request.ReasoningEffort = effort
+			info.UpstreamModelName = originModel
 			request.Model = originModel
 		}
 
 		info.ReasoningEffort = request.ReasoningEffort
-		info.UpstreamModelName = request.Model
 
 		// o系列模型developer适配（o1-mini除外）
-		if !strings.HasPrefix(request.Model, "o1-mini") && !strings.HasPrefix(request.Model, "o1-preview") {
+		if !strings.HasPrefix(info.UpstreamModelName, "o1-mini") && !strings.HasPrefix(info.UpstreamModelName, "o1-preview") {
 			//修改第一个Message的内容，将system改为developer
 			if len(request.Messages) > 0 && request.Messages[0].Role == "system" {
 				request.Messages[0].Role = "developer"
@@ -342,40 +359,42 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 		writer := multipart.NewWriter(&requestBody)
 
 		writer.WriteField("model", request.Model)
-		// 获取所有表单字段
-		formData := c.Request.PostForm
-		// 遍历表单字段并打印输出
-		for key, values := range formData {
-			if key == "model" {
-				continue
+		// 使用已解析的 multipart 表单，避免重复解析
+		mf := c.Request.MultipartForm
+		if mf == nil {
+			if _, err := c.MultipartForm(); err != nil {
+				return nil, errors.New("failed to parse multipart form")
 			}
-			for _, value := range values {
-				writer.WriteField(key, value)
+			mf = c.Request.MultipartForm
+		}
+
+		// 写入所有非文件字段
+		if mf != nil {
+			for key, values := range mf.Value {
+				if key == "model" {
+					continue
+				}
+				for _, value := range values {
+					writer.WriteField(key, value)
+				}
 			}
 		}
 
-		// Parse the multipart form to handle both single image and multiple images
-		if err := c.Request.ParseMultipartForm(32 << 20); err != nil { // 32MB max memory
-			return nil, errors.New("failed to parse multipart form")
-		}
-
-		if c.Request.MultipartForm != nil && c.Request.MultipartForm.File != nil {
+		if mf != nil && mf.File != nil {
 			// Check if "image" field exists in any form, including array notation
 			var imageFiles []*multipart.FileHeader
 			var exists bool
 
 			// First check for standard "image" field
-			if imageFiles, exists = c.Request.MultipartForm.File["image"]; !exists || len(imageFiles) == 0 {
+			if imageFiles, exists = mf.File["image"]; !exists || len(imageFiles) == 0 {
 				// If not found, check for "image[]" field
-				if imageFiles, exists = c.Request.MultipartForm.File["image[]"]; !exists || len(imageFiles) == 0 {
+				if imageFiles, exists = mf.File["image[]"]; !exists || len(imageFiles) == 0 {
 					// If still not found, iterate through all fields to find any that start with "image["
 					foundArrayImages := false
-					for fieldName, files := range c.Request.MultipartForm.File {
+					for fieldName, files := range mf.File {
 						if strings.HasPrefix(fieldName, "image[") && len(files) > 0 {
 							foundArrayImages = true
-							for _, file := range files {
-								imageFiles = append(imageFiles, file)
-							}
+							imageFiles = append(imageFiles, files...)
 						}
 					}
 
@@ -392,7 +411,6 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 				if err != nil {
 					return nil, fmt.Errorf("failed to open image file %d: %w", i, err)
 				}
-				defer file.Close()
 
 				// If multiple images, use image[] as the field name
 				fieldName := "image"
@@ -416,15 +434,18 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 				if _, err := io.Copy(part, file); err != nil {
 					return nil, fmt.Errorf("copy file failed for image %d: %w", i, err)
 				}
+
+				// 复制完立即关闭，避免在循环内使用 defer 占用资源
+				_ = file.Close()
 			}
 
 			// Handle mask file if present
-			if maskFiles, exists := c.Request.MultipartForm.File["mask"]; exists && len(maskFiles) > 0 {
+			if maskFiles, exists := mf.File["mask"]; exists && len(maskFiles) > 0 {
 				maskFile, err := maskFiles[0].Open()
 				if err != nil {
 					return nil, errors.New("failed to open mask file")
 				}
-				defer maskFile.Close()
+				// 复制完立即关闭，避免在循环内使用 defer 占用资源
 
 				// Determine MIME type for mask file
 				mimeType := detectImageMimeType(maskFiles[0].Filename)
@@ -442,6 +463,7 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 				if _, err := io.Copy(maskPart, maskFile); err != nil {
 					return nil, errors.New("copy mask file failed")
 				}
+				_ = maskFile.Close()
 			}
 		} else {
 			return nil, errors.New("no multipart form data found")
@@ -450,7 +472,7 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 		// 关闭 multipart 编写器以设置分界线
 		writer.Close()
 		c.Request.Header.Set("Content-Type", writer.FormDataContentType())
-		return bytes.NewReader(requestBody.Bytes()), nil
+		return &requestBody, nil
 
 	default:
 		return request, nil

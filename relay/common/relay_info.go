@@ -74,13 +74,14 @@ type RelayInfo struct {
 	FirstResponseTime    time.Time
 	isFirstResponse      bool
 	//SendLastReasoningResponse bool
-	ApiType           int
-	IsStream          bool
-	IsPlayground      bool
-	UsePrice          bool
-	RelayMode         int
-	UpstreamModelName string
-	OriginModelName   string
+	ApiType                int
+	IsStream               bool
+	IsGeminiBatchEmbedding bool
+	IsPlayground           bool
+	UsePrice               bool
+	RelayMode              int
+	UpstreamModelName      string
+	OriginModelName        string
 	//RecodeModelName      string
 	RequestURLPath       string
 	ApiVersion           string
@@ -101,6 +102,7 @@ type RelayInfo struct {
 	AudioUsage           bool
 	ReasoningEffort      string
 	ChannelSetting       dto.ChannelSettings
+	ChannelOtherSettings dto.ChannelOtherSettings
 	ParamOverride        map[string]interface{}
 	UserSetting          dto.UserSetting
 	UserEmail            string
@@ -291,6 +293,12 @@ func GenRelayInfo(c *gin.Context) *RelayInfo {
 	if ok {
 		info.ChannelSetting = channelSetting
 	}
+
+	channelOtherSettings, ok := common.GetContextKeyType[dto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
+	if ok {
+		info.ChannelOtherSettings = channelOtherSettings
+	}
+
 	userSetting, ok := common.GetContextKeyType[dto.UserSetting](c, constant.ContextKeyUserSetting)
 	if ok {
 		info.UserSetting = userSetting

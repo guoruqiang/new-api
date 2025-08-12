@@ -35,6 +35,7 @@ const PricingTopSection = ({
   models,
   filteredModels,
   loading,
+  searchValue,
   t
 }) => {
   const [showFilterModal, setShowFilterModal] = useState(false);
@@ -46,10 +47,12 @@ const PricingTopSection = ({
         <Input
           prefix={<IconSearch />}
           placeholder={t('模糊搜索模型名称')}
+          value={searchValue}
           onCompositionStart={handleCompositionStart}
           onCompositionEnd={handleCompositionEnd}
           onChange={handleChange}
           showClear
+          style={{ backgroundColor: 'transparent' }}
         />
       </div>
 
@@ -77,18 +80,20 @@ const PricingTopSection = ({
         </Button>
       )}
     </div>
-  ), [selectedRowKeys, t, handleCompositionStart, handleCompositionEnd, handleChange, copyText, isMobile]);
+  ), [selectedRowKeys, t, handleCompositionStart, handleCompositionEnd, handleChange, copyText, isMobile, searchValue]);
 
   return (
     <>
-      {/* 供应商介绍区域（含骨架屏） */}
-      <PricingVendorIntroWithSkeleton
-        loading={loading}
-        filterVendor={filterVendor}
-        models={filteredModels}
-        allModels={models}
-        t={t}
-      />
+      {/* 供应商介绍区域（桌面端显示） */}
+      {!isMobile && (
+        <PricingVendorIntroWithSkeleton
+          loading={loading}
+          filterVendor={filterVendor}
+          models={filteredModels}
+          allModels={models}
+          t={t}
+        />
+      )}
 
       {/* 搜索和操作区域 */}
       {SearchAndActions}

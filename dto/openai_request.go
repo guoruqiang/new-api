@@ -29,6 +29,7 @@ type GeneralOpenAIRequest struct {
 	MaxTokens           uint              `json:"max_tokens,omitempty"`
 	MaxCompletionTokens uint              `json:"max_completion_tokens,omitempty"`
 	ReasoningEffort     string            `json:"reasoning_effort,omitempty"`
+	Verbosity           json.RawMessage   `json:"verbosity,omitempty"` // gpt-5
 	Temperature         *float64          `json:"temperature,omitempty"`
 	TopP                float64           `json:"top_p,omitempty"`
 	TopK                int               `json:"top_k,omitempty"`
@@ -53,7 +54,7 @@ type GeneralOpenAIRequest struct {
 	Modalities          json.RawMessage   `json:"modalities,omitempty"`
 	Audio               json.RawMessage   `json:"audio,omitempty"`
 	EnableThinking      any               `json:"enable_thinking,omitempty"` // ali
-	THINKING            json.RawMessage   `json:"thinking,omitempty"`        // doubao
+	THINKING            json.RawMessage   `json:"thinking,omitempty"`        // doubao,zhipu_v4
 	ExtraBody           json.RawMessage   `json:"extra_body,omitempty"`
 	SearchParameters    any               `json:"search_parameters,omitempty"` //xai
 	WebSearchOptions    *WebSearchOptions `json:"web_search_options,omitempty"`
@@ -78,6 +79,8 @@ func (r *GeneralOpenAIRequest) GetSystemRoleName() string {
 		if !strings.HasPrefix(r.Model, "o1-mini") && !strings.HasPrefix(r.Model, "o1-preview") {
 			return "developer"
 		}
+	} else if strings.HasPrefix(r.Model, "gpt-5") {
+		return "developer"
 	}
 	return "system"
 }

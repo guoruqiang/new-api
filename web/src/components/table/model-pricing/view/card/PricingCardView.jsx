@@ -25,6 +25,7 @@ import { stringToColor, calculateModelPrice, formatPriceInfo, getLobeHubIcon } f
 import PricingCardSkeleton from './PricingCardSkeleton';
 import { useMinimumLoadingTime } from '../../../../../hooks/common/useMinimumLoadingTime';
 import { renderLimitedItems } from '../../../../common/ui/RenderUtils';
+import { useIsMobile } from '../../../../../hooks/common/useIsMobile';
 
 const CARD_STYLES = {
   container: "w-12 h-12 rounded-2xl flex items-center justify-center relative shadow-md",
@@ -59,6 +60,7 @@ const PricingCardView = ({
   const startIndex = (currentPage - 1) * pageSize;
   const paginatedModels = filteredModels.slice(startIndex, startIndex + pageSize);
   const getModelKey = (model) => model.key ?? model.model_name ?? model.id;
+  const isMobile = useIsMobile();
 
   const handleCheckboxChange = (model, checked) => {
     if (!setSelectedRowKeys) return;
@@ -79,7 +81,17 @@ const PricingCardView = ({
         </div>
       );
     }
-    // 优先使用供应商图标
+    // 1) 优先使用模型自定义图标
+    if (model.icon) {
+      return (
+        <div className={CARD_STYLES.container}>
+          <div className={CARD_STYLES.icon}>
+            {getLobeHubIcon(model.icon, 32)}
+          </div>
+        </div>
+      );
+    }
+    // 2) 退化为供应商图标
     if (model.vendor_icon) {
       return (
         <div className={CARD_STYLES.container}>
@@ -116,29 +128,27 @@ const PricingCardView = ({
     return record.description || '';
   };
 
-  // 渲染价格信息
-  const renderPriceInfo = (record) => {
-    const priceData = calculateModelPrice({
-      record,
-      selectedGroup,
-      groupRatio,
-      tokenUnit,
-      displayPrice,
-      currency
-    });
-    return formatPriceInfo(priceData, t);
-  };
-
   // 渲染标签
   const renderTags = (record) => {
     // 计费类型标签（左边）
-    const billingType = record.quota_type === 1 ? 'teal' : 'violet';
-    const billingText = record.quota_type === 1 ? t('按次计费') : t('按量计费');
-    const billingTag = (
-      <Tag key="billing" shape='circle' color={billingType} size='small'>
-        {billingText}
+    let billingTag = (
+      <Tag key="billing" shape='circle' color='white' size='small'>
+        -
       </Tag>
     );
+    if (record.quota_type === 1) {
+      billingTag = (
+        <Tag key="billing" shape='circle' color='teal' size='small'>
+          {t('按次计费')}
+        </Tag>
+      );
+    } else if (record.quota_type === 0) {
+      billingTag = (
+        <Tag key="billing" shape='circle' color='violet' size='small'>
+          {t('按量计费')}
+        </Tag>
+      );
+    }
 
     // 自定义标签（右边）
     const customTags = [];
@@ -159,7 +169,7 @@ const PricingCardView = ({
           {billingTag}
         </div>
         <div className="flex items-center gap-1">
-          {renderLimitedItems({
+          {customTags.length > 0 && renderLimitedItems({
             items: customTags.map((tag, idx) => ({ key: `custom-${idx}`, element: tag })),
             renderItem: (item, idx) => item.element,
             maxDisplay: 3
@@ -192,11 +202,20 @@ const PricingCardView = ({
   }
 
   return (
-    <div className="p-4">
+    <div className="px-4">
       <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-4">
         {paginatedModels.map((model, index) => {
           const modelKey = getModelKey(model);
           const isSelected = selectedRowKeys.includes(modelKey);
+
+          const priceData = calculateModelPrice({
+            record: model,
+            selectedGroup,
+            groupRatio,
+            tokenUnit,
+            displayPrice,
+            currency,
+          });
 
           return (
             <Card
@@ -215,7 +234,7 @@ const PricingCardView = ({
                         {model.model_name}
                       </h3>
                       <div className="flex items-center gap-3 text-xs mt-1">
-                        {renderPriceInfo(model)}
+                        {formatPriceInfo(priceData, t)}
                       </div>
                     </div>
                   </div>
@@ -290,7 +309,7 @@ const PricingCardView = ({
                           {t('补全')}: {model.quota_type === 0 ? parseFloat(model.completion_ratio.toFixed(3)) : t('无')}
                         </div>
                         <div>
-                          {t('分组')}: {groupRatio[selectedGroup]}
+                          {t('分组')}: {priceData?.usedGroupRatio ?? '-'}
                         </div>
                       </div>
                     </div>
@@ -304,13 +323,15 @@ const PricingCardView = ({
 
       {/* 分页 */}
       {filteredModels.length > 0 && (
-        <div className="flex justify-center mt-6 pt-4 border-t pricing-pagination-divider">
+        <div className="flex justify-center mt-6 py-4 border-t pricing-pagination-divider">
           <Pagination
             currentPage={currentPage}
             pageSize={pageSize}
             total={filteredModels.length}
             showSizeChanger={true}
             pageSizeOptions={[10, 20, 50, 100]}
+            size={isMobile ? 'small' : 'default'}
+            showQuickJumper={isMobile}
             onPageChange={(page) => setCurrentPage(page)}
             onPageSizeChange={(size) => {
               setPageSize(size);

@@ -3,14 +3,50 @@ package dto
 import (
 	"encoding/json"
 	"one-api/common"
+	"strings"
 )
 
 type GeminiChatRequest struct {
 	Contents           []GeminiChatContent        `json:"contents"`
 	SafetySettings     []GeminiChatSafetySettings `json:"safetySettings,omitempty"`
 	GenerationConfig   GeminiChatGenerationConfig `json:"generationConfig,omitempty"`
-	Tools              []GeminiChatTool           `json:"tools,omitempty"`
+	Tools              json.RawMessage            `json:"tools,omitempty"`
 	SystemInstructions *GeminiChatContent         `json:"systemInstruction,omitempty"`
+}
+
+func (r *GeminiChatRequest) GetTools() []GeminiChatTool {
+	var tools []GeminiChatTool
+	if strings.HasSuffix(string(r.Tools), "[") {
+		// is array
+		if err := common.Unmarshal(r.Tools, &tools); err != nil {
+			common.LogError(nil, "error_unmarshalling_tools: "+err.Error())
+			return nil
+		}
+	} else if strings.HasPrefix(string(r.Tools), "{") {
+		// is object
+		singleTool := GeminiChatTool{}
+		if err := common.Unmarshal(r.Tools, &singleTool); err != nil {
+			common.LogError(nil, "error_unmarshalling_single_tool: "+err.Error())
+			return nil
+		}
+		tools = []GeminiChatTool{singleTool}
+	}
+	return tools
+}
+
+func (r *GeminiChatRequest) SetTools(tools []GeminiChatTool) {
+	if len(tools) == 0 {
+		r.Tools = json.RawMessage("[]")
+		return
+	}
+
+	// Marshal the tools to JSON
+	data, err := common.Marshal(tools)
+	if err != nil {
+		common.LogError(nil, "error_marshalling_tools: "+err.Error())
+		return
+	}
+	r.Tools = data
 }
 
 type GeminiThinkingConfig struct {
@@ -210,14 +246,23 @@ type GeminiImagePrediction struct {
 
 // Embedding related structs
 type GeminiEmbeddingRequest struct {
+	Model                string            `json:"model,omitempty"`
 	Content              GeminiChatContent `json:"content"`
 	TaskType             string            `json:"taskType,omitempty"`
 	Title                string            `json:"title,omitempty"`
 	OutputDimensionality int               `json:"outputDimensionality,omitempty"`
 }
 
+type GeminiBatchEmbeddingRequest struct {
+	Requests []*GeminiEmbeddingRequest `json:"requests"`
+}
+
 type GeminiEmbeddingResponse struct {
 	Embedding ContentEmbedding `json:"embedding"`
+}
+
+type GeminiBatchEmbeddingResponse struct {
+	Embeddings []*ContentEmbedding `json:"embeddings"`
 }
 
 type ContentEmbedding struct {
