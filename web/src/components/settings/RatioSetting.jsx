@@ -39,10 +39,14 @@ const RatioSetting = () => {
     CompletionRatio: '',
     GroupRatio: '',
     GroupGroupRatio: '',
+    ImageRatio: '',
+    AudioRatio: '',
+    AudioCompletionRatio: '',
     AutoGroups: '',
     DefaultUseAutoGroup: false,
     ExposeRatioEnabled: false,
     UserUsableGroups: '',
+    'group_ratio_setting.group_special_usable_group': '',
   });
 
   const [loading, setLoading] = useState(false);
@@ -54,14 +58,7 @@ const RatioSetting = () => {
       let newInputs = {};
       data.forEach((item) => {
         if (
-          item.key === 'ModelRatio' ||
-          item.key === 'GroupRatio' ||
-          item.key === 'GroupGroupRatio' ||
-          item.key === 'AutoGroups' ||
-          item.key === 'UserUsableGroups' ||
-          item.key === 'CompletionRatio' ||
-          item.key === 'ModelPrice' ||
-          item.key === 'CacheRatio'
+          item.value.startsWith('{') || item.value.startsWith('[')
         ) {
           try {
             item.value = JSON.stringify(JSON.parse(item.value), null, 2);

@@ -361,6 +361,10 @@ export const useLogsData = () => {
                 other?.user_group_ratio,
                 other.cache_ratio || 1.0,
                 other.cache_creation_ratio || 1.0,
+                other.cache_creation_tokens_5m || 0,
+                other.cache_creation_ratio_5m || other.cache_creation_ratio || 1.0,
+                other.cache_creation_tokens_1h || 0,
+                other.cache_creation_ratio_1h || other.cache_creation_ratio || 1.0,
               )
             : renderLogContent(
                 other?.model_ratio,
@@ -377,6 +381,12 @@ export const useLogsData = () => {
                 other.file_search_call_count || 0,
               ),
         });
+        if (logs[i]?.content) {
+          expandDataLocal.push({
+            key: t('其他详情'),
+            value: logs[i].content,
+          });
+        }
       }
       if (logs[i].type === 2) {
         let modelMapped =
@@ -423,6 +433,10 @@ export const useLogsData = () => {
             other.cache_ratio || 1.0,
             other.cache_creation_tokens || 0,
             other.cache_creation_ratio || 1.0,
+            other.cache_creation_tokens_5m || 0,
+            other.cache_creation_ratio_5m || other.cache_creation_ratio || 1.0,
+            other.cache_creation_tokens_1h || 0,
+            other.cache_creation_ratio_1h || other.cache_creation_ratio || 1.0,
           );
         } else {
           content = renderModelPrice(
@@ -447,6 +461,8 @@ export const useLogsData = () => {
             other?.audio_input_seperate_price || false,
             other?.audio_input_token_count || 0,
             other?.audio_input_price || 0,
+            other?.image_generation_call || false,
+            other?.image_generation_call_price || 0,
           );
         }
         expandDataLocal.push({
@@ -459,6 +475,12 @@ export const useLogsData = () => {
             value: other.reasoning_effort,
           });
         }
+      }
+      if (other?.request_path) {
+        expandDataLocal.push({
+          key: t('请求路径'),
+          value: other.request_path,
+        });
       }
       expandDatesLocal[logs[i].key] = expandDataLocal;
     }

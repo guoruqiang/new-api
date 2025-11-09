@@ -8,14 +8,15 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"one-api/common"
-	"one-api/dto"
-	"one-api/logger"
-	relaycommon "one-api/relay/common"
-	"one-api/service"
-	"one-api/types"
 	"strings"
 	"time"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/logger"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
 )
@@ -97,9 +98,9 @@ func oaiFormEdit2AliImageEdit(c *gin.Context, info *relaycommon.RelayInfo, reque
 		return nil, errors.New("image is required")
 	}
 
-	if len(imageFiles) > 1 {
-		return nil, errors.New("only one image is supported for qwen edit")
-	}
+	//if len(imageFiles) > 1 {
+	//	return nil, errors.New("only one image is supported for qwen edit")
+	//}
 
 	// 获取base64编码的图片
 	var imageBase64s []string

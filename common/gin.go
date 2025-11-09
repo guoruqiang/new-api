@@ -3,10 +3,13 @@ package common
 import (
 	"bytes"
 	"io"
+	"mime/multipart"
 	"net/http"
-	"one-api/constant"
+	"net/url"
 	"strings"
 	"time"
+
+	"github.com/QuantumNous/new-api/constant"
 
 	"github.com/gin-gonic/gin"
 )
@@ -37,7 +40,11 @@ func UnmarshalBodyReusable(c *gin.Context, v any) error {
 	//}
 	contentType := c.Request.Header.Get("Content-Type")
 	if strings.HasPrefix(contentType, "application/json") {
-		err = Unmarshal(requestBody, &v)
+		err = Unmarshal(requestBody, v)
+	} else if strings.Contains(contentType, gin.MIMEPOSTForm) {
+		err = parseFormData(requestBody, v)
+	} else if strings.Contains(contentType, gin.MIMEMultipartPOSTForm) {
+		err = parseMultipartFormData(c, requestBody, v)
 	} else {
 		// skip for now
 		// TODO: someday non json request have variant model, we will need to implementation this
@@ -112,4 +119,87 @@ func ApiSuccess(c *gin.Context, data any) {
 		"message": "",
 		"data":    data,
 	})
+}
+
+func ParseMultipartFormReusable(c *gin.Context) (*multipart.Form, error) {
+	requestBody, err := GetRequestBody(c)
+	if err != nil {
+		return nil, err
+	}
+
+	contentType := c.Request.Header.Get("Content-Type")
+	boundary := ""
+	if idx := strings.Index(contentType, "boundary="); idx != -1 {
+		boundary = contentType[idx+9:]
+	}
+
+	reader := multipart.NewReader(bytes.NewReader(requestBody), boundary)
+	form, err := reader.ReadForm(32 << 20) // 32 MB max memory
+	if err != nil {
+		return nil, err
+	}
+
+	// Reset request body
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+	return form, nil
+}
+
+func processFormMap(formMap map[string]any, v any) error {
+	jsonData, err := Marshal(formMap)
+	if err != nil {
+		return err
+	}
+
+	err = Unmarshal(jsonData, v)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func parseFormData(data []byte, v any) error {
+	values, err := url.ParseQuery(string(data))
+	if err != nil {
+		return err
+	}
+	formMap := make(map[string]any)
+	for key, vals := range values {
+		if len(vals) == 1 {
+			formMap[key] = vals[0]
+		} else {
+			formMap[key] = vals
+		}
+	}
+
+	return processFormMap(formMap, v)
+}
+
+func parseMultipartFormData(c *gin.Context, data []byte, v any) error {
+	contentType := c.Request.Header.Get("Content-Type")
+	boundary := ""
+	if idx := strings.Index(contentType, "boundary="); idx != -1 {
+		boundary = contentType[idx+9:]
+	}
+
+	if boundary == "" {
+		return Unmarshal(data, v) // Fallback to JSON
+	}
+
+	reader := multipart.NewReader(bytes.NewReader(data), boundary)
+	form, err := reader.ReadForm(32 << 20) // 32 MB max memory
+	if err != nil {
+		return err
+	}
+	defer form.RemoveAll()
+	formMap := make(map[string]any)
+	for key, vals := range form.Value {
+		if len(vals) == 1 {
+			formMap[key] = vals[0]
+		} else {
+			formMap[key] = vals
+		}
+	}
+
+	return processFormMap(formMap, v)
 }
