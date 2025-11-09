@@ -140,7 +140,7 @@ docker run --name new-api -d --restart always \
 
 ### 手动部署
 1. 从 [GitHub Releases](https://github.com/QuantumNous/new-api/releases/latest) 下载可执行文件或者从源码编译：
-   ```shell
+```shell
    git clone https://github.com/Calcium-Ion/new-api.git
 
    # 构建前端
@@ -158,7 +158,7 @@ docker run --name new-api -d --restart always \
    cd ..
    go mod download
    go build -ldflags "-s -w" -o new-api
-   ````
+````
 2. 运行：
    ```shell
    chmod u+x new-api
