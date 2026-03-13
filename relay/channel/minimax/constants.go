@@ -14,6 +14,11 @@ var ModelList = []string{
 	"speech-02-turbo",
 	"speech-01-hd",
 	"speech-01-turbo",
+	"MiniMax-M2.1",
+	"MiniMax-M2.1-highspeed",
+	"MiniMax-M2",
+	"MiniMax-M2.5",
+	"MiniMax-M2.5-highspeed",
 }
 
 var ChannelName = "minimax"

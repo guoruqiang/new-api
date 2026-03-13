@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
+	"github.com/samber/lo"
 )
 
 func requestOpenAI2Cohere(textRequest dto.GeneralOpenAIRequest) *CohereRequest {
@@ -23,7 +24,7 @@ func requestOpenAI2Cohere(textRequest dto.GeneralOpenAIRequest) *CohereRequest {
 		Model:       textRequest.Model,
 		ChatHistory: []ChatHistory{},
 		Message:     "",
-		Stream:      textRequest.Stream,
+		Stream:      lo.FromPtrOr(textRequest.Stream, false),
 		MaxTokens:   textRequest.GetMaxTokens(),
 	}
 	if common.CohereSafetySetting != "NONE" {
@@ -55,14 +56,15 @@ func requestOpenAI2Cohere(textRequest dto.GeneralOpenAIRequest) *CohereRequest {
 }
 
 func requestConvertRerank2Cohere(rerankRequest dto.RerankRequest) *CohereRerankRequest {
-	if rerankRequest.TopN == 0 {
-		rerankRequest.TopN = 1
+	topN := lo.FromPtrOr(rerankRequest.TopN, 1)
+	if topN <= 0 {
+		topN = 1
 	}
 	cohereReq := CohereRerankRequest{
 		Query:           rerankRequest.Query,
 		Documents:       rerankRequest.Documents,
 		Model:           rerankRequest.Model,
-		TopN:            rerankRequest.TopN,
+		TopN:            topN,
 		ReturnDocuments: true,
 	}
 	return &cohereReq
@@ -165,7 +167,7 @@ func cohereStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		}
 	})
 	if usage.PromptTokens == 0 {
-		usage = service.ResponseText2Usage(responseText, info.UpstreamModelName, info.PromptTokens)
+		usage = service.ResponseText2Usage(c, responseText, info.UpstreamModelName, info.GetEstimatePromptTokens())
 	}
 	return usage, nil
 }
@@ -225,9 +227,9 @@ func cohereRerankHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 	}
 	usage := dto.Usage{}
 	if cohereResp.Meta.BilledUnits.InputTokens == 0 {
-		usage.PromptTokens = info.PromptTokens
+		usage.PromptTokens = info.GetEstimatePromptTokens()
 		usage.CompletionTokens = 0
-		usage.TotalTokens = info.PromptTokens
+		usage.TotalTokens = info.GetEstimatePromptTokens()
 	} else {
 		usage.PromptTokens = cohereResp.Meta.BilledUnits.InputTokens
 		usage.CompletionTokens = cohereResp.Meta.BilledUnits.OutputTokens

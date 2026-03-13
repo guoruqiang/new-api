@@ -22,10 +22,17 @@ import (
 )
 
 const (
-	InitialScannerBufferSize = 64 << 10 // 64KB (64*1024)
-	MaxScannerBufferSize     = 10 << 20 // 10MB (10*1024*1024)
-	DefaultPingInterval      = 10 * time.Second
+	InitialScannerBufferSize    = 64 << 10 // 64KB (64*1024)
+	DefaultMaxScannerBufferSize = 64 << 20 // 64MB (64*1024*1024) default SSE buffer size
+	DefaultPingInterval         = 10 * time.Second
 )
+
+func getScannerBufferSize() int {
+	if constant.StreamScannerMaxBufferMB > 0 {
+		return constant.StreamScannerMaxBufferMB << 20
+	}
+	return DefaultMaxScannerBufferSize
+}
 
 func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string) bool) {
 
@@ -65,6 +72,8 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	if common.DebugEnabled {
 		// print timeout and ping interval for debugging
 		println("relay timeout seconds:", common.RelayTimeout)
+		println("relay max idle conns:", common.RelayMaxIdleConns)
+		println("relay max idle conns per host:", common.RelayMaxIdleConnsPerHost)
 		println("streaming timeout seconds:", int64(streamingTimeout.Seconds()))
 		println("ping interval seconds:", int64(pingInterval.Seconds()))
 	}
@@ -81,10 +90,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 		// 等待所有 goroutine 退出，最多等待5秒
 		done := make(chan struct{})
-		go func() {
+		gopool.Go(func() {
 			wg.Wait()
 			close(done)
-		}()
+		})
 
 		select {
 		case <-done:
@@ -95,7 +104,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		close(stopChan)
 	}()
 
-	scanner.Buffer(make([]byte, InitialScannerBufferSize), MaxScannerBufferSize)
+	scanner.Buffer(make([]byte, InitialScannerBufferSize), getScannerBufferSize())
 	scanner.Split(bufio.ScanLines)
 	SetEventStreamHeaders(c)
 
@@ -129,11 +138,11 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				case <-pingTicker.C:
 					// 使用超时机制防止写操作阻塞
 					done := make(chan error, 1)
-					go func() {
+					gopool.Go(func() {
 						writeMutex.Lock()
 						defer writeMutex.Unlock()
 						done <- PingData(c)
-					}()
+					})
 
 					select {
 					case err := <-done:
@@ -167,10 +176,32 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		})
 	}
 
+	dataChan := make(chan string, 10)
+
+	wg.Add(1)
+	gopool.Go(func() {
+		defer func() {
+			wg.Done()
+			if r := recover(); r != nil {
+				logger.LogError(c, fmt.Sprintf("data handler goroutine panic: %v", r))
+			}
+			common.SafeSendBool(stopChan, true)
+		}()
+		for data := range dataChan {
+			writeMutex.Lock()
+			success := dataHandler(data)
+			writeMutex.Unlock()
+			if !success {
+				return
+			}
+		}
+	})
+
 	// Scanner goroutine with improved error handling
 	wg.Add(1)
 	common.RelayCtxGo(ctx, func() {
 		defer func() {
+			close(dataChan)
 			wg.Done()
 			if r := recover(); r != nil {
 				logger.LogError(c, fmt.Sprintf("scanner goroutine panic: %v", r))
@@ -206,27 +237,16 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				continue
 			}
 			data = data[5:]
-			data = strings.TrimLeft(data, " ")
-			data = strings.TrimSuffix(data, "\r")
+			data = strings.TrimSpace(data)
+			if data == "" {
+				continue
+			}
 			if !strings.HasPrefix(data, "[DONE]") {
 				info.SetFirstResponseTime()
-
-				// 使用超时机制防止写操作阻塞
-				done := make(chan bool, 1)
-				go func() {
-					writeMutex.Lock()
-					defer writeMutex.Unlock()
-					done <- dataHandler(data)
-				}()
+				info.ReceivedResponseCount++
 
 				select {
-				case success := <-done:
-					if !success {
-						return
-					}
-				case <-time.After(10 * time.Second):
-					logger.LogError(c, "data handler timeout")
-					return
+				case dataChan <- data:
 				case <-ctx.Done():
 					return
 				case <-stopChan:

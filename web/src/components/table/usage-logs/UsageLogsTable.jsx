@@ -40,8 +40,10 @@ const LogsTable = (logsData) => {
     handlePageSizeChange,
     copyText,
     showUserInfoFunc,
+    openChannelAffinityUsageCacheModal,
     hasExpandableRows,
     isAdminUser,
+    billingDisplayMode,
     t,
     COLUMN_KEYS,
   } = logsData;
@@ -53,9 +55,19 @@ const LogsTable = (logsData) => {
       COLUMN_KEYS,
       copyText,
       showUserInfoFunc,
+      openChannelAffinityUsageCacheModal,
       isAdminUser,
+      billingDisplayMode,
     });
-  }, [t, COLUMN_KEYS, copyText, showUserInfoFunc, isAdminUser]);
+  }, [
+    t,
+    COLUMN_KEYS,
+    copyText,
+    showUserInfoFunc,
+    openChannelAffinityUsageCacheModal,
+    isAdminUser,
+    billingDisplayMode,
+  ]);
 
   // Filter columns based on visibility settings
   const getVisibleColumns = () => {

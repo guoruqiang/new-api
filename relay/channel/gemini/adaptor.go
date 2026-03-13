@@ -13,9 +13,11 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/setting/model_setting"
+	"github.com/QuantumNous/new-api/setting/reasoning"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
+	"github.com/samber/lo"
 )
 
 type Adaptor struct {
@@ -57,7 +59,7 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 
 func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.ImageRequest) (any, error) {
 	if !strings.HasPrefix(info.UpstreamModelName, "imagen") {
-		return nil, errors.New("not supported model for image generation")
+		return nil, errors.New("not supported model for image generation, only imagen models are supported")
 	}
 
 	// convert size to aspect ratio but allow user to specify aspect ratio
@@ -90,7 +92,7 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 			},
 		},
 		Parameters: dto.GeminiImageParameters{
-			SampleCount:      int(request.N),
+			SampleCount:      int(lo.FromPtrOr(request.N, uint(1))),
 			AspectRatio:      aspectRatio,
 			PersonGeneration: "allow_adult", // default allow adult
 		},
@@ -137,6 +139,8 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 			info.UpstreamModelName = strings.TrimSuffix(info.UpstreamModelName, "-thinking")
 		} else if strings.HasSuffix(info.UpstreamModelName, "-nothinking") {
 			info.UpstreamModelName = strings.TrimSuffix(info.UpstreamModelName, "-nothinking")
+		} else if baseModel, level, ok := reasoning.TrimEffortSuffix(info.UpstreamModelName); ok && level != "" {
+			info.UpstreamModelName = baseModel
 		}
 	}
 
@@ -177,7 +181,7 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 		return nil, errors.New("request is nil")
 	}
 
-	geminiRequest, err := CovertGemini2OpenAI(c, *request, info)
+	geminiRequest, err := CovertOpenAI2Gemini(c, *request, info)
 	if err != nil {
 		return nil, err
 	}
@@ -220,8 +224,9 @@ func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.Rela
 		switch info.UpstreamModelName {
 		case "text-embedding-004", "gemini-embedding-exp-03-07", "gemini-embedding-001":
 			// Only newer models introduced after 2024 support OutputDimensionality
-			if request.Dimensions > 0 {
-				geminiRequest["outputDimensionality"] = request.Dimensions
+			dimensions := lo.FromPtrOr(request.Dimensions, 0)
+			if dimensions > 0 {
+				geminiRequest["outputDimensionality"] = dimensions
 			}
 		}
 		geminiRequests = append(geminiRequests, geminiRequest)

@@ -9,6 +9,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 
 	"github.com/gin-gonic/gin"
+	"github.com/samber/lo"
 )
 
 func oaiFormEdit2WanxImageEdit(c *gin.Context, info *relaycommon.RelayInfo, request dto.ImageRequest) (*AliImageRequest, error) {
@@ -26,12 +27,20 @@ func oaiFormEdit2WanxImageEdit(c *gin.Context, info *relaycommon.RelayInfo, requ
 	if wanInput.Images, err = getImageBase64sFromForm(c, "image"); err != nil {
 		return nil, fmt.Errorf("get image base64s from form failed: %w", err)
 	}
-	wanParams := WanImageParameters{
-		N: int(request.N),
-	}
+	//wanParams := WanImageParameters{
+	//	N: int(request.N),
+	//}
 	imageRequest.Input = wanInput
-	imageRequest.Parameters = wanParams
+	imageRequest.Parameters = AliImageParameters{
+		N: int(lo.FromPtrOr(request.N, uint(1))),
+	}
+	info.PriceData.AddOtherRatio("n", float64(imageRequest.Parameters.N))
+
 	return &imageRequest, nil
+}
+
+func isOldWanModel(modelName string) bool {
+	return strings.Contains(modelName, "wan") && !strings.Contains(modelName, "wan2.6")
 }
 
 func isWanModel(modelName string) bool {

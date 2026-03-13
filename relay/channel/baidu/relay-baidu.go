@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/types"
+	"github.com/samber/lo"
 
 	"github.com/gin-gonic/gin"
 )
@@ -28,9 +29,9 @@ var baiduTokenStore sync.Map
 func requestOpenAI2Baidu(request dto.GeneralOpenAIRequest) *BaiduChatRequest {
 	baiduRequest := BaiduChatRequest{
 		Temperature:    request.Temperature,
-		TopP:           request.TopP,
-		PenaltyScore:   request.FrequencyPenalty,
-		Stream:         request.Stream,
+		TopP:           lo.FromPtrOr(request.TopP, 0),
+		PenaltyScore:   lo.FromPtrOr(request.FrequencyPenalty, 0),
+		Stream:         lo.FromPtrOr(request.Stream, false),
 		DisableSearch:  false,
 		EnableCitation: false,
 		UserId:         request.User,
@@ -150,7 +151,7 @@ func baiduHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respon
 		return types.NewError(err, types.ErrorCodeBadResponseBody), nil
 	}
 	if baiduResponse.ErrorMsg != "" {
-		return types.NewError(fmt.Errorf(baiduResponse.ErrorMsg), types.ErrorCodeBadResponseBody), nil
+		return types.NewError(fmt.Errorf("%s", baiduResponse.ErrorMsg), types.ErrorCodeBadResponseBody), nil
 	}
 	fullTextResponse := responseBaidu2OpenAI(&baiduResponse)
 	jsonResponse, err := json.Marshal(fullTextResponse)
@@ -175,7 +176,7 @@ func baiduEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *ht
 		return types.NewError(err, types.ErrorCodeBadResponseBody), nil
 	}
 	if baiduResponse.ErrorMsg != "" {
-		return types.NewError(fmt.Errorf(baiduResponse.ErrorMsg), types.ErrorCodeBadResponseBody), nil
+		return types.NewError(fmt.Errorf("%s", baiduResponse.ErrorMsg), types.ErrorCodeBadResponseBody), nil
 	}
 	fullTextResponse := embeddingResponseBaidu2OpenAI(&baiduResponse)
 	jsonResponse, err := json.Marshal(fullTextResponse)

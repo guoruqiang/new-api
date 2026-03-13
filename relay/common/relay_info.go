@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -36,6 +37,9 @@ type ClaudeConvertInfo struct {
 	Usage            *dto.Usage
 	FinishReason     string
 	Done             bool
+
+	ToolCallBaseIndex      int
+	ToolCallMaxIndexOffset int
 }
 
 type RerankerInfo struct {
@@ -73,11 +77,17 @@ type ChannelMeta struct {
 	SupportStreamOptions bool // 是否支持流式选项
 }
 
+type TokenCountMeta struct {
+	//promptTokens int
+	estimatePromptTokens int
+}
+
 type RelayInfo struct {
 	TokenId           int
 	TokenKey          string
+	TokenGroup        string
 	UserId            int
-	UsingGroup        string // 使用的分组
+	UsingGroup        string // 使用的分组，当auto跨分组重试时，会变动
 	UserGroup         string // 用户所在分组
 	TokenUnlimited    bool
 	StartTime         time.Time
@@ -91,7 +101,7 @@ type RelayInfo struct {
 	RelayMode              int
 	OriginModelName        string
 	RequestURLPath         string
-	PromptTokens           int
+	RequestHeaders         map[string]string
 	ShouldIncludeUsage     bool
 	DisablePing            bool // 是否禁止向下游发送自定义 Ping
 	ClientWs               *websocket.Conn
@@ -107,14 +117,52 @@ type RelayInfo struct {
 	UserQuota              int
 	RelayFormat            types.RelayFormat
 	SendResponseCount      int
-	FinalPreConsumedQuota  int  // 最终预消耗的配额
-	IsClaudeBetaQuery      bool // /v1/messages?beta=true
+	ReceivedResponseCount  int
+	FinalPreConsumedQuota  int // 最终预消耗的配额
+	// ForcePreConsume 为 true 时禁用 BillingSession 的信任额度旁路，
+	// 强制预扣全额。用于异步任务（视频/音乐生成等），因为请求返回后任务仍在运行，
+	// 必须在提交前锁定全额。
+	ForcePreConsume bool
+	// Billing 是计费会话，封装了预扣费/结算/退款的统一生命周期。
+	// 免费模型时为 nil。
+	Billing BillingSettler
+	// BillingSource indicates whether this request is billed from wallet quota or subscription.
+	// "" or "wallet" => wallet; "subscription" => subscription
+	BillingSource string
+	// SubscriptionId is the user_subscriptions.id used when BillingSource == "subscription"
+	SubscriptionId int
+	// SubscriptionPreConsumed is the amount pre-consumed on subscription item (quota units or 1)
+	SubscriptionPreConsumed int64
+	// SubscriptionPostDelta is the post-consume delta applied to amount_used (quota units; can be negative).
+	SubscriptionPostDelta int64
+	// SubscriptionPlanId / SubscriptionPlanTitle are used for logging/UI display.
+	SubscriptionPlanId    int
+	SubscriptionPlanTitle string
+	// RequestId is used for idempotent pre-consume/refund
+	RequestId string
+	// SubscriptionAmountTotal / SubscriptionAmountUsedAfterPreConsume are used to compute remaining in logs.
+	SubscriptionAmountTotal               int64
+	SubscriptionAmountUsedAfterPreConsume int64
+	IsClaudeBetaQuery                     bool // /v1/messages?beta=true
+	IsChannelTest                         bool // channel test request
+	RetryIndex                            int
+	LastError                             *types.NewAPIError
+	RuntimeHeadersOverride                map[string]interface{}
+	UseRuntimeHeadersOverride             bool
 
 	PriceData types.PriceData
 
 	Request dto.Request
 
+	// RequestConversionChain records request format conversions in order, e.g.
+	// ["openai", "openai_responses"] or ["openai", "claude"].
+	RequestConversionChain []types.RelayFormat
+	// 最终请求到上游的格式。可由 adaptor 显式设置；
+	// 若为空，调用 GetFinalRequestRelayFormat 会回退到 RequestConversionChain 的最后一项或 RelayFormat。
+	FinalRequestRelayFormat types.RelayFormat
+
 	ThinkingContentInfo
+	TokenCountMeta
 	*ClaudeConvertInfo
 	*RerankerInfo
 	*ResponsesUsageInfo
@@ -189,7 +237,7 @@ func (info *RelayInfo) ToString() string {
 	fmt.Fprintf(b, "IsPlayground: %t, ", info.IsPlayground)
 	fmt.Fprintf(b, "RequestURLPath: %q, ", info.RequestURLPath)
 	fmt.Fprintf(b, "OriginModelName: %q, ", info.OriginModelName)
-	fmt.Fprintf(b, "PromptTokens: %d, ", info.PromptTokens)
+	fmt.Fprintf(b, "EstimatePromptTokens: %d, ", info.estimatePromptTokens)
 	fmt.Fprintf(b, "ShouldIncludeUsage: %t, ", info.ShouldIncludeUsage)
 	fmt.Fprintf(b, "DisablePing: %t, ", info.DisablePing)
 	fmt.Fprintf(b, "SendResponseCount: %d, ", info.SendResponseCount)
@@ -252,20 +300,24 @@ func (info *RelayInfo) ToString() string {
 
 // 定义支持流式选项的通道类型
 var streamSupportedChannels = map[int]bool{
-	constant.ChannelTypeOpenAI:     true,
-	constant.ChannelTypeAnthropic:  true,
-	constant.ChannelTypeAws:        true,
-	constant.ChannelTypeGemini:     true,
-	constant.ChannelCloudflare:     true,
-	constant.ChannelTypeAzure:      true,
-	constant.ChannelTypeVolcEngine: true,
-	constant.ChannelTypeOllama:     true,
-	constant.ChannelTypeXai:        true,
-	constant.ChannelTypeDeepSeek:   true,
-	constant.ChannelTypeBaiduV2:    true,
-	constant.ChannelTypeZhipu_v4:   true,
-	constant.ChannelTypeAli:        true,
-	constant.ChannelTypeSubmodel:   true,
+	constant.ChannelTypeOpenAI:      true,
+	constant.ChannelTypeAnthropic:   true,
+	constant.ChannelTypeAws:         true,
+	constant.ChannelTypeGemini:      true,
+	constant.ChannelCloudflare:      true,
+	constant.ChannelTypeAzure:       true,
+	constant.ChannelTypeVolcEngine:  true,
+	constant.ChannelTypeOllama:      true,
+	constant.ChannelTypeXai:         true,
+	constant.ChannelTypeDeepSeek:    true,
+	constant.ChannelTypeBaiduV2:     true,
+	constant.ChannelTypeZhipu_v4:    true,
+	constant.ChannelTypeAli:         true,
+	constant.ChannelTypeSubmodel:    true,
+	constant.ChannelTypeCodex:       true,
+	constant.ChannelTypeMoonshot:    true,
+	constant.ChannelTypeMiniMax:     true,
+	constant.ChannelTypeSiliconFlow: true,
 }
 
 func GenRelayInfoWs(c *gin.Context, ws *websocket.Conn) *RelayInfo {
@@ -285,10 +337,13 @@ func GenRelayInfoClaude(c *gin.Context, request dto.Request) *RelayInfo {
 	info.ClaudeConvertInfo = &ClaudeConvertInfo{
 		LastMessagesType: LastMessageTypeNone,
 	}
-	if c.Query("beta") == "true" {
-		info.IsClaudeBetaQuery = true
-	}
+	info.IsClaudeBetaQuery = c.Query("beta") == "true" || isClaudeBetaForced(c)
 	return info
+}
+
+func isClaudeBetaForced(c *gin.Context) bool {
+	channelOtherSettings, ok := common.GetContextKeyType[dto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
+	return ok && channelOtherSettings.ClaudeBetaQuery
 }
 
 func GenRelayInfoRerank(c *gin.Context, request *dto.RerankRequest) *RelayInfo {
@@ -368,6 +423,12 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 	//channelId := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
 	//paramOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelParamOverride)
 
+	tokenGroup := common.GetContextKeyString(c, constant.ContextKeyTokenGroup)
+	// 当令牌分组为空时，表示使用用户分组
+	if tokenGroup == "" {
+		tokenGroup = common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+	}
+
 	startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
 	if startTime.IsZero() {
 		startTime = time.Now()
@@ -381,9 +442,14 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 
 	// firstResponseTime = time.Now() - 1 second
 
+	reqId := common.GetContextKeyString(c, common.RequestIdKey)
+	if reqId == "" {
+		reqId = common.GetTimeString() + common.GetRandomString(8)
+	}
 	info := &RelayInfo{
 		Request: request,
 
+		RequestId:  reqId,
 		UserId:     common.GetContextKeyInt(c, constant.ContextKeyUserId),
 		UsingGroup: common.GetContextKeyString(c, constant.ContextKeyUsingGroup),
 		UserGroup:  common.GetContextKeyString(c, constant.ContextKeyUserGroup),
@@ -391,15 +457,16 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		UserEmail:  common.GetContextKeyString(c, constant.ContextKeyUserEmail),
 
 		OriginModelName: common.GetContextKeyString(c, constant.ContextKeyOriginalModel),
-		PromptTokens:    common.GetContextKeyInt(c, constant.ContextKeyPromptTokens),
 
 		TokenId:        common.GetContextKeyInt(c, constant.ContextKeyTokenId),
 		TokenKey:       common.GetContextKeyString(c, constant.ContextKeyTokenKey),
 		TokenUnlimited: common.GetContextKeyBool(c, constant.ContextKeyTokenUnlimited),
+		TokenGroup:     tokenGroup,
 
 		isFirstResponse: true,
 		RelayMode:       relayconstant.Path2RelayMode(c.Request.URL.Path),
 		RequestURLPath:  c.Request.URL.String(),
+		RequestHeaders:  cloneRequestHeaders(c),
 		IsStream:        isStream,
 
 		StartTime:         startTime,
@@ -407,6 +474,10 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		ThinkingContentInfo: ThinkingContentInfo{
 			IsFirstThinkingContent:  true,
 			SendLastThinkingContent: false,
+		},
+		TokenCountMeta: TokenCountMeta{
+			//promptTokens: common.GetContextKeyInt(c, constant.ContextKeyPromptTokens),
+			estimatePromptTokens: common.GetContextKeyInt(c, constant.ContextKeyEstimatedTokens),
 		},
 	}
 
@@ -428,43 +499,146 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 	return info
 }
 
-func GenRelayInfo(c *gin.Context, relayFormat types.RelayFormat, request dto.Request, ws *websocket.Conn) (*RelayInfo, error) {
-	switch relayFormat {
-	case types.RelayFormatOpenAI:
-		return GenRelayInfoOpenAI(c, request), nil
-	case types.RelayFormatOpenAIAudio:
-		return GenRelayInfoOpenAIAudio(c, request), nil
-	case types.RelayFormatOpenAIImage:
-		return GenRelayInfoImage(c, request), nil
-	case types.RelayFormatOpenAIRealtime:
-		return GenRelayInfoWs(c, ws), nil
-	case types.RelayFormatClaude:
-		return GenRelayInfoClaude(c, request), nil
-	case types.RelayFormatRerank:
-		if request, ok := request.(*dto.RerankRequest); ok {
-			return GenRelayInfoRerank(c, request), nil
-		}
-		return nil, errors.New("request is not a RerankRequest")
-	case types.RelayFormatGemini:
-		return GenRelayInfoGemini(c, request), nil
-	case types.RelayFormatEmbedding:
-		return GenRelayInfoEmbedding(c, request), nil
-	case types.RelayFormatOpenAIResponses:
-		if request, ok := request.(*dto.OpenAIResponsesRequest); ok {
-			return GenRelayInfoResponses(c, request), nil
-		}
-		return nil, errors.New("request is not a OpenAIResponsesRequest")
-	case types.RelayFormatTask:
-		return genBaseRelayInfo(c, nil), nil
-	case types.RelayFormatMjProxy:
-		return genBaseRelayInfo(c, nil), nil
-	default:
-		return nil, errors.New("invalid relay format")
+func cloneRequestHeaders(c *gin.Context) map[string]string {
+	if c == nil || c.Request == nil {
+		return nil
 	}
+	if len(c.Request.Header) == 0 {
+		return nil
+	}
+	headers := make(map[string]string, len(c.Request.Header))
+	for key := range c.Request.Header {
+		value := strings.TrimSpace(c.Request.Header.Get(key))
+		if value == "" {
+			continue
+		}
+		headers[key] = value
+	}
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers
 }
 
-func (info *RelayInfo) SetPromptTokens(promptTokens int) {
-	info.PromptTokens = promptTokens
+func GenRelayInfo(c *gin.Context, relayFormat types.RelayFormat, request dto.Request, ws *websocket.Conn) (*RelayInfo, error) {
+	var info *RelayInfo
+	var err error
+	switch relayFormat {
+	case types.RelayFormatOpenAI:
+		info = GenRelayInfoOpenAI(c, request)
+	case types.RelayFormatOpenAIAudio:
+		info = GenRelayInfoOpenAIAudio(c, request)
+	case types.RelayFormatOpenAIImage:
+		info = GenRelayInfoImage(c, request)
+	case types.RelayFormatOpenAIRealtime:
+		info = GenRelayInfoWs(c, ws)
+	case types.RelayFormatClaude:
+		info = GenRelayInfoClaude(c, request)
+	case types.RelayFormatRerank:
+		if request, ok := request.(*dto.RerankRequest); ok {
+			info = GenRelayInfoRerank(c, request)
+			break
+		}
+		err = errors.New("request is not a RerankRequest")
+	case types.RelayFormatGemini:
+		info = GenRelayInfoGemini(c, request)
+	case types.RelayFormatEmbedding:
+		info = GenRelayInfoEmbedding(c, request)
+	case types.RelayFormatOpenAIResponses:
+		if request, ok := request.(*dto.OpenAIResponsesRequest); ok {
+			info = GenRelayInfoResponses(c, request)
+			break
+		}
+		err = errors.New("request is not a OpenAIResponsesRequest")
+	case types.RelayFormatOpenAIResponsesCompaction:
+		if request, ok := request.(*dto.OpenAIResponsesCompactionRequest); ok {
+			return GenRelayInfoResponsesCompaction(c, request), nil
+		}
+		return nil, errors.New("request is not a OpenAIResponsesCompactionRequest")
+	case types.RelayFormatTask:
+		info = genBaseRelayInfo(c, nil)
+		info.TaskRelayInfo = &TaskRelayInfo{}
+	case types.RelayFormatMjProxy:
+		info = genBaseRelayInfo(c, nil)
+		info.TaskRelayInfo = &TaskRelayInfo{}
+	default:
+		err = errors.New("invalid relay format")
+	}
+
+	if err != nil {
+		return nil, err
+	}
+	if info == nil {
+		return nil, errors.New("failed to build relay info")
+	}
+
+	info.InitRequestConversionChain()
+	return info, nil
+}
+
+func (info *RelayInfo) InitRequestConversionChain() {
+	if info == nil {
+		return
+	}
+	if len(info.RequestConversionChain) > 0 {
+		return
+	}
+	if info.RelayFormat == "" {
+		return
+	}
+	info.RequestConversionChain = []types.RelayFormat{info.RelayFormat}
+}
+
+func (info *RelayInfo) AppendRequestConversion(format types.RelayFormat) {
+	if info == nil {
+		return
+	}
+	if format == "" {
+		return
+	}
+	if len(info.RequestConversionChain) == 0 {
+		info.RequestConversionChain = []types.RelayFormat{format}
+		return
+	}
+	last := info.RequestConversionChain[len(info.RequestConversionChain)-1]
+	if last == format {
+		return
+	}
+	info.RequestConversionChain = append(info.RequestConversionChain, format)
+}
+
+func (info *RelayInfo) GetFinalRequestRelayFormat() types.RelayFormat {
+	if info == nil {
+		return ""
+	}
+	if info.FinalRequestRelayFormat != "" {
+		return info.FinalRequestRelayFormat
+	}
+	if n := len(info.RequestConversionChain); n > 0 {
+		return info.RequestConversionChain[n-1]
+	}
+	return info.RelayFormat
+}
+
+func GenRelayInfoResponsesCompaction(c *gin.Context, request *dto.OpenAIResponsesCompactionRequest) *RelayInfo {
+	info := genBaseRelayInfo(c, request)
+	if info.RelayMode == relayconstant.RelayModeUnknown {
+		info.RelayMode = relayconstant.RelayModeResponsesCompact
+	}
+	info.RelayFormat = types.RelayFormatOpenAIResponsesCompaction
+	return info
+}
+
+//func (info *RelayInfo) SetPromptTokens(promptTokens int) {
+//	info.promptTokens = promptTokens
+//}
+
+func (info *RelayInfo) SetEstimatePromptTokens(promptTokens int) {
+	info.estimatePromptTokens = promptTokens
+}
+
+func (info *RelayInfo) GetEstimatePromptTokens() int {
+	return info.estimatePromptTokens
 }
 
 func (info *RelayInfo) SetFirstResponseTime() {
@@ -481,8 +655,16 @@ func (info *RelayInfo) HasSendResponse() bool {
 type TaskRelayInfo struct {
 	Action       string
 	OriginTaskID string
+	// PublicTaskID 是提交时预生成的 task_xxxx 格式公开 ID，
+	// 供 DoResponse 在返回给客户端时使用（避免暴露上游真实 ID）。
+	PublicTaskID string
 
 	ConsumeQuota bool
+
+	// LockedChannel holds the full channel object when the request is bound to
+	// a specific channel (e.g., remix on origin task's channel). Stored as any
+	// to avoid an import cycle with model; callers type-assert to *model.Channel.
+	LockedChannel any
 }
 
 type TaskSubmitReq struct {
@@ -540,11 +722,11 @@ func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
 func (t *TaskSubmitReq) UnmarshalMetadata(v any) error {
 	metadata := t.Metadata
 	if metadata != nil {
-		metadataBytes, err := json.Marshal(metadata)
+		metadataBytes, err := common.Marshal(metadata)
 		if err != nil {
 			return fmt.Errorf("marshal metadata failed: %w", err)
 		}
-		err = json.Unmarshal(metadataBytes, v)
+		err = common.Unmarshal(metadataBytes, v)
 		if err != nil {
 			return fmt.Errorf("unmarshal metadata to target failed: %w", err)
 		}
@@ -573,9 +755,15 @@ func FailTaskInfo(reason string) *TaskInfo {
 
 // RemoveDisabledFields 从请求 JSON 数据中移除渠道设置中禁用的字段
 // service_tier: 服务层级字段，可能导致额外计费（OpenAI、Claude、Responses API 支持）
+// inference_geo: Claude 数据驻留推理区域字段（仅 Claude 支持，默认过滤）
 // store: 数据存储授权字段，涉及用户隐私（仅 OpenAI、Responses API 支持，默认允许透传，禁用后可能导致 Codex 无法使用）
 // safety_identifier: 安全标识符，用于向 OpenAI 报告违规用户（仅 OpenAI 支持，涉及用户隐私）
-func RemoveDisabledFields(jsonData []byte, channelOtherSettings dto.ChannelOtherSettings) ([]byte, error) {
+// stream_options.include_obfuscation: 响应流混淆控制字段（仅 OpenAI Responses API 支持）
+func RemoveDisabledFields(jsonData []byte, channelOtherSettings dto.ChannelOtherSettings, channelPassThroughEnabled bool) ([]byte, error) {
+	if model_setting.GetGlobalSettings().PassThroughRequestEnabled || channelPassThroughEnabled {
+		return jsonData, nil
+	}
+
 	var data map[string]interface{}
 	if err := common.Unmarshal(jsonData, &data); err != nil {
 		common.SysError("RemoveDisabledFields Unmarshal error :" + err.Error())
@@ -586,6 +774,13 @@ func RemoveDisabledFields(jsonData []byte, channelOtherSettings dto.ChannelOther
 	if !channelOtherSettings.AllowServiceTier {
 		if _, exists := data["service_tier"]; exists {
 			delete(data, "service_tier")
+		}
+	}
+
+	// 默认移除 inference_geo，除非明确允许（避免在未授权情况下透传数据驻留区域）
+	if !channelOtherSettings.AllowInferenceGeo {
+		if _, exists := data["inference_geo"]; exists {
+			delete(data, "inference_geo")
 		}
 	}
 
@@ -603,9 +798,69 @@ func RemoveDisabledFields(jsonData []byte, channelOtherSettings dto.ChannelOther
 		}
 	}
 
+	// 默认移除 stream_options.include_obfuscation，除非明确允许（避免关闭响应流混淆保护）
+	if !channelOtherSettings.AllowIncludeObfuscation {
+		if streamOptionsAny, exists := data["stream_options"]; exists {
+			if streamOptions, ok := streamOptionsAny.(map[string]interface{}); ok {
+				if _, includeExists := streamOptions["include_obfuscation"]; includeExists {
+					delete(streamOptions, "include_obfuscation")
+				}
+				if len(streamOptions) == 0 {
+					delete(data, "stream_options")
+				} else {
+					data["stream_options"] = streamOptions
+				}
+			}
+		}
+	}
+
 	jsonDataAfter, err := common.Marshal(data)
 	if err != nil {
 		common.SysError("RemoveDisabledFields Marshal error :" + err.Error())
+		return jsonData, nil
+	}
+	return jsonDataAfter, nil
+}
+
+// RemoveGeminiDisabledFields removes disabled fields from Gemini request JSON data
+// Currently supports removing functionResponse.id field which Vertex AI does not support
+func RemoveGeminiDisabledFields(jsonData []byte) ([]byte, error) {
+	if !model_setting.GetGeminiSettings().RemoveFunctionResponseIdEnabled {
+		return jsonData, nil
+	}
+
+	var data map[string]interface{}
+	if err := common.Unmarshal(jsonData, &data); err != nil {
+		common.SysError("RemoveGeminiDisabledFields Unmarshal error: " + err.Error())
+		return jsonData, nil
+	}
+
+	// Process contents array
+	// Handle both camelCase (functionResponse) and snake_case (function_response)
+	if contents, ok := data["contents"].([]interface{}); ok {
+		for _, content := range contents {
+			if contentMap, ok := content.(map[string]interface{}); ok {
+				if parts, ok := contentMap["parts"].([]interface{}); ok {
+					for _, part := range parts {
+						if partMap, ok := part.(map[string]interface{}); ok {
+							// Check functionResponse (camelCase)
+							if funcResp, ok := partMap["functionResponse"].(map[string]interface{}); ok {
+								delete(funcResp, "id")
+							}
+							// Check function_response (snake_case)
+							if funcResp, ok := partMap["function_response"].(map[string]interface{}); ok {
+								delete(funcResp, "id")
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	jsonDataAfter, err := common.Marshal(data)
+	if err != nil {
+		common.SysError("RemoveGeminiDisabledFields Marshal error: " + err.Error())
 		return jsonData, nil
 	}
 	return jsonDataAfter, nil

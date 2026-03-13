@@ -44,7 +44,10 @@ import CodeViewer from '../../../playground/CodeViewer';
 import { StatusContext } from '../../../../context/Status';
 import { UserContext } from '../../../../context/User';
 import { useUserPermissions } from '../../../../hooks/common/useUserPermissions';
-import { useSidebar } from '../../../../hooks/common/useSidebar';
+import {
+  mergeAdminConfig,
+  useSidebar,
+} from '../../../../hooks/common/useSidebar';
 
 const NotificationSettings = ({
   t,
@@ -55,6 +58,7 @@ const NotificationSettings = ({
   const formApiRef = useRef(null);
   const [statusState] = useContext(StatusContext);
   const [userState] = useContext(UserContext);
+  const isAdminOrRoot = (userState?.user?.role || 0) >= 10;
 
   // 左侧边栏设置相关状态
   const [sidebarLoading, setSidebarLoading] = useState(false);
@@ -82,6 +86,8 @@ const NotificationSettings = ({
       enabled: true,
       channel: true,
       models: true,
+      deployment: true,
+      subscription: true,
       redemption: true,
       user: true,
       setting: true,
@@ -164,6 +170,8 @@ const NotificationSettings = ({
         enabled: true,
         channel: true,
         models: true,
+        deployment: true,
+        subscription: true,
         redemption: true,
         user: true,
         setting: true,
@@ -178,14 +186,27 @@ const NotificationSettings = ({
       try {
         // 获取管理员全局配置
         if (statusState?.status?.SidebarModulesAdmin) {
-          const adminConf = JSON.parse(statusState.status.SidebarModulesAdmin);
-          setAdminConfig(adminConf);
+          try {
+            const adminConf = JSON.parse(
+              statusState.status.SidebarModulesAdmin,
+            );
+            setAdminConfig(mergeAdminConfig(adminConf));
+          } catch (error) {
+            setAdminConfig(mergeAdminConfig(null));
+          }
+        } else {
+          setAdminConfig(mergeAdminConfig(null));
         }
 
         // 获取用户个人配置
         const userRes = await API.get('/api/user/self');
         if (userRes.data.success && userRes.data.data.sidebar_modules) {
-          const userConf = JSON.parse(userRes.data.data.sidebar_modules);
+          let userConf;
+          if (typeof userRes.data.data.sidebar_modules === 'string') {
+            userConf = JSON.parse(userRes.data.data.sidebar_modules);
+          } else {
+            userConf = userRes.data.data.sidebar_modules;
+          }
           setSidebarModulesUser(userConf);
         }
       } catch (error) {
@@ -273,6 +294,16 @@ const NotificationSettings = ({
       modules: [
         { key: 'channel', title: t('渠道管理'), description: t('API渠道配置') },
         { key: 'models', title: t('模型管理'), description: t('AI模型配置') },
+        {
+          key: 'deployment',
+          title: t('模型部署'),
+          description: t('模型部署管理'),
+        },
+        {
+          key: 'subscription',
+          title: t('订阅管理'),
+          description: t('订阅套餐管理'),
+        },
         {
           key: 'redemption',
           title: t('兑换码管理'),
@@ -417,13 +448,13 @@ const NotificationSettings = ({
                   data={[
                     { value: 100000, label: '0.2$' },
                     { value: 500000, label: '1$' },
-                    { value: 1000000, label: '5$' },
+                    { value: 1000000, label: '2$' },
                     { value: 5000000, label: '10$' },
                   ]}
                   onChange={(val) => handleFormChange('warningThreshold', val)}
                   prefix={<IconBell />}
                   extraText={t(
-                    '当剩余额度低于此数值时，系统将通过选择的方式发送通知',
+                    '当钱包或订阅剩余额度低于此数值时，系统将通过选择的方式发送通知',
                   )}
                   style={{ width: '100%', maxWidth: '300px' }}
                   rules={[
@@ -439,6 +470,21 @@ const NotificationSettings = ({
                     },
                   ]}
                 />
+
+                {isAdminOrRoot && (
+                  <Form.Switch
+                    field='upstreamModelUpdateNotifyEnabled'
+                    label={t('接收上游模型更新通知')}
+                    checkedText={t('开')}
+                    uncheckedText={t('关')}
+                    onChange={(value) =>
+                      handleFormChange('upstreamModelUpdateNotifyEnabled', value)
+                    }
+                    extraText={t(
+                      '仅管理员可用。开启后，当系统定时检测全部渠道发现上游模型变更或检测异常时，将按你选择的通知方式发送汇总通知；渠道或模型过多时会自动省略部分明细。',
+                    )}
+                  />
+                )}
 
                 {/* 邮件通知设置 */}
                 {notificationSettings.warningType === 'email' && (
@@ -812,7 +858,9 @@ const NotificationSettings = ({
                             </Typography.Text>
                           </div>
                           <Switch
-                            checked={sidebarModulesUser[section.key]?.enabled}
+                            checked={
+                              sidebarModulesUser[section.key]?.enabled !== false
+                            }
                             onChange={handleSectionChange(section.key)}
                             size='default'
                           />
@@ -835,7 +883,8 @@ const NotificationSettings = ({
                               >
                                 <Card
                                   className={`!rounded-xl border border-gray-200 hover:border-blue-300 transition-all duration-200 ${
-                                    sidebarModulesUser[section.key]?.enabled
+                                    sidebarModulesUser[section.key]?.enabled !==
+                                    false
                                       ? ''
                                       : 'opacity-50'
                                   }`}
@@ -866,7 +915,7 @@ const NotificationSettings = ({
                                         checked={
                                           sidebarModulesUser[section.key]?.[
                                             module.key
-                                          ]
+                                          ] !== false
                                         }
                                         onChange={handleModuleChange(
                                           section.key,
@@ -874,8 +923,8 @@ const NotificationSettings = ({
                                         )}
                                         size='default'
                                         disabled={
-                                          !sidebarModulesUser[section.key]
-                                            ?.enabled
+                                          sidebarModulesUser[section.key]
+                                            ?.enabled === false
                                         }
                                       />
                                     </div>

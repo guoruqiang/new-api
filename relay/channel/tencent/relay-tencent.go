@@ -37,12 +37,12 @@ func requestOpenAI2Tencent(a *Adaptor, request dto.GeneralOpenAIRequest) *Tencen
 		})
 	}
 	var req = TencentChatRequest{
-		Stream:   &request.Stream,
+		Stream:   request.Stream,
 		Messages: messages,
 		Model:    &request.Model,
 	}
-	if request.TopP != 0 {
-		req.TopP = &request.TopP
+	if request.TopP != nil {
+		req.TopP = request.TopP
 	}
 	req.Temperature = request.Temperature
 	return &req
@@ -105,7 +105,7 @@ func tencentStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *htt
 		data = strings.TrimPrefix(data, "data:")
 
 		var tencentResponse TencentChatResponse
-		err := json.Unmarshal([]byte(data), &tencentResponse)
+		err := common.Unmarshal([]byte(data), &tencentResponse)
 		if err != nil {
 			common.SysLog("error unmarshalling stream response: " + err.Error())
 			continue
@@ -130,7 +130,7 @@ func tencentStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *htt
 
 	service.CloseResponseBodyGracefully(resp)
 
-	return service.ResponseText2Usage(responseText, info.UpstreamModelName, info.PromptTokens), nil
+	return service.ResponseText2Usage(c, responseText, info.UpstreamModelName, info.GetEstimatePromptTokens()), nil
 }
 
 func tencentHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {

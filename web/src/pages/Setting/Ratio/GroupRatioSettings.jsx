@@ -205,7 +205,10 @@ export default function GroupRatioSettings(props) {
                 },
               ]}
               onChange={(value) =>
-                setInputs({ ...inputs, 'group_ratio_setting.group_special_usable_group': value })
+                setInputs({
+                  ...inputs,
+                  'group_ratio_setting.group_special_usable_group': value,
+                })
               }
             />
           </Col>
@@ -262,7 +265,7 @@ export default function GroupRatioSettings(props) {
           </Col>
         </Row>
       </Form>
-      <Button onClick={onSubmit}>{t('保存分组倍率设置')}</Button>
+      <Button onClick={onSubmit}>{t('保存分组相关设置')}</Button>
     </Spin>
   );
 }

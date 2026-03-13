@@ -18,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/types"
+	"github.com/samber/lo"
 
 	"github.com/gin-gonic/gin"
 )
@@ -130,10 +131,16 @@ func requestOpenAI2Dify(c *gin.Context, info *relaycommon.RelayInfo, request dto
 	}
 
 	user := request.User
-	if user == "" {
-		user = helper.GetResponseID(c)
+	if len(user) == 0 {
+		user = json.RawMessage(helper.GetResponseID(c))
 	}
-	difyReq.User = user
+	var stringUser string
+	err := json.Unmarshal(user, &stringUser)
+	if err != nil {
+		common.SysLog("failed to unmarshal user: " + err.Error())
+		stringUser = helper.GetResponseID(c)
+	}
+	difyReq.User = stringUser
 
 	files := make([]DifyFile, 0)
 	var content strings.Builder
@@ -168,7 +175,7 @@ func requestOpenAI2Dify(c *gin.Context, info *relaycommon.RelayInfo, request dto
 	difyReq.Query = content.String()
 	difyReq.Files = files
 	mode := "blocking"
-	if request.Stream {
+	if lo.FromPtrOr(request.Stream, false) {
 		mode = "streaming"
 	}
 	difyReq.ResponseMode = mode
@@ -246,7 +253,7 @@ func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	})
 	helper.Done(c)
 	if usage.TotalTokens == 0 {
-		usage = service.ResponseText2Usage(responseText, info.UpstreamModelName, info.PromptTokens)
+		usage = service.ResponseText2Usage(c, responseText, info.UpstreamModelName, info.GetEstimatePromptTokens())
 	}
 	usage.CompletionTokens += nodeToken
 	return usage, nil

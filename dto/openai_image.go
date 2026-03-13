@@ -14,7 +14,7 @@ import (
 type ImageRequest struct {
 	Model             string          `json:"model"`
 	Prompt            string          `json:"prompt" binding:"required"`
-	N                 uint            `json:"n,omitempty"`
+	N                 *uint           `json:"n,omitempty"`
 	Size              string          `json:"size,omitempty"`
 	Quality           string          `json:"quality,omitempty"`
 	ResponseFormat    string          `json:"response_format,omitempty"`
@@ -27,8 +27,11 @@ type ImageRequest struct {
 	OutputCompression json.RawMessage `json:"output_compression,omitempty"`
 	PartialImages     json.RawMessage `json:"partial_images,omitempty"`
 	// Stream            bool            `json:"stream,omitempty"`
-	Watermark *bool           `json:"watermark,omitempty"`
-	Image     json.RawMessage `json:"image,omitempty"`
+	Watermark *bool `json:"watermark,omitempty"`
+	// zhipu 4v
+	WatermarkEnabled json.RawMessage `json:"watermark_enabled,omitempty"`
+	UserId           json.RawMessage `json:"user_id,omitempty"`
+	Image            json.RawMessage `json:"image,omitempty"`
 	// 用匿名参数接收额外参数
 	Extra map[string]json.RawMessage `json:"-"`
 }
@@ -146,10 +149,14 @@ func (i *ImageRequest) GetTokenCountMeta() *types.TokenCountMeta {
 	}
 
 	// not support token count for dalle
+	n := uint(1)
+	if i.N != nil {
+		n = *i.N
+	}
 	return &types.TokenCountMeta{
 		CombineText:     i.Prompt,
 		MaxTokens:       1584,
-		ImagePriceRatio: sizeRatio * qualityRatio * float64(i.N),
+		ImagePriceRatio: sizeRatio * qualityRatio * float64(n),
 	}
 }
 
@@ -164,9 +171,9 @@ func (i *ImageRequest) SetModelName(modelName string) {
 }
 
 type ImageResponse struct {
-	Data    []ImageData `json:"data"`
-	Created int64       `json:"created"`
-	Extra   any         `json:"extra,omitempty"`
+	Data     []ImageData     `json:"data"`
+	Created  int64           `json:"created"`
+	Metadata json.RawMessage `json:"metadata,omitempty"`
 }
 type ImageData struct {
 	Url           string `json:"url"`

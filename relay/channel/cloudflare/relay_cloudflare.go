@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/types"
+	"github.com/samber/lo"
 
 	"github.com/gin-gonic/gin"
 )
@@ -23,7 +24,7 @@ func convertCf2CompletionsRequest(textRequest dto.GeneralOpenAIRequest) *CfReque
 	return &CfRequest{
 		Prompt:      p,
 		MaxTokens:   textRequest.GetMaxTokens(),
-		Stream:      textRequest.Stream,
+		Stream:      lo.FromPtrOr(textRequest.Stream, false),
 		Temperature: textRequest.Temperature,
 	}
 }
@@ -74,7 +75,7 @@ func cfStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Res
 	if err := scanner.Err(); err != nil {
 		logger.LogError(c, "error_scanning_stream_response: "+err.Error())
 	}
-	usage := service.ResponseText2Usage(responseText, info.UpstreamModelName, info.PromptTokens)
+	usage := service.ResponseText2Usage(c, responseText, info.UpstreamModelName, info.GetEstimatePromptTokens())
 	if info.ShouldIncludeUsage {
 		response := helper.GenerateFinalUsageResponse(id, info.StartTime.Unix(), info.UpstreamModelName, *usage)
 		err := helper.ObjectData(c, response)
@@ -105,7 +106,7 @@ func cfHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response)
 	for _, choice := range response.Choices {
 		responseText += choice.Message.StringContent()
 	}
-	usage := service.ResponseText2Usage(responseText, info.UpstreamModelName, info.PromptTokens)
+	usage := service.ResponseText2Usage(c, responseText, info.UpstreamModelName, info.GetEstimatePromptTokens())
 	response.Usage = *usage
 	response.Id = helper.GetResponseID(c)
 	jsonResponse, err := json.Marshal(response)
@@ -142,10 +143,6 @@ func cfSTTHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respon
 	c.Writer.WriteHeader(resp.StatusCode)
 	_, _ = c.Writer.Write(jsonResponse)
 
-	usage := &dto.Usage{}
-	usage.PromptTokens = info.PromptTokens
-	usage.CompletionTokens = service.CountTextToken(cfResp.Result.Text, info.UpstreamModelName)
-	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-
+	usage := service.ResponseText2Usage(c, cfResp.Result.Text, info.UpstreamModelName, info.GetEstimatePromptTokens())
 	return nil, usage
 }
