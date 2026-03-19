@@ -403,10 +403,15 @@ const RegisterForm = () => {
           </div>
 
           <Card className='border-0 !rounded-2xl overflow-hidden'>
-            <div className='flex justify-center pt-6 pb-2'>
+            <div className='flex justify-center pt-6 pb-3'>
               <Title heading={3} className='text-gray-800 dark:text-gray-200'>
                 {t('注 册')}
               </Title>
+            </div>
+            <div className='flex justify-center px-4 pb-1'>
+              <Text type='secondary' className='text-sm text-gray-600 dark:text-gray-400'>
+                {t('本站仅限教育邮箱（如edu.cn）注册！')}
+              </Text>
             </div>
             <div className='px-2 py-8'>
               <div className='space-y-3'>
@@ -566,10 +571,15 @@ const RegisterForm = () => {
           </div>
 
           <Card className='border-0 !rounded-2xl overflow-hidden'>
-            <div className='flex justify-center pt-6 pb-2'>
+            <div className='flex justify-center pt-6 pb-3'>
               <Title heading={3} className='text-gray-800 dark:text-gray-200'>
                 {t('注 册')}
               </Title>
+            </div>
+            <div className='flex justify-center px-4 pb-1'>
+              <Text type='secondary' className='text-sm text-gray-600 dark:text-gray-400'>
+                {t('本站仅限教育邮箱（如edu.cn）注册！')}
+              </Text>
             </div>
             <div className='px-2 py-8'>
               <Form className='space-y-3'>
@@ -692,25 +702,6 @@ const RegisterForm = () => {
                 </div>
               </Form>
 
-              {hasOAuthRegisterOptions && (
-                <>
-                  <Divider margin='12px' align='center'>
-                    {t('或')}
-                  </Divider>
-
-                  <div className='mt-4 text-center'>
-                    <Button
-                      theme='outline'
-                      type='tertiary'
-                      className='w-full !rounded-full'
-                      onClick={handleOtherRegisterOptionsClick}
-                      loading={otherRegisterOptionsLoading}
-                    >
-                      {t('其他注册选项')}
-                    </Button>
-                  </div>
-                </>
-              )}
 
               <div className='mt-6 text-center text-sm'>
                 <Text>
@@ -781,10 +772,7 @@ const RegisterForm = () => {
         style={{ top: '50%', left: '-120px' }}
       />
       <div className='w-full max-w-sm mt-[60px]'>
-        {showEmailRegister ||
-        !hasOAuthRegisterOptions
-          ? renderEmailRegisterForm()
-          : renderOAuthOptions()}
+        {renderEmailRegisterForm()}
         {renderWeChatLoginModal()}
 
         {turnstileEnabled && (

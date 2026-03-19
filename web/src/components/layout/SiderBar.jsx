@@ -206,6 +206,7 @@ const SiderBar = ({ onNavigate = () => {} }) => {
         text: t('操练场'),
         itemKey: 'playground',
         to: '/playground',
+        className: isAdmin() ? '' : 'tableHiddle',
       },
       {
         text: t('聊天'),
