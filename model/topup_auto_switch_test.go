@@ -158,3 +158,18 @@ func TestExpireDueSubscriptions_FallsBackToTopUpGroupAfterSubscriptionEnds(t *te
 	require.NoError(t, DB.First(&reloadedSub, subscription.Id).Error)
 	assert.Equal(t, "expired", reloadedSub.Status)
 }
+
+func TestNormalizeTopUpValueUSD(t *testing.T) {
+	t.Run("epay uses amount as usd", func(t *testing.T) {
+		assert.Equal(t, 10.0, NormalizeTopUpValueUSD(&TopUp{Amount: 10, Money: 99, PaymentMethod: "epay"}))
+	})
+
+	t.Run("stripe uses money as usd", func(t *testing.T) {
+		assert.Equal(t, 9.99, NormalizeTopUpValueUSD(&TopUp{Amount: 999999, Money: 9.99, PaymentMethod: "stripe"}))
+	})
+
+	t.Run("creem converts quota to usd", func(t *testing.T) {
+		require.Greater(t, common.QuotaPerUnit, 0.0)
+		assert.Equal(t, 12.0, NormalizeTopUpValueUSD(&TopUp{Amount: int64(common.QuotaPerUnit * 12), Money: 1, PaymentMethod: "creem"}))
+	})
+}
