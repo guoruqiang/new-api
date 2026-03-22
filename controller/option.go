@@ -116,11 +116,11 @@ type normalizedPaymentAutoSwitchGroupRules struct {
 const paymentAutoSwitchGroupRulesRequiredMessage = "启用充值后自动切换分组前，请至少配置一条合法规则"
 
 func isValidPaymentAutoSwitchGroup(group string) bool {
-	group = strings.TrimSpace(group)
-	if group == "" {
+	if strings.TrimSpace(group) == "" {
 		return false
 	}
-	return ratio_setting.ContainsGroupRatio(group)
+	_, ok := ratio_setting.GetGroupRatioCopy()[strings.TrimSpace(group)]
+	return ok
 }
 
 func normalizePaymentAutoSwitchGroupRules(optionValue string) (*normalizedPaymentAutoSwitchGroupRules, error) {

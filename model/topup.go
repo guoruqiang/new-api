@@ -170,11 +170,29 @@ func applyTopUpAutoSwitchGroupTx(tx *gorm.DB, userId int) (string, error) {
 		return "", err
 	}
 
-	targetGroup, err := resolveUserEffectiveGroupTx(tx, userId, GetDBTimestamp(), "")
+	// 订阅升级分组生效期间，普通充值不能覆盖当前分组。
+	activeUpgradeGroup, err := GetActiveSubscriptionUpgradeGroupTx(tx, userId, GetDBTimestamp())
 	if err != nil {
 		return "", err
 	}
-	if targetGroup == "" || currentGroup == targetGroup {
+	if activeUpgradeGroup != "" {
+		if currentGroup == activeUpgradeGroup {
+			return "", nil
+		}
+		if err := updateUserGroupTx(tx, userId, activeUpgradeGroup); err != nil {
+			return "", err
+		}
+		return activeUpgradeGroup, nil
+	}
+
+	targetGroup, err := getTopUpAutoSwitchTargetGroupTx(tx, userId)
+	if err != nil {
+		return "", err
+	}
+	if targetGroup == "" {
+		return "", nil
+	}
+	if currentGroup == targetGroup {
 		return "", nil
 	}
 
