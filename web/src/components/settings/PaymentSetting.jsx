@@ -41,6 +41,8 @@ const PaymentSetting = () => {
     PayMethods: '',
     AmountOptions: '',
     AmountDiscount: '',
+    AutoSwitchGroupEnabled: false,
+    AutoSwitchGroupRules: [],
 
     StripeApiSecret: '',
     StripeWebhookSecret: '',
@@ -90,6 +92,16 @@ const PaymentSetting = () => {
               );
             } catch (error) {
               newInputs['AmountDiscount'] = item.value;
+            }
+            break;
+          case 'payment_setting.auto_switch_group_enabled':
+            newInputs['AutoSwitchGroupEnabled'] = toBoolean(item.value);
+            break;
+          case 'payment_setting.auto_switch_group_rules':
+            try {
+              newInputs['AutoSwitchGroupRules'] = JSON.parse(item.value || '[]');
+            } catch (error) {
+              newInputs['AutoSwitchGroupRules'] = [];
             }
             break;
           case 'Price':
