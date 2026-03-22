@@ -30,14 +30,17 @@ import {
   InputNumber,
   Select,
   Space,
+  Switch,
 } from '@douyinfe/semi-ui';
 const { Text } = Typography;
 import {
   API,
+  compareObjects,
   getQuotaPerUnit,
   removeTrailingSlash,
   showError,
   showSuccess,
+  showWarning,
   verifyJSON,
 } from '../../../helpers';
 import { useTranslation } from 'react-i18next';
@@ -48,7 +51,9 @@ const createRuleId = () =>
 const createRuleRow = (rule = {}) => ({
   id: createRuleId(),
   threshold:
-    rule.threshold === undefined || rule.threshold === null ? '' : rule.threshold,
+    rule.threshold === undefined || rule.threshold === null
+      ? ''
+      : rule.threshold,
   group: String(rule.group || ''),
 });
 
@@ -62,6 +67,14 @@ const serializeRuleRowsForCompare = (rules = []) =>
       };
     }),
   );
+
+const normalizeAutoSwitchGroupInputs = (values = {}) => ({
+  ...values,
+  AutoSwitchGroupEnabled: Boolean(values.AutoSwitchGroupEnabled),
+  AutoSwitchGroupOnlyNewTopups:
+    Boolean(values.AutoSwitchGroupEnabled) &&
+    Boolean(values.AutoSwitchGroupOnlyNewTopups),
+});
 
 export default function SettingsPaymentGateway(props) {
   const { t } = useTranslation();
@@ -78,6 +91,7 @@ export default function SettingsPaymentGateway(props) {
     AmountOptions: '',
     AmountDiscount: '',
     AutoSwitchGroupEnabled: false,
+    AutoSwitchGroupOnlyNewTopups: false,
   });
   const [originInputs, setOriginInputs] = useState({});
   const [groupOptions, setGroupOptions] = useState([]);
@@ -102,7 +116,9 @@ export default function SettingsPaymentGateway(props) {
     );
     const customSymbol =
       props.options?.['general_setting.custom_currency_symbol'] || 'CUSTOM';
-    const quotaPerUnit = Number(props.options?.QuotaPerUnit || getQuotaPerUnit());
+    const quotaPerUnit = Number(
+      props.options?.QuotaPerUnit || getQuotaPerUnit(),
+    );
 
     if (type === 'TOKENS') {
       return {
@@ -129,7 +145,8 @@ export default function SettingsPaymentGateway(props) {
     if (type === 'CUSTOM') {
       return {
         type,
-        multiplier: Number.isFinite(customRate) && customRate > 0 ? customRate : 1,
+        multiplier:
+          Number.isFinite(customRate) && customRate > 0 ? customRate : 1,
         unitLabel: customSymbol || 'CUSTOM',
         precision: 6,
       };
@@ -223,7 +240,9 @@ export default function SettingsPaymentGateway(props) {
   };
 
   const removeAutoSwitchGroupRule = (ruleId) => {
-    setAutoSwitchGroupRules((prev) => prev.filter((rule) => rule.id !== ruleId));
+    setAutoSwitchGroupRules((prev) =>
+      prev.filter((rule) => rule.id !== ruleId),
+    );
   };
 
   useEffect(() => {
@@ -246,6 +265,8 @@ export default function SettingsPaymentGateway(props) {
         AmountOptions: props.options.AmountOptions || '',
         AmountDiscount: props.options.AmountDiscount || '',
         AutoSwitchGroupEnabled: props.options.AutoSwitchGroupEnabled || false,
+        AutoSwitchGroupOnlyNewTopups:
+          props.options.AutoSwitchGroupOnlyNewTopups || false,
       };
 
       // 美化 JSON 展示
@@ -277,11 +298,13 @@ export default function SettingsPaymentGateway(props) {
           )
         : [];
 
-      setInputs(currentInputs);
-      setOriginInputs({ ...currentInputs });
+      const normalizedCurrentInputs =
+        normalizeAutoSwitchGroupInputs(currentInputs);
+      setInputs(normalizedCurrentInputs);
+      setOriginInputs({ ...normalizedCurrentInputs });
       setAutoSwitchGroupRules(nextRules);
       setOriginAutoSwitchGroupRules(serializeRuleRowsForCompare(nextRules));
-      formApiRef.current.setValues(currentInputs);
+      formApiRef.current.setValues(normalizedCurrentInputs);
     }
   }, [props.options]);
 
@@ -300,7 +323,34 @@ export default function SettingsPaymentGateway(props) {
   }, []);
 
   const handleFormChange = (values) => {
-    setInputs(values);
+    const normalizedValues = normalizeAutoSwitchGroupInputs({
+      ...values,
+      AutoSwitchGroupEnabled: inputs.AutoSwitchGroupEnabled,
+      AutoSwitchGroupOnlyNewTopups: inputs.AutoSwitchGroupOnlyNewTopups,
+    });
+    setInputs(normalizedValues);
+  };
+
+  const handleAutoSwitchGroupEnabledChange = (checked) => {
+    setInputs((prev) =>
+      normalizeAutoSwitchGroupInputs({
+        ...prev,
+        AutoSwitchGroupEnabled: checked,
+        AutoSwitchGroupOnlyNewTopups: checked
+          ? prev.AutoSwitchGroupOnlyNewTopups
+          : false,
+      }),
+    );
+  };
+
+  const handleAutoSwitchGroupOnlyNewTopupsChange = (checked) => {
+    setInputs((prev) =>
+      normalizeAutoSwitchGroupInputs({
+        ...prev,
+        AutoSwitchGroupEnabled: true,
+        AutoSwitchGroupOnlyNewTopups: checked,
+      }),
+    );
   };
 
   const submitPayAddress = async () => {
@@ -348,71 +398,79 @@ export default function SettingsPaymentGateway(props) {
       return;
     }
 
-    setLoading(true);
     try {
-      const options = [
-        { key: 'PayAddress', value: removeTrailingSlash(inputs.PayAddress) },
-      ];
-
-      if (inputs.EpayId !== '') {
-        options.push({ key: 'EpayId', value: inputs.EpayId });
-      }
-      if (inputs.EpayKey !== undefined && inputs.EpayKey !== '') {
-        options.push({ key: 'EpayKey', value: inputs.EpayKey });
-      }
-      if (inputs.Price !== '') {
-        options.push({ key: 'Price', value: inputs.Price.toString() });
-      }
-      if (inputs.MinTopUp !== '') {
-        options.push({ key: 'MinTopUp', value: inputs.MinTopUp.toString() });
-      }
-      if (inputs.CustomCallbackAddress !== '') {
-        options.push({
-          key: 'CustomCallbackAddress',
-          value: inputs.CustomCallbackAddress,
-        });
-      }
-      if (originInputs['TopupGroupRatio'] !== inputs.TopupGroupRatio) {
-        options.push({ key: 'TopupGroupRatio', value: inputs.TopupGroupRatio });
-      }
-      if (originInputs['PayMethods'] !== inputs.PayMethods) {
-        options.push({ key: 'PayMethods', value: inputs.PayMethods });
-      }
-      if (originInputs['AmountOptions'] !== inputs.AmountOptions) {
-        options.push({
-          key: 'payment_setting.amount_options',
-          value: inputs.AmountOptions,
-        });
-      }
-      if (originInputs['AmountDiscount'] !== inputs.AmountDiscount) {
-        options.push({
-          key: 'payment_setting.amount_discount',
-          value: inputs.AmountDiscount,
-        });
-      }
+      const normalizedInputs = {
+        ...inputs,
+        PayAddress: removeTrailingSlash(inputs.PayAddress),
+      };
+      const comparedInputs = {
+        ...normalizedInputs,
+        EpayKey:
+          normalizedInputs.EpayKey === undefined
+            ? ''
+            : normalizedInputs.EpayKey,
+      };
+      const updateArray = compareObjects(originInputs, comparedInputs);
+      const options = updateArray
+        .filter(
+          (item) =>
+            item.key !== 'AutoSwitchGroupRules' &&
+            item.key !== 'AutoSwitchGroupEnabled' &&
+            item.key !== 'AutoSwitchGroupOnlyNewTopups',
+        )
+        .map((item) => ({
+          key:
+            item.key === 'AmountOptions'
+              ? 'payment_setting.amount_options'
+              : item.key === 'AmountDiscount'
+                ? 'payment_setting.amount_discount'
+                : item.key,
+          value:
+            typeof comparedInputs[item.key] === 'boolean'
+              ? comparedInputs[item.key].toString()
+              : comparedInputs[item.key],
+        }));
 
       const autoSwitchGroupRulesChanged =
         originAutoSwitchGroupRules !==
         serializeRuleRowsForCompare(autoSwitchGroupRules);
       const autoSwitchGroupEnabledChanged =
-        originInputs['AutoSwitchGroupEnabled'] !== inputs.AutoSwitchGroupEnabled;
+        originInputs['AutoSwitchGroupEnabled'] !==
+        inputs.AutoSwitchGroupEnabled;
+      const autoSwitchGroupOnlyNewTopupsChanged =
+        originInputs['AutoSwitchGroupOnlyNewTopups'] !==
+        inputs.AutoSwitchGroupOnlyNewTopups;
 
-      if (autoSwitchGroupRulesChanged || autoSwitchGroupEnabledChanged) {
+      if (
+        autoSwitchGroupRulesChanged ||
+        autoSwitchGroupOnlyNewTopupsChanged ||
+        autoSwitchGroupEnabledChanged
+      ) {
         const autoSwitchOptions = [];
-        if (inputs.AutoSwitchGroupEnabled) {
+        if (normalizedInputs.AutoSwitchGroupEnabled) {
           autoSwitchOptions.push({
             key: 'payment_setting.auto_switch_group_rules',
             value: JSON.stringify(autoSwitchGroupRulesPayload),
           });
           autoSwitchOptions.push({
+            key: 'payment_setting.auto_switch_group_only_new_topups',
+            value: normalizedInputs.AutoSwitchGroupOnlyNewTopups.toString(),
+          });
+          autoSwitchOptions.push({
             key: 'payment_setting.auto_switch_group_enabled',
-            value: inputs.AutoSwitchGroupEnabled.toString(),
+            value: normalizedInputs.AutoSwitchGroupEnabled.toString(),
           });
         } else {
           if (autoSwitchGroupEnabledChanged) {
             autoSwitchOptions.push({
               key: 'payment_setting.auto_switch_group_enabled',
-              value: inputs.AutoSwitchGroupEnabled.toString(),
+              value: normalizedInputs.AutoSwitchGroupEnabled.toString(),
+            });
+          }
+          if (autoSwitchGroupOnlyNewTopupsChanged) {
+            autoSwitchOptions.push({
+              key: 'payment_setting.auto_switch_group_only_new_topups',
+              value: normalizedInputs.AutoSwitchGroupOnlyNewTopups.toString(),
             });
           }
           if (autoSwitchGroupRulesChanged) {
@@ -425,6 +483,12 @@ export default function SettingsPaymentGateway(props) {
         options.push(...autoSwitchOptions);
       }
 
+      if (!options.length) {
+        showWarning(t('你似乎并没有修改什么'));
+        return;
+      }
+
+      setLoading(true);
       const results = [];
       for (const opt of options) {
         const res = await API.put('/api/option/', {
@@ -441,11 +505,11 @@ export default function SettingsPaymentGateway(props) {
         });
       } else {
         showSuccess(t('更新成功'));
-        setOriginInputs({ ...inputs });
+        setOriginInputs({ ...normalizedInputs });
         setOriginAutoSwitchGroupRules(
           serializeRuleRowsForCompare(autoSwitchGroupRules),
         );
-        props.refresh && props.refresh();
+        await (props.refresh && props.refresh());
       }
     } catch (error) {
       showError(t('更新失败'));
@@ -458,7 +522,7 @@ export default function SettingsPaymentGateway(props) {
   return (
     <Spin spinning={loading}>
       <Form
-        initValues={inputs}
+        values={inputs}
         onValueChange={handleFormChange}
         getFormApi={(api) => (formApiRef.current = api)}
       >
@@ -570,17 +634,44 @@ export default function SettingsPaymentGateway(props) {
             </Col>
           </Row>
 
-          <div style={{ marginTop: 16 }}>
-            <Form.Switch
-              field='AutoSwitchGroupEnabled'
-              label={t('充值后自动切换分组')}
-              size='large'
-            />
+          <div
+            style={{
+              marginTop: 16,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 24,
+              flexWrap: 'wrap',
+            }}
+          >
+            <div>
+              <Text>{t('充值后自动切换分组')}</Text>
+              <div style={{ marginTop: 6 }}>
+                <Switch
+                  checked={inputs.AutoSwitchGroupEnabled}
+                  size='large'
+                  onChange={handleAutoSwitchGroupEnabledChange}
+                />
+              </div>
+            </div>
+            {inputs.AutoSwitchGroupEnabled && (
+              <div>
+                <Text>{t('启用后仅统计新充值')}</Text>
+                <div style={{ marginTop: 6 }}>
+                  <Switch
+                    checked={inputs.AutoSwitchGroupOnlyNewTopups}
+                    size='large'
+                    onChange={handleAutoSwitchGroupOnlyNewTopupsChange}
+                  />
+                </div>
+              </div>
+            )}
           </div>
           <div style={{ marginTop: 12 }}>
             <Banner
               type='info'
-              description={t('按累计成功的普通充值金额命中规则后切换分组。')}
+              description={t(
+                '按累计成功的普通充值金额命中规则后切换分组；开启“仅统计新充值”后会从当前时刻重新累计，不回溯历史成功充值。',
+              )}
             />
             <Banner
               type='warning'
@@ -617,7 +708,9 @@ export default function SettingsPaymentGateway(props) {
                         style={{ width: '100%', marginTop: 6 }}
                         min={displayConfig.type === 'TOKENS' ? 1 : 0.000001}
                         precision={displayConfig.precision}
-                        value={rule.threshold === '' ? undefined : rule.threshold}
+                        value={
+                          rule.threshold === '' ? undefined : rule.threshold
+                        }
                         placeholder={t('请输入阈值')}
                         onChange={(value) =>
                           updateAutoSwitchGroupRule(rule.id, {

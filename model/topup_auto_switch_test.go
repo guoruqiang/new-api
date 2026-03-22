@@ -25,18 +25,21 @@ func prepareTopUpAutoSwitchTest(t *testing.T) {
 		DB.Exec("DELETE FROM users")
 	})
 
-	paymentSetting := operation_setting.GetPaymentSetting()
-	originEnabled := paymentSetting.AutoSwitchGroupEnabled
-	originRules := append([]operation_setting.PaymentAutoSwitchGroupRule(nil), paymentSetting.AutoSwitchGroupRules...)
+	originPaymentSetting := operation_setting.GetPaymentSetting()
 	t.Cleanup(func() {
-		paymentSetting.AutoSwitchGroupEnabled = originEnabled
-		paymentSetting.AutoSwitchGroupRules = originRules
+		operation_setting.UpdatePaymentSetting(func(setting *operation_setting.PaymentSetting) {
+			*setting = originPaymentSetting
+		})
 	})
 
-	paymentSetting.AutoSwitchGroupEnabled = true
-	paymentSetting.AutoSwitchGroupRules = []operation_setting.PaymentAutoSwitchGroupRule{
-		{ThresholdUSD: 10, Group: "vip"},
-	}
+	operation_setting.UpdatePaymentSetting(func(setting *operation_setting.PaymentSetting) {
+		setting.AutoSwitchGroupEnabled = true
+		setting.AutoSwitchGroupOnlyNewTopups = false
+		setting.AutoSwitchGroupEnabledFrom = 0
+		setting.AutoSwitchGroupRules = []operation_setting.PaymentAutoSwitchGroupRule{
+			{ThresholdUSD: 10, Group: "vip"},
+		}
+	})
 }
 
 func TestApplyTopUpAutoSwitchGroupTx_SwitchesWithoutActiveSubscriptionUpgrade(t *testing.T) {
@@ -157,6 +160,193 @@ func TestExpireDueSubscriptions_FallsBackToTopUpGroupAfterSubscriptionEnds(t *te
 	var reloadedSub UserSubscription
 	require.NoError(t, DB.First(&reloadedSub, subscription.Id).Error)
 	assert.Equal(t, "expired", reloadedSub.Status)
+}
+
+func TestGetUserSuccessfulTopupTotalUSDTx_DefaultModeCountsHistoricalTopups(t *testing.T) {
+	prepareTopUpAutoSwitchTest(t)
+
+	user := &User{
+		Username: "topup_total_default_mode",
+		Password: "password123",
+		Group:    "default",
+		Role:     common.RoleCommonUser,
+		Status:   common.UserStatusEnabled,
+	}
+	require.NoError(t, DB.Create(user).Error)
+
+	require.NoError(t, DB.Create(&TopUp{
+		UserId:        user.Id,
+		Amount:        100,
+		Money:         100,
+		TradeNo:       "trade_total_default_mode_history",
+		PaymentMethod: "epay",
+		CompleteTime:  100,
+		Status:        common.TopUpStatusSuccess,
+	}).Error)
+	require.NoError(t, DB.Create(&TopUp{
+		UserId:        user.Id,
+		Amount:        1,
+		Money:         1,
+		TradeNo:       "trade_total_default_mode_new",
+		PaymentMethod: "epay",
+		CompleteTime:  200,
+		Status:        common.TopUpStatusSuccess,
+	}).Error)
+
+	totalUSD, err := GetUserSuccessfulTopupTotalUSDTx(DB, user.Id)
+	require.NoError(t, err)
+	assert.Equal(t, 101.0, totalUSD)
+}
+
+func TestGetUserSuccessfulTopupTotalUSDTx_OnlyNewTopupsIgnoresHistoryBeforeEnabledFrom(t *testing.T) {
+	prepareTopUpAutoSwitchTest(t)
+
+	operation_setting.UpdatePaymentSetting(func(setting *operation_setting.PaymentSetting) {
+		setting.AutoSwitchGroupOnlyNewTopups = true
+		setting.AutoSwitchGroupEnabledFrom = 150
+	})
+
+	user := &User{
+		Username: "topup_total_only_new",
+		Password: "password123",
+		Group:    "default",
+		Role:     common.RoleCommonUser,
+		Status:   common.UserStatusEnabled,
+	}
+	require.NoError(t, DB.Create(user).Error)
+
+	require.NoError(t, DB.Create(&TopUp{
+		UserId:        user.Id,
+		Amount:        100,
+		Money:         100,
+		TradeNo:       "trade_total_only_new_history",
+		PaymentMethod: "epay",
+		CompleteTime:  149,
+		Status:        common.TopUpStatusSuccess,
+	}).Error)
+	require.NoError(t, DB.Create(&TopUp{
+		UserId:        user.Id,
+		Amount:        1,
+		Money:         1,
+		TradeNo:       "trade_total_only_new_new",
+		PaymentMethod: "epay",
+		CompleteTime:  150,
+		Status:        common.TopUpStatusSuccess,
+	}).Error)
+
+	totalUSD, err := GetUserSuccessfulTopupTotalUSDTx(DB, user.Id)
+	require.NoError(t, err)
+	assert.Equal(t, 1.0, totalUSD)
+}
+
+func TestApplyTopUpAutoSwitchGroupTx_OnlyNewTopupsUsesPostEnableAccumulation(t *testing.T) {
+	prepareTopUpAutoSwitchTest(t)
+
+	operation_setting.UpdatePaymentSetting(func(setting *operation_setting.PaymentSetting) {
+		setting.AutoSwitchGroupOnlyNewTopups = true
+		setting.AutoSwitchGroupEnabledFrom = 150
+		setting.AutoSwitchGroupRules = []operation_setting.PaymentAutoSwitchGroupRule{
+			{ThresholdUSD: 1, Group: "vip"},
+			{ThresholdUSD: 100, Group: "svip"},
+		}
+	})
+
+	user := &User{
+		Username: "topup_only_new_apply",
+		Password: "password123",
+		Group:    "default",
+		Role:     common.RoleCommonUser,
+		Status:   common.UserStatusEnabled,
+	}
+	require.NoError(t, DB.Create(user).Error)
+
+	require.NoError(t, DB.Create(&TopUp{
+		UserId:        user.Id,
+		Amount:        100,
+		Money:         100,
+		TradeNo:       "trade_only_new_apply_history",
+		PaymentMethod: "epay",
+		CompleteTime:  149,
+		Status:        common.TopUpStatusSuccess,
+	}).Error)
+	require.NoError(t, DB.Create(&TopUp{
+		UserId:        user.Id,
+		Amount:        1,
+		Money:         1,
+		TradeNo:       "trade_only_new_apply_new",
+		PaymentMethod: "epay",
+		CompleteTime:  150,
+		Status:        common.TopUpStatusSuccess,
+	}).Error)
+
+	switchedGroup, err := applyTopUpAutoSwitchGroupTx(DB, user.Id)
+	require.NoError(t, err)
+	assert.Equal(t, "vip", switchedGroup)
+
+	var reloaded User
+	require.NoError(t, DB.First(&reloaded, user.Id).Error)
+	assert.Equal(t, "vip", reloaded.Group)
+}
+
+func TestExpireDueSubscriptions_OnlyNewTopupsFallbackUsesEnabledFromCutoff(t *testing.T) {
+	prepareTopUpAutoSwitchTest(t)
+
+	operation_setting.UpdatePaymentSetting(func(setting *operation_setting.PaymentSetting) {
+		setting.AutoSwitchGroupOnlyNewTopups = true
+		setting.AutoSwitchGroupEnabledFrom = 150
+		setting.AutoSwitchGroupRules = []operation_setting.PaymentAutoSwitchGroupRule{
+			{ThresholdUSD: 1, Group: "vip"},
+			{ThresholdUSD: 100, Group: "svip"},
+		}
+	})
+
+	user := &User{
+		Username: "topup_only_new_after_sub_expire",
+		Password: "password123",
+		Group:    "svip",
+		Role:     common.RoleCommonUser,
+		Status:   common.UserStatusEnabled,
+	}
+	require.NoError(t, DB.Create(user).Error)
+
+	require.NoError(t, DB.Create(&TopUp{
+		UserId:        user.Id,
+		Amount:        100,
+		Money:         100,
+		TradeNo:       "trade_only_new_after_sub_expire_history",
+		PaymentMethod: "epay",
+		CompleteTime:  149,
+		Status:        common.TopUpStatusSuccess,
+	}).Error)
+	require.NoError(t, DB.Create(&TopUp{
+		UserId:        user.Id,
+		Amount:        1,
+		Money:         1,
+		TradeNo:       "trade_only_new_after_sub_expire_new",
+		PaymentMethod: "epay",
+		CompleteTime:  150,
+		Status:        common.TopUpStatusSuccess,
+	}).Error)
+
+	now := GetDBTimestamp()
+	subscription := &UserSubscription{
+		UserId:        user.Id,
+		PlanId:        1,
+		Status:        "active",
+		StartTime:     now - 3600,
+		EndTime:       now - 1,
+		UpgradeGroup:  "svip",
+		PrevUserGroup: "default",
+	}
+	require.NoError(t, DB.Create(subscription).Error)
+
+	expiredCount, err := ExpireDueSubscriptions(10)
+	require.NoError(t, err)
+	assert.Equal(t, 1, expiredCount)
+
+	var reloaded User
+	require.NoError(t, DB.First(&reloaded, user.Id).Error)
+	assert.Equal(t, "vip", reloaded.Group)
 }
 
 func TestNormalizeTopUpValueUSD(t *testing.T) {

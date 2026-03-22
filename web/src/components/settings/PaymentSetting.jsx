@@ -42,6 +42,7 @@ const PaymentSetting = () => {
     AmountOptions: '',
     AmountDiscount: '',
     AutoSwitchGroupEnabled: false,
+    AutoSwitchGroupOnlyNewTopups: false,
     AutoSwitchGroupRules: [],
 
     StripeApiSecret: '',
@@ -97,9 +98,14 @@ const PaymentSetting = () => {
           case 'payment_setting.auto_switch_group_enabled':
             newInputs['AutoSwitchGroupEnabled'] = toBoolean(item.value);
             break;
+          case 'payment_setting.auto_switch_group_only_new_topups':
+            newInputs['AutoSwitchGroupOnlyNewTopups'] = toBoolean(item.value);
+            break;
           case 'payment_setting.auto_switch_group_rules':
             try {
-              newInputs['AutoSwitchGroupRules'] = JSON.parse(item.value || '[]');
+              newInputs['AutoSwitchGroupRules'] = JSON.parse(
+                item.value || '[]',
+              );
             } catch (error) {
               newInputs['AutoSwitchGroupRules'] = [];
             }

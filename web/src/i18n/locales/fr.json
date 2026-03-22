@@ -157,6 +157,8 @@
     "Key": "Key",
     "充值后自动切换分组": "Changement automatique de groupe après recharge",
     "按累计成功的普通充值金额命中规则后切换分组。": "Changer de groupe après avoir atteint une règle basée sur le montant cumulé des recharges normales réussies.",
+    "启用后仅统计新充值": "Compter uniquement les nouvelles recharges après activation",
+    "按累计成功的普通充值金额命中规则后切换分组；开启“仅统计新充值”后会从当前时刻重新累计，不回溯历史成功充值。": "Changer de groupe après avoir atteint une règle basée sur le montant cumulé des recharges normales réussies ; lorsque l'option « compter uniquement les nouvelles recharges » est activée, le cumul repart du moment actuel et n'inclut pas les anciennes recharges réussies.",
     "仅对普通充值生效，不影响 subscription 套餐购买时的 upgrade_group 逻辑。": "S'applique uniquement aux recharges normales et n'affecte pas la logique upgrade_group des achats d'abonnement.",
     "当前按 {{unit}} 编辑阈值，保存后统一换算为 USD。": "Les seuils sont édités en {{unit}} puis convertis en USD lors de l'enregistrement.",
     "暂无规则，请点击下方按钮新增": "Aucune règle pour le moment, cliquez sur le bouton ci-dessous pour en ajouter une",
