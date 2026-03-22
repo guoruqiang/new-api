@@ -20,6 +20,7 @@ For commercial licensing, please contact support@quantumnous.com
 import React, { useEffect, useState, useRef } from 'react';
 import { IconDelete, IconPlus } from '@douyinfe/semi-icons';
 import {
+  Banner,
   Button,
   Form,
   Row,
@@ -577,29 +578,25 @@ export default function SettingsPaymentGateway(props) {
             />
           </div>
           <div style={{ marginTop: 12 }}>
-            <Text type='secondary'>
-              {t('按累计成功的普通充值金额命中规则后切换分组。')}
-            </Text>
-          </div>
-          <div style={{ marginTop: 4 }}>
-            <Text type='secondary'>
-              {t(
+            <Banner
+              type='info'
+              description={t('按累计成功的普通充值金额命中规则后切换分组。')}
+            />
+            <Banner
+              type='warning'
+              description={`${t(
                 '仅对普通充值生效，不影响 subscription 套餐购买时的 upgrade_group 逻辑。',
-              )}
-            </Text>
-          </div>
-          <div style={{ marginTop: 4 }}>
-            <Text type='secondary'>
-              {t('当前按 {{unit}} 编辑阈值，保存后统一换算为 USD。', {
+              )} ${t('当前按 {{unit}} 编辑阈值，保存后统一换算为 USD。', {
                 unit: displayConfig.unitLabel,
-              })}
-            </Text>
+              })}`}
+              style={{ marginTop: 8 }}
+            />
           </div>
           <Space
             vertical
             align='start'
             spacing={12}
-            style={{ width: '100%', marginTop: 16 }}
+            style={{ width: '100%', marginTop: 12 }}
           >
             {autoSwitchGroupRules.length === 0 ? (
               <Text type='tertiary'>{t('暂无规则，请点击下方按钮新增')}</Text>
