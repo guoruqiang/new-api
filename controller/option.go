@@ -115,6 +115,14 @@ type normalizedPaymentAutoSwitchGroupRules struct {
 
 const paymentAutoSwitchGroupRulesRequiredMessage = "启用充值后自动切换分组前，请至少配置一条合法规则"
 
+func normalizePaymentAutoSwitchGroupBaseGroup(baseGroup string) string {
+	trimmed := strings.TrimSpace(baseGroup)
+	if trimmed == "" {
+		return "default"
+	}
+	return trimmed
+}
+
 func isValidPaymentAutoSwitchGroup(group string) bool {
 	if strings.TrimSpace(group) == "" {
 		return false
@@ -197,6 +205,26 @@ func getRequestedPaymentAutoSwitchGroupRules(optionKey, optionValue string) ([]o
 	copiedRules := make([]operation_setting.PaymentAutoSwitchGroupRule, len(rules))
 	copy(copiedRules, rules)
 	return copiedRules, nil
+}
+
+func normalizeAndValidatePaymentAutoSwitchGroupBaseGroup(baseGroup string) (string, error) {
+	normalizedBaseGroup := normalizePaymentAutoSwitchGroupBaseGroup(baseGroup)
+	if !isValidPaymentAutoSwitchGroup(normalizedBaseGroup) {
+		return "", fmt.Errorf("充值自动切换分组的基础分组不存在")
+	}
+	return normalizedBaseGroup, nil
+}
+
+func getRequestedPaymentAutoSwitchGroupBaseGroup(optionKey, optionValue string) string {
+	paymentSetting := operation_setting.GetPaymentSetting()
+	if optionKey == "payment_setting.auto_switch_group_base_group" {
+		return normalizePaymentAutoSwitchGroupBaseGroup(optionValue)
+	}
+	return normalizePaymentAutoSwitchGroupBaseGroup(paymentSetting.AutoSwitchGroupBaseGroup)
+}
+
+func getValidatedRequestedPaymentAutoSwitchGroupBaseGroup(optionKey, optionValue string) (string, error) {
+	return normalizeAndValidatePaymentAutoSwitchGroupBaseGroup(getRequestedPaymentAutoSwitchGroupBaseGroup(optionKey, optionValue))
 }
 
 func getRequestedPaymentAutoSwitchGroupEnabled(optionKey, optionValue string) bool {
@@ -420,12 +448,29 @@ func UpdateOption(c *gin.Context) {
 			})
 			return
 		}
+	case "payment_setting.auto_switch_group_base_group":
+		normalizedBaseGroup, normalizeErr := normalizeAndValidatePaymentAutoSwitchGroupBaseGroup(option.Value.(string))
+		if normalizeErr != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": normalizeErr.Error(),
+			})
+			return
+		}
+		option.Value = normalizedBaseGroup
 	case "payment_setting.auto_switch_group_rules":
 		normalizedRules, normalizeErr := normalizePaymentAutoSwitchGroupRules(option.Value.(string))
 		if normalizeErr != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
 				"message": normalizeErr.Error(),
+			})
+			return
+		}
+		if _, baseGroupErr := getValidatedRequestedPaymentAutoSwitchGroupBaseGroup(option.Key, option.Value.(string)); baseGroupErr != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": baseGroupErr.Error(),
 			})
 			return
 		}
@@ -443,6 +488,13 @@ func UpdateOption(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
 				"message": "无效的开关值",
+			})
+			return
+		}
+		if _, baseGroupErr := getValidatedRequestedPaymentAutoSwitchGroupBaseGroup(option.Key, option.Value.(string)); baseGroupErr != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": baseGroupErr.Error(),
 			})
 			return
 		}
@@ -468,6 +520,13 @@ func UpdateOption(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
 				"message": "无效的开关值",
+			})
+			return
+		}
+		if _, baseGroupErr := getValidatedRequestedPaymentAutoSwitchGroupBaseGroup(option.Key, option.Value.(string)); baseGroupErr != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": baseGroupErr.Error(),
 			})
 			return
 		}

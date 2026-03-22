@@ -76,6 +76,40 @@ func NormalizeTopUpValueUSD(topUp *TopUp) float64 {
 	}
 }
 
+func normalizePaymentAutoSwitchGroupBaseGroup(baseGroup string) string {
+	trimmed := strings.TrimSpace(baseGroup)
+	if trimmed == "" {
+		return "default"
+	}
+	return trimmed
+}
+
+func buildPaymentAutoSwitchGroupChainSet(paymentSetting operation_setting.PaymentSetting) map[string]struct{} {
+	chainGroups := make(map[string]struct{}, len(paymentSetting.AutoSwitchGroupRules)+1)
+	chainGroups[normalizePaymentAutoSwitchGroupBaseGroup(paymentSetting.AutoSwitchGroupBaseGroup)] = struct{}{}
+	for _, rule := range paymentSetting.AutoSwitchGroupRules {
+		group := strings.TrimSpace(rule.Group)
+		if group == "" {
+			continue
+		}
+		chainGroups[group] = struct{}{}
+	}
+	return chainGroups
+}
+
+func getPaymentAutoSwitchGroupChainSet() map[string]struct{} {
+	return buildPaymentAutoSwitchGroupChainSet(operation_setting.GetPaymentSetting())
+}
+
+func isPaymentAutoSwitchGroupChainMember(group string, chainGroups map[string]struct{}) bool {
+	trimmedGroup := strings.TrimSpace(group)
+	if trimmedGroup == "" {
+		return false
+	}
+	_, ok := chainGroups[trimmedGroup]
+	return ok
+}
+
 func getPaymentAutoSwitchGroupTopUpCutoffTime() int64 {
 	paymentSetting := operation_setting.GetPaymentSetting()
 	if !paymentSetting.AutoSwitchGroupOnlyNewTopups || paymentSetting.AutoSwitchGroupEnabledFrom <= 0 {
@@ -195,6 +229,11 @@ func applyTopUpAutoSwitchGroupTx(tx *gorm.DB, userId int) (string, error) {
 			return "", err
 		}
 		return activeUpgradeGroup, nil
+	}
+
+	chainGroups := buildPaymentAutoSwitchGroupChainSet(paymentSetting)
+	if !isPaymentAutoSwitchGroupChainMember(currentGroup, chainGroups) {
+		return "", nil
 	}
 
 	targetGroup, err := getTopUpAutoSwitchTargetGroupTx(tx, userId)

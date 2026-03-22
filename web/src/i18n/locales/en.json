@@ -156,6 +156,8 @@
     "JSON解析错误:": "JSON parsing error:",
     "Key": "Key",
     "充值后自动切换分组": "Auto switch group after topup",
+    "基础分组": "Base group",
+    "请选择基础分组": "Please select a base group",
     "按累计成功的普通充值金额命中规则后切换分组。": "Switch groups after matching rules against cumulative successful normal topup amount.",
     "启用后仅统计新充值": "Only count new topups after enabling",
     "按累计成功的普通充值金额命中规则后切换分组；开启“仅统计新充值”后会从当前时刻重新累计，不回溯历史成功充值。": "Switch groups after matching rules against cumulative successful normal topup amount; when \"only count new topups\" is enabled, accumulation restarts from the current time and does not include past successful topups.",

@@ -1,6 +1,7 @@
 package operation_setting
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/QuantumNous/new-api/setting/config"
@@ -17,6 +18,7 @@ type PaymentSetting struct {
 	AutoSwitchGroupEnabled       bool                         `json:"auto_switch_group_enabled"`
 	AutoSwitchGroupOnlyNewTopups bool                         `json:"auto_switch_group_only_new_topups"`
 	AutoSwitchGroupEnabledFrom   int64                        `json:"auto_switch_group_enabled_from"`
+	AutoSwitchGroupBaseGroup     string                       `json:"auto_switch_group_base_group"`
 	AutoSwitchGroupRules         []PaymentAutoSwitchGroupRule `json:"auto_switch_group_rules"`
 }
 
@@ -29,6 +31,7 @@ var paymentSetting = PaymentSetting{
 	AutoSwitchGroupEnabled:       false,
 	AutoSwitchGroupOnlyNewTopups: false,
 	AutoSwitchGroupEnabledFrom:   0,
+	AutoSwitchGroupBaseGroup:     "default",
 	AutoSwitchGroupRules:         []PaymentAutoSwitchGroupRule{},
 }
 
@@ -57,11 +60,20 @@ func GetPaymentSetting() PaymentSetting {
 	return copiedSetting
 }
 
+func normalizePaymentAutoSwitchGroupBaseGroup(baseGroup string) string {
+	trimmed := strings.TrimSpace(baseGroup)
+	if trimmed == "" {
+		return "default"
+	}
+	return trimmed
+}
+
 func UpdatePaymentSetting(mutator func(setting *PaymentSetting)) PaymentSetting {
 	paymentSettingRWMutex.Lock()
 	defer paymentSettingRWMutex.Unlock()
 
 	mutator(&paymentSetting)
+	paymentSetting.AutoSwitchGroupBaseGroup = normalizePaymentAutoSwitchGroupBaseGroup(paymentSetting.AutoSwitchGroupBaseGroup)
 
 	copiedSetting := paymentSetting
 	if paymentSetting.AmountOptions != nil {

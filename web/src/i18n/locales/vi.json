@@ -152,6 +152,8 @@
     "JSON解析错误:": "Lỗi phân tích cú pháp JSON:",
     "Key": "Key",
     "充值后自动切换分组": "Tự động chuyển nhóm sau khi nạp tiền",
+    "基础分组": "Nhóm cơ sở",
+    "请选择基础分组": "Vui lòng chọn nhóm cơ sở",
     "按累计成功的普通充值金额命中规则后切换分组。": "Chuyển nhóm sau khi đạt quy tắc theo tổng số tiền nạp thông thường thành công tích lũy.",
     "启用后仅统计新充值": "Sau khi bật chỉ tính các lần nạp mới",
     "按累计成功的普通充值金额命中规则后切换分组；开启“仅统计新充值”后会从当前时刻重新累计，不回溯历史成功充值。": "Chuyển nhóm sau khi đạt quy tắc theo tổng số tiền nạp thông thường thành công tích lũy; khi bật \"chỉ tính các lần nạp mới\", hệ thống sẽ tích lũy lại từ thời điểm hiện tại và không tính ngược các lần nạp thành công trước đó.",

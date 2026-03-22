@@ -156,6 +156,8 @@
     "JSON解析错误:": "Erreur d'analyse JSON :",
     "Key": "Key",
     "充值后自动切换分组": "Changement automatique de groupe après recharge",
+    "基础分组": "Groupe de base",
+    "请选择基础分组": "Veuillez sélectionner un groupe de base",
     "按累计成功的普通充值金额命中规则后切换分组。": "Changer de groupe après avoir atteint une règle basée sur le montant cumulé des recharges normales réussies.",
     "启用后仅统计新充值": "Compter uniquement les nouvelles recharges après activation",
     "按累计成功的普通充值金额命中规则后切换分组；开启“仅统计新充值”后会从当前时刻重新累计，不回溯历史成功充值。": "Changer de groupe après avoir atteint une règle basée sur le montant cumulé des recharges normales réussies ; lorsque l'option « compter uniquement les nouvelles recharges » est activée, le cumul repart du moment actuel et n'inclut pas les anciennes recharges réussies.",

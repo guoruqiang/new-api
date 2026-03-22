@@ -43,6 +43,7 @@ const PaymentSetting = () => {
     AmountDiscount: '',
     AutoSwitchGroupEnabled: false,
     AutoSwitchGroupOnlyNewTopups: false,
+    AutoSwitchGroupBaseGroup: 'default',
     AutoSwitchGroupRules: [],
 
     StripeApiSecret: '',
@@ -100,6 +101,9 @@ const PaymentSetting = () => {
             break;
           case 'payment_setting.auto_switch_group_only_new_topups':
             newInputs['AutoSwitchGroupOnlyNewTopups'] = toBoolean(item.value);
+            break;
+          case 'payment_setting.auto_switch_group_base_group':
+            newInputs['AutoSwitchGroupBaseGroup'] = item.value || 'default';
             break;
           case 'payment_setting.auto_switch_group_rules':
             try {

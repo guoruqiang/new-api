@@ -441,15 +441,19 @@ func resolveUserEffectiveGroupTx(tx *gorm.DB, userId int, now int64, fallbackGro
 		return activeUpgradeGroup, nil
 	}
 
-	topUpGroup, err := getTopUpAutoSwitchTargetGroupTx(tx, userId)
-	if err != nil {
-		return "", err
-	}
-	if topUpGroup != "" {
-		return topUpGroup, nil
+	fallbackGroup = strings.TrimSpace(fallbackGroup)
+	chainGroups := getPaymentAutoSwitchGroupChainSet()
+	if isPaymentAutoSwitchGroupChainMember(fallbackGroup, chainGroups) {
+		topUpGroup, err := getTopUpAutoSwitchTargetGroupTx(tx, userId)
+		if err != nil {
+			return "", err
+		}
+		if topUpGroup != "" {
+			return topUpGroup, nil
+		}
 	}
 
-	return strings.TrimSpace(fallbackGroup), nil
+	return fallbackGroup, nil
 }
 
 func downgradeUserGroupForSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now int64) (string, error) {
