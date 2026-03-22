@@ -18,16 +18,49 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import React, { useEffect, useState, useRef } from 'react';
-import { Button, Form, Row, Col, Typography, Spin } from '@douyinfe/semi-ui';
+import { IconDelete, IconPlus } from '@douyinfe/semi-icons';
+import {
+  Button,
+  Form,
+  Row,
+  Col,
+  Typography,
+  Spin,
+  InputNumber,
+  Select,
+  Space,
+} from '@douyinfe/semi-ui';
 const { Text } = Typography;
 import {
   API,
+  getQuotaPerUnit,
   removeTrailingSlash,
   showError,
   showSuccess,
   verifyJSON,
 } from '../../../helpers';
 import { useTranslation } from 'react-i18next';
+
+const createRuleId = () =>
+  `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+const createRuleRow = (rule = {}) => ({
+  id: createRuleId(),
+  threshold:
+    rule.threshold === undefined || rule.threshold === null ? '' : rule.threshold,
+  group: String(rule.group || ''),
+});
+
+const serializeRuleRowsForCompare = (rules = []) =>
+  JSON.stringify(
+    rules.map((rule) => {
+      const threshold = Number(rule.threshold);
+      return {
+        threshold: Number.isFinite(threshold) ? threshold : null,
+        group: String(rule.group || '').trim(),
+      };
+    }),
+  );
 
 export default function SettingsPaymentGateway(props) {
   const { t } = useTranslation();
@@ -43,9 +76,154 @@ export default function SettingsPaymentGateway(props) {
     PayMethods: '',
     AmountOptions: '',
     AmountDiscount: '',
+    AutoSwitchGroupEnabled: false,
   });
   const [originInputs, setOriginInputs] = useState({});
+  const [groupOptions, setGroupOptions] = useState([]);
+  const [groupLoading, setGroupLoading] = useState(false);
+  const [autoSwitchGroupRules, setAutoSwitchGroupRules] = useState([]);
+  const [originAutoSwitchGroupRules, setOriginAutoSwitchGroupRules] =
+    useState('[]');
   const formApiRef = useRef(null);
+
+  const getDisplayConfig = () => {
+    let type = props.options?.['general_setting.quota_display_type'];
+    if (!type && props.options?.DisplayInCurrencyEnabled !== undefined) {
+      type = props.options.DisplayInCurrencyEnabled ? 'USD' : 'TOKENS';
+    }
+    if (!type) {
+      type = 'USD';
+    }
+
+    const usdExchangeRate = Number(props.options?.USDExchangeRate || 1);
+    const customRate = Number(
+      props.options?.['general_setting.custom_currency_exchange_rate'] || 1,
+    );
+    const customSymbol =
+      props.options?.['general_setting.custom_currency_symbol'] || 'CUSTOM';
+    const quotaPerUnit = Number(props.options?.QuotaPerUnit || getQuotaPerUnit());
+
+    if (type === 'TOKENS') {
+      return {
+        type,
+        multiplier:
+          Number.isFinite(quotaPerUnit) && quotaPerUnit > 0 ? quotaPerUnit : 1,
+        unitLabel: 'TOKENS',
+        precision: 0,
+      };
+    }
+
+    if (type === 'CNY') {
+      return {
+        type,
+        multiplier:
+          Number.isFinite(usdExchangeRate) && usdExchangeRate > 0
+            ? usdExchangeRate
+            : 1,
+        unitLabel: 'CNY',
+        precision: 6,
+      };
+    }
+
+    if (type === 'CUSTOM') {
+      return {
+        type,
+        multiplier: Number.isFinite(customRate) && customRate > 0 ? customRate : 1,
+        unitLabel: customSymbol || 'CUSTOM',
+        precision: 6,
+      };
+    }
+
+    return {
+      type: 'USD',
+      multiplier: 1,
+      unitLabel: 'USD',
+      precision: 6,
+    };
+  };
+
+  const convertUsdToDisplayThreshold = (usdValue) => {
+    const numeric = Number(usdValue || 0);
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+      return '';
+    }
+    const displayConfig = getDisplayConfig();
+    const converted = numeric * displayConfig.multiplier;
+    if (displayConfig.type === 'TOKENS') {
+      return Math.round(converted);
+    }
+    return Number(converted.toFixed(6));
+  };
+
+  const convertDisplayThresholdToUsd = (displayValue) => {
+    const numeric = Number(displayValue);
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+      return 0;
+    }
+    const displayConfig = getDisplayConfig();
+    return Number((numeric / displayConfig.multiplier).toFixed(8));
+  };
+
+  const buildAutoSwitchGroupRulesPayload = () => {
+    const effectiveRules = autoSwitchGroupRules
+      .map((rule) => ({
+        threshold: rule.threshold,
+        group: String(rule.group || '').trim(),
+      }))
+      .filter((rule) => rule.threshold !== '' || rule.group !== '');
+
+    if (effectiveRules.length === 0) {
+      if (inputs.AutoSwitchGroupEnabled) {
+        showError(t('启用充值后自动切换分组前，请至少配置一条合法规则'));
+        return null;
+      }
+      return [];
+    }
+
+    const payload = [];
+    for (let index = 0; index < effectiveRules.length; index += 1) {
+      const rule = effectiveRules[index];
+      const threshold = Number(rule.threshold);
+      if (!Number.isFinite(threshold) || threshold <= 0) {
+        showError(
+          t('第 {{index}} 条充值自动切换分组规则的阈值必须大于 0', {
+            index: index + 1,
+          }),
+        );
+        return null;
+      }
+      if (!rule.group) {
+        showError(
+          t('第 {{index}} 条充值自动切换分组规则请选择分组', {
+            index: index + 1,
+          }),
+        );
+        return null;
+      }
+
+      payload.push({
+        threshold_usd: convertDisplayThresholdToUsd(threshold),
+        group: rule.group,
+      });
+    }
+
+    payload.sort((a, b) => a.threshold_usd - b.threshold_usd);
+    return payload;
+  };
+
+  const updateAutoSwitchGroupRule = (ruleId, patch) => {
+    setAutoSwitchGroupRules((prev) =>
+      prev.map((rule) => (rule.id === ruleId ? { ...rule, ...patch } : rule)),
+    );
+  };
+
+  const addAutoSwitchGroupRule = () => {
+    setAutoSwitchGroupRules((prev) => [...prev, createRuleRow()]);
+  };
+
+  const removeAutoSwitchGroupRule = (ruleId) => {
+    setAutoSwitchGroupRules((prev) => prev.filter((rule) => rule.id !== ruleId));
+  };
 
   useEffect(() => {
     if (props.options && formApiRef.current) {
@@ -66,6 +244,7 @@ export default function SettingsPaymentGateway(props) {
         PayMethods: props.options.PayMethods || '',
         AmountOptions: props.options.AmountOptions || '',
         AmountDiscount: props.options.AmountDiscount || '',
+        AutoSwitchGroupEnabled: props.options.AutoSwitchGroupEnabled || false,
       };
 
       // 美化 JSON 展示
@@ -88,11 +267,36 @@ export default function SettingsPaymentGateway(props) {
         }
       } catch {}
 
+      const nextRules = Array.isArray(props.options.AutoSwitchGroupRules)
+        ? props.options.AutoSwitchGroupRules.map((rule) =>
+            createRuleRow({
+              threshold: convertUsdToDisplayThreshold(rule.threshold_usd),
+              group: rule.group || '',
+            }),
+          )
+        : [];
+
       setInputs(currentInputs);
       setOriginInputs({ ...currentInputs });
+      setAutoSwitchGroupRules(nextRules);
+      setOriginAutoSwitchGroupRules(serializeRuleRowsForCompare(nextRules));
       formApiRef.current.setValues(currentInputs);
     }
   }, [props.options]);
+
+  useEffect(() => {
+    setGroupLoading(true);
+    API.get('/api/group')
+      .then((res) => {
+        if (res.data?.success) {
+          setGroupOptions(res.data?.data || []);
+        } else {
+          setGroupOptions([]);
+        }
+      })
+      .catch(() => setGroupOptions([]))
+      .finally(() => setGroupLoading(false));
+  }, []);
 
   const handleFormChange = (values) => {
     setInputs(values);
@@ -138,6 +342,11 @@ export default function SettingsPaymentGateway(props) {
       }
     }
 
+    const autoSwitchGroupRulesPayload = buildAutoSwitchGroupRulesPayload();
+    if (autoSwitchGroupRulesPayload === null) {
+      return;
+    }
+
     setLoading(true);
     try {
       const options = [
@@ -181,17 +390,49 @@ export default function SettingsPaymentGateway(props) {
         });
       }
 
-      // 发送请求
-      const requestQueue = options.map((opt) =>
-        API.put('/api/option/', {
+      const autoSwitchGroupRulesChanged =
+        originAutoSwitchGroupRules !==
+        serializeRuleRowsForCompare(autoSwitchGroupRules);
+      const autoSwitchGroupEnabledChanged =
+        originInputs['AutoSwitchGroupEnabled'] !== inputs.AutoSwitchGroupEnabled;
+
+      if (autoSwitchGroupRulesChanged || autoSwitchGroupEnabledChanged) {
+        const autoSwitchOptions = [];
+        if (inputs.AutoSwitchGroupEnabled) {
+          autoSwitchOptions.push({
+            key: 'payment_setting.auto_switch_group_rules',
+            value: JSON.stringify(autoSwitchGroupRulesPayload),
+          });
+          autoSwitchOptions.push({
+            key: 'payment_setting.auto_switch_group_enabled',
+            value: inputs.AutoSwitchGroupEnabled.toString(),
+          });
+        } else {
+          if (autoSwitchGroupEnabledChanged) {
+            autoSwitchOptions.push({
+              key: 'payment_setting.auto_switch_group_enabled',
+              value: inputs.AutoSwitchGroupEnabled.toString(),
+            });
+          }
+          if (autoSwitchGroupRulesChanged) {
+            autoSwitchOptions.push({
+              key: 'payment_setting.auto_switch_group_rules',
+              value: JSON.stringify(autoSwitchGroupRulesPayload),
+            });
+          }
+        }
+        options.push(...autoSwitchOptions);
+      }
+
+      const results = [];
+      for (const opt of options) {
+        const res = await API.put('/api/option/', {
           key: opt.key,
           value: opt.value,
-        }),
-      );
+        });
+        results.push(res);
+      }
 
-      const results = await Promise.all(requestQueue);
-
-      // 检查所有请求是否成功
       const errorResults = results.filter((res) => !res.data.success);
       if (errorResults.length > 0) {
         errorResults.forEach((res) => {
@@ -199,8 +440,10 @@ export default function SettingsPaymentGateway(props) {
         });
       } else {
         showSuccess(t('更新成功'));
-        // 更新本地存储的原始值
         setOriginInputs({ ...inputs });
+        setOriginAutoSwitchGroupRules(
+          serializeRuleRowsForCompare(autoSwitchGroupRules),
+        );
         props.refresh && props.refresh();
       }
     } catch (error) {
@@ -208,6 +451,8 @@ export default function SettingsPaymentGateway(props) {
     }
     setLoading(false);
   };
+
+  const displayConfig = getDisplayConfig();
 
   return (
     <Spin spinning={loading}>
@@ -324,7 +569,108 @@ export default function SettingsPaymentGateway(props) {
             </Col>
           </Row>
 
-          <Button onClick={submitPayAddress}>{t('更新支付设置')}</Button>
+          <div style={{ marginTop: 16 }}>
+            <Form.Switch
+              field='AutoSwitchGroupEnabled'
+              label={t('充值后自动切换分组')}
+              size='large'
+            />
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <Text type='secondary'>
+              {t('按累计成功的普通充值金额命中规则后切换分组。')}
+            </Text>
+          </div>
+          <div style={{ marginTop: 4 }}>
+            <Text type='secondary'>
+              {t(
+                '仅对普通充值生效，不影响 subscription 套餐购买时的 upgrade_group 逻辑。',
+              )}
+            </Text>
+          </div>
+          <div style={{ marginTop: 4 }}>
+            <Text type='secondary'>
+              {t('当前按 {{unit}} 编辑阈值，保存后统一换算为 USD。', {
+                unit: displayConfig.unitLabel,
+              })}
+            </Text>
+          </div>
+          <Space
+            vertical
+            align='start'
+            spacing={12}
+            style={{ width: '100%', marginTop: 16 }}
+          >
+            {autoSwitchGroupRules.length === 0 ? (
+              <Text type='tertiary'>{t('暂无规则，请点击下方按钮新增')}</Text>
+            ) : (
+              autoSwitchGroupRules.map((rule) => (
+                <div key={rule.id} style={{ width: '100%' }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      gap: 12,
+                      alignItems: 'flex-end',
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    <div style={{ flex: 1, minWidth: 180 }}>
+                      <Text>{`${t('阈值')} (${displayConfig.unitLabel})`}</Text>
+                      <InputNumber
+                        style={{ width: '100%', marginTop: 6 }}
+                        min={displayConfig.type === 'TOKENS' ? 1 : 0.000001}
+                        precision={displayConfig.precision}
+                        value={rule.threshold === '' ? undefined : rule.threshold}
+                        placeholder={t('请输入阈值')}
+                        onChange={(value) =>
+                          updateAutoSwitchGroupRule(rule.id, {
+                            threshold: value ?? '',
+                          })
+                        }
+                      />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 180 }}>
+                      <Text>{t('分组')}</Text>
+                      <Select
+                        style={{ width: '100%', marginTop: 6 }}
+                        value={rule.group || undefined}
+                        loading={groupLoading}
+                        showClear
+                        placeholder={t('请选择分组')}
+                        onChange={(value) =>
+                          updateAutoSwitchGroupRule(rule.id, {
+                            group: value || '',
+                          })
+                        }
+                      >
+                        {(groupOptions || []).map((group) => (
+                          <Select.Option key={group} value={group}>
+                            {group}
+                          </Select.Option>
+                        ))}
+                      </Select>
+                    </div>
+                    <Button
+                      icon={<IconDelete />}
+                      theme='borderless'
+                      type='danger'
+                      onClick={() => removeAutoSwitchGroupRule(rule.id)}
+                    >
+                      {t('删除规则')}
+                    </Button>
+                  </div>
+                </div>
+              ))
+            )}
+
+            <Button icon={<IconPlus />} onClick={addAutoSwitchGroupRule}>
+              {t('新增规则')}
+            </Button>
+          </Space>
+
+          <Button onClick={submitPayAddress} style={{ marginTop: 16 }}>
+            {t('更新支付设置')}
+          </Button>
         </Form.Section>
       </Form>
     </Spin>
