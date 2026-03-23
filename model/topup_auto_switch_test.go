@@ -458,6 +458,86 @@ func TestExpireDueSubscriptions_OnlyNewTopupsFallbackUsesEnabledFromCutoff(t *te
 	assert.Equal(t, "vip", reloaded.Group)
 }
 
+func TestMatchPaymentAutoSwitchGroupRule_UnsortedRules(t *testing.T) {
+	rules := []operation_setting.PaymentAutoSwitchGroupRule{
+		{ThresholdUSD: 50, Group: "svip"},
+		{ThresholdUSD: 10, Group: "vip"},
+		{ThresholdUSD: 20, Group: "pro"},
+	}
+
+	t.Run("matches highest eligible threshold from unsorted rules", func(t *testing.T) {
+		assert.Equal(t, "svip", matchPaymentAutoSwitchGroupRule(80, rules))
+	})
+
+	t.Run("returns empty when total is below smallest threshold", func(t *testing.T) {
+		assert.Equal(t, "", matchPaymentAutoSwitchGroupRule(5, rules))
+	})
+
+	t.Run("matches rule when total equals threshold exactly", func(t *testing.T) {
+		assert.Equal(t, "pro", matchPaymentAutoSwitchGroupRule(20, rules))
+	})
+}
+
+func TestExpireDueSubscriptions_UsesLatestEndedUpgradeSubscriptionForFallback(t *testing.T) {
+	prepareTopUpAutoSwitchTest(t)
+
+	user := &User{
+		Username: "topup_fallback_latest_end_time",
+		Password: "password123",
+		Group:    "svip",
+		Role:     common.RoleCommonUser,
+		Status:   common.UserStatusEnabled,
+	}
+	require.NoError(t, DB.Create(user).Error)
+
+	require.NoError(t, DB.Create(&TopUp{
+		UserId:        user.Id,
+		Amount:        20,
+		Money:         20,
+		TradeNo:       "trade_fallback_latest_end_time_topup",
+		PaymentMethod: "epay",
+		Status:        common.TopUpStatusSuccess,
+	}).Error)
+
+	now := GetDBTimestamp()
+	latestEndedSub := &UserSubscription{
+		UserId:        user.Id,
+		PlanId:        1,
+		Status:        "active",
+		StartTime:     now - 7200,
+		EndTime:       now - 1,
+		UpgradeGroup:  "svip",
+		PrevUserGroup: "default",
+	}
+	require.NoError(t, DB.Create(latestEndedSub).Error)
+
+	earlierEndedButNewerCreatedSub := &UserSubscription{
+		UserId:        user.Id,
+		PlanId:        2,
+		Status:        "active",
+		StartTime:     now - 3600,
+		EndTime:       now - 10,
+		UpgradeGroup:  "svip",
+		PrevUserGroup: "sub",
+	}
+	require.NoError(t, DB.Create(earlierEndedButNewerCreatedSub).Error)
+
+	expiredCount, err := ExpireDueSubscriptions(10)
+	require.NoError(t, err)
+	assert.Equal(t, 2, expiredCount)
+
+	var reloaded User
+	require.NoError(t, DB.First(&reloaded, user.Id).Error)
+	assert.Equal(t, "vip", reloaded.Group)
+
+	var expiredSubs []UserSubscription
+	require.NoError(t, DB.Where("user_id = ?", user.Id).Find(&expiredSubs).Error)
+	require.Len(t, expiredSubs, 2)
+	for _, sub := range expiredSubs {
+		assert.Equal(t, "expired", sub.Status)
+	}
+}
+
 func TestGetUserSuccessfulTopupTotalUSDTx_IgnoresZeroAmountShadowTopups(t *testing.T) {
 	prepareTopUpAutoSwitchTest(t)
 

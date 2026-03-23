@@ -151,12 +151,16 @@ func matchPaymentAutoSwitchGroupRule(totalTopUpUSD float64, rules []operation_se
 	}
 
 	matchedGroup := ""
+	matchedThreshold := -1.0
 	for _, rule := range rules {
-		if rule.ThresholdUSD <= totalTopUpUSD {
-			matchedGroup = strings.TrimSpace(rule.Group)
+		group := strings.TrimSpace(rule.Group)
+		if group == "" || rule.ThresholdUSD > totalTopUpUSD {
 			continue
 		}
-		break
+		if rule.ThresholdUSD > matchedThreshold {
+			matchedThreshold = rule.ThresholdUSD
+			matchedGroup = group
+		}
 	}
 	return matchedGroup
 }

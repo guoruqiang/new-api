@@ -892,7 +892,7 @@ func ExpireDueSubscriptions(limit int) (int, error) {
 			var lastExpired UserSubscription
 			expiredQuery := tx.Where("user_id = ? AND status = ? AND upgrade_group <> ''",
 				userId, "expired").
-				Order("created_at desc, id desc").
+				Order("end_time desc, created_at desc, id desc").
 				Limit(1).
 				Find(&lastExpired)
 			if expiredQuery.Error != nil {

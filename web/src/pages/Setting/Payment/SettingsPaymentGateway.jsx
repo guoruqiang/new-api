@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { IconDelete, IconPlus } from '@douyinfe/semi-icons';
 import {
   Banner,
@@ -30,7 +30,6 @@ import {
   InputNumber,
   Select,
   Space,
-  Switch,
 } from '@douyinfe/semi-ui';
 const { Text } = Typography;
 import {
@@ -98,12 +97,12 @@ export default function SettingsPaymentGateway(props) {
     AutoSwitchGroupBaseGroup: 'default',
   });
   const [originInputs, setOriginInputs] = useState({});
+  const formApiRef = useRef(null);
   const [groupOptions, setGroupOptions] = useState([]);
   const [groupLoading, setGroupLoading] = useState(false);
   const [autoSwitchGroupRules, setAutoSwitchGroupRules] = useState([]);
   const [originAutoSwitchGroupRules, setOriginAutoSwitchGroupRules] =
     useState('[]');
-  const formApiRef = useRef(null);
 
   const getDisplayConfig = () => {
     let type = props.options?.['general_setting.quota_display_type'];
@@ -250,7 +249,7 @@ export default function SettingsPaymentGateway(props) {
   };
 
   useEffect(() => {
-    if (props.options && formApiRef.current) {
+    if (props.options) {
       const currentInputs = {
         PayAddress: props.options.PayAddress || '',
         EpayId: props.options.EpayId || '',
@@ -268,9 +267,14 @@ export default function SettingsPaymentGateway(props) {
         PayMethods: props.options.PayMethods || '',
         AmountOptions: props.options.AmountOptions || '',
         AmountDiscount: props.options.AmountDiscount || '',
-        AutoSwitchGroupEnabled: props.options.AutoSwitchGroupEnabled || false,
+        AutoSwitchGroupEnabled:
+          props.options.AutoSwitchGroupEnabled !== undefined
+            ? props.options.AutoSwitchGroupEnabled
+            : false,
         AutoSwitchGroupOnlyNewTopups:
-          props.options.AutoSwitchGroupOnlyNewTopups || false,
+          props.options.AutoSwitchGroupOnlyNewTopups !== undefined
+            ? props.options.AutoSwitchGroupOnlyNewTopups
+            : false,
         AutoSwitchGroupBaseGroup:
           props.options.AutoSwitchGroupBaseGroup || 'default',
       };
@@ -310,7 +314,7 @@ export default function SettingsPaymentGateway(props) {
       setOriginInputs({ ...normalizedCurrentInputs });
       setAutoSwitchGroupRules(nextRules);
       setOriginAutoSwitchGroupRules(serializeRuleRowsForCompare(nextRules));
-      formApiRef.current.setValues(normalizedCurrentInputs);
+      formApiRef.current?.setValues(normalizedCurrentInputs);
     }
   }, [props.options]);
 
@@ -322,42 +326,27 @@ export default function SettingsPaymentGateway(props) {
           setGroupOptions(res.data?.data || []);
         } else {
           setGroupOptions([]);
+          showError(res.data?.message || t('分组加载失败，请刷新后重试'));
         }
       })
-      .catch(() => setGroupOptions([]))
+      .catch(() => {
+        setGroupOptions([]);
+        showError(t('分组加载失败，请刷新后重试'));
+      })
       .finally(() => setGroupLoading(false));
-  }, []);
+  }, [t]);
 
   const handleFormChange = (values) => {
-    const normalizedValues = normalizeAutoSwitchGroupInputs({
-      ...values,
-      AutoSwitchGroupEnabled: inputs.AutoSwitchGroupEnabled,
-      AutoSwitchGroupOnlyNewTopups: inputs.AutoSwitchGroupOnlyNewTopups,
-      AutoSwitchGroupBaseGroup: inputs.AutoSwitchGroupBaseGroup,
+    setInputs((prev) => {
+      const normalizedValues = normalizeAutoSwitchGroupInputs({
+        ...prev,
+        ...values,
+      });
+      if (compareObjects(prev, normalizedValues).length === 0) {
+        return prev;
+      }
+      return normalizedValues;
     });
-    setInputs(normalizedValues);
-  };
-
-  const handleAutoSwitchGroupEnabledChange = (checked) => {
-    setInputs((prev) =>
-      normalizeAutoSwitchGroupInputs({
-        ...prev,
-        AutoSwitchGroupEnabled: checked,
-        AutoSwitchGroupOnlyNewTopups: checked
-          ? prev.AutoSwitchGroupOnlyNewTopups
-          : false,
-      }),
-    );
-  };
-
-  const handleAutoSwitchGroupOnlyNewTopupsChange = (checked) => {
-    setInputs((prev) =>
-      normalizeAutoSwitchGroupInputs({
-        ...prev,
-        AutoSwitchGroupEnabled: true,
-        AutoSwitchGroupOnlyNewTopups: checked,
-      }),
-    );
   };
 
   const submitPayAddress = async () => {
@@ -452,59 +441,13 @@ export default function SettingsPaymentGateway(props) {
         originInputs['AutoSwitchGroupBaseGroup'] !==
         inputs.AutoSwitchGroupBaseGroup;
 
-      if (
+      const autoSwitchGroupUpdateNeeded =
         autoSwitchGroupRulesChanged ||
         autoSwitchGroupOnlyNewTopupsChanged ||
         autoSwitchGroupEnabledChanged ||
-        autoSwitchGroupBaseGroupChanged
-      ) {
-        const autoSwitchOptions = [];
-        if (
-          normalizedInputs.AutoSwitchGroupEnabled ||
-          autoSwitchGroupBaseGroupChanged
-        ) {
-          autoSwitchOptions.push({
-            key: 'payment_setting.auto_switch_group_base_group',
-            value: normalizedInputs.AutoSwitchGroupBaseGroup,
-          });
-        }
-        if (normalizedInputs.AutoSwitchGroupEnabled) {
-          autoSwitchOptions.push({
-            key: 'payment_setting.auto_switch_group_rules',
-            value: JSON.stringify(autoSwitchGroupRulesPayload),
-          });
-          autoSwitchOptions.push({
-            key: 'payment_setting.auto_switch_group_only_new_topups',
-            value: normalizedInputs.AutoSwitchGroupOnlyNewTopups.toString(),
-          });
-          autoSwitchOptions.push({
-            key: 'payment_setting.auto_switch_group_enabled',
-            value: normalizedInputs.AutoSwitchGroupEnabled.toString(),
-          });
-        } else {
-          if (autoSwitchGroupEnabledChanged) {
-            autoSwitchOptions.push({
-              key: 'payment_setting.auto_switch_group_enabled',
-              value: normalizedInputs.AutoSwitchGroupEnabled.toString(),
-            });
-          }
-          if (autoSwitchGroupOnlyNewTopupsChanged) {
-            autoSwitchOptions.push({
-              key: 'payment_setting.auto_switch_group_only_new_topups',
-              value: normalizedInputs.AutoSwitchGroupOnlyNewTopups.toString(),
-            });
-          }
-          if (autoSwitchGroupRulesChanged) {
-            autoSwitchOptions.push({
-              key: 'payment_setting.auto_switch_group_rules',
-              value: JSON.stringify(autoSwitchGroupRulesPayload),
-            });
-          }
-        }
-        options.push(...autoSwitchOptions);
-      }
+        autoSwitchGroupBaseGroupChanged;
 
-      if (!options.length) {
+      if (!options.length && !autoSwitchGroupUpdateNeeded) {
         showWarning(t('你似乎并没有修改什么'));
         return;
       }
@@ -517,6 +460,18 @@ export default function SettingsPaymentGateway(props) {
           value: opt.value,
         });
         results.push(res);
+      }
+      if (autoSwitchGroupUpdateNeeded) {
+        const autoSwitchRes = await API.put(
+          '/api/option/payment_auto_switch_group',
+          {
+            enabled: normalizedInputs.AutoSwitchGroupEnabled,
+            only_new_topups: normalizedInputs.AutoSwitchGroupOnlyNewTopups,
+            base_group: normalizedInputs.AutoSwitchGroupBaseGroup,
+            rules: autoSwitchGroupRulesPayload,
+          },
+        );
+        results.push(autoSwitchRes);
       }
 
       const errorResults = results.filter((res) => !res.data.success);
@@ -543,7 +498,7 @@ export default function SettingsPaymentGateway(props) {
   return (
     <Spin spinning={loading}>
       <Form
-        values={inputs}
+        initValues={inputs}
         onValueChange={handleFormChange}
         getFormApi={(api) => (formApiRef.current = api)}
       >
@@ -655,61 +610,42 @@ export default function SettingsPaymentGateway(props) {
             </Col>
           </Row>
 
-          <div
-            style={{
-              marginTop: 16,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 24,
-              flexWrap: 'wrap',
-            }}
+          <Row
+            gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+            style={{ marginTop: 16 }}
           >
-            <div>
-              <Text>{t('充值后自动切换分组')}</Text>
-              <div style={{ marginTop: 6 }}>
-                <Switch
-                  checked={inputs.AutoSwitchGroupEnabled}
-                  size='large'
-                  onChange={handleAutoSwitchGroupEnabledChange}
-                />
-              </div>
-            </div>
-            {inputs.AutoSwitchGroupEnabled && (
-              <div>
-                <Text>{t('启用后仅统计新充值')}</Text>
-                <div style={{ marginTop: 6 }}>
-                  <Switch
-                    checked={inputs.AutoSwitchGroupOnlyNewTopups}
-                    size='large'
-                    onChange={handleAutoSwitchGroupOnlyNewTopupsChange}
-                  />
-                </div>
-              </div>
-            )}
-            <div style={{ minWidth: 220 }}>
-              <Text>{t('基础分组')}</Text>
-              <Select
-                style={{ width: '100%', marginTop: 6 }}
-                value={inputs.AutoSwitchGroupBaseGroup || 'default'}
-                loading={groupLoading}
+            <Col xs={24} sm={24} md={8} lg={8} xl={8}>
+              <Form.Switch
+                field='AutoSwitchGroupEnabled'
+                label={t('充值后自动切换分组')}
+                size='default'
+                checkedText='｜'
+                uncheckedText='〇'
+              />
+            </Col>
+            <Col xs={24} sm={24} md={8} lg={8} xl={8}>
+              <Form.Switch
+                field='AutoSwitchGroupOnlyNewTopups'
+                label={t('启用后仅统计新充值')}
+                size='default'
+                checkedText='｜'
+                uncheckedText='〇'
+                disabled={!inputs.AutoSwitchGroupEnabled}
+              />
+            </Col>
+            <Col xs={24} sm={24} md={8} lg={8} xl={8}>
+              <Form.Select
+                field='AutoSwitchGroupBaseGroup'
+                label={t('基础分组')}
                 placeholder={t('请选择基础分组')}
-                onChange={(value) =>
-                  setInputs((prev) =>
-                    normalizeAutoSwitchGroupInputs({
-                      ...prev,
-                      AutoSwitchGroupBaseGroup: value || 'default',
-                    }),
-                  )
-                }
-              >
-                {(groupOptions || []).map((group) => (
-                  <Select.Option key={group} value={group}>
-                    {group}
-                  </Select.Option>
-                ))}
-              </Select>
-            </div>
-          </div>
+                loading={groupLoading}
+                optionList={(groupOptions || []).map((group) => ({
+                  label: group,
+                  value: group,
+                }))}
+              />
+            </Col>
+          </Row>
           <div style={{ marginTop: 12 }}>
             <Banner
               type='info'
