@@ -1,6 +1,7 @@
 package model
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/performance_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
+	"gorm.io/gorm"
 )
 
 type Option struct {
@@ -177,11 +179,19 @@ func InitOptionMap() {
 
 func loadOptionsFromDatabase() {
 	options, _ := AllOption()
+	paymentSettingOptions := make(map[string]string)
 	for _, option := range options {
+		if strings.HasPrefix(option.Key, "payment_setting.") {
+			paymentSettingOptions[option.Key] = option.Value
+			continue
+		}
 		err := updateOptionMap(option.Key, option.Value)
 		if err != nil {
 			common.SysLog("failed to update option map: " + err.Error())
 		}
+	}
+	if err := applyPaymentSettingOptionValues(paymentSettingOptions); err != nil {
+		common.SysLog("failed to update option map: " + err.Error())
 	}
 }
 
@@ -194,19 +204,93 @@ func SyncOptions(frequency int) {
 }
 
 func UpdateOption(key string, value string) error {
-	// Save to database first
-	option := Option{
-		Key: key,
+	return UpdateOptions(map[string]string{key: value})
+}
+
+func UpdateOptions(optionValues map[string]string) error {
+	if len(optionValues) == 0 {
+		return nil
 	}
-	// https://gorm.io/docs/update.html#Save-All-Fields
-	DB.FirstOrCreate(&option, Option{Key: key})
-	option.Value = value
-	// Save is a combination function.
-	// If save value does not contain primary key, it will execute Create,
-	// otherwise it will execute Update (with all fields).
-	DB.Save(&option)
-	// Update OptionMap
-	return updateOptionMap(key, value)
+
+	keys := make([]string, 0, len(optionValues))
+	paymentSettingOptionValues := make(map[string]string)
+	for key := range optionValues {
+		keys = append(keys, key)
+		if strings.HasPrefix(key, "payment_setting.") {
+			paymentSettingOptionValues[key] = optionValues[key]
+		}
+	}
+	sort.Strings(keys)
+
+	if err := validatePaymentSettingOptionValues(paymentSettingOptionValues); err != nil {
+		return err
+	}
+
+	if err := DB.Transaction(func(tx *gorm.DB) error {
+		for _, key := range keys {
+			option := Option{Key: key}
+			if err := tx.FirstOrCreate(&option, Option{Key: key}).Error; err != nil {
+				return err
+			}
+			option.Value = optionValues[key]
+			if err := tx.Save(&option).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	for _, key := range keys {
+		if strings.HasPrefix(key, "payment_setting.") {
+			continue
+		}
+		if err := updateOptionMap(key, optionValues[key]); err != nil {
+			return err
+		}
+	}
+	return applyPaymentSettingOptionValues(paymentSettingOptionValues)
+}
+
+func validatePaymentSettingOptionValues(optionValues map[string]string) error {
+	if len(optionValues) == 0 {
+		return nil
+	}
+
+	paymentSettingConfigMap := make(map[string]string, len(optionValues))
+	for key, value := range optionValues {
+		paymentSettingConfigMap[strings.TrimPrefix(key, "payment_setting.")] = value
+	}
+
+	paymentSetting := operation_setting.GetPaymentSetting()
+	return config.UpdateConfigFromMap(&paymentSetting, paymentSettingConfigMap)
+}
+
+func applyPaymentSettingOptionValues(optionValues map[string]string) error {
+	if len(optionValues) == 0 {
+		return nil
+	}
+
+	paymentSettingConfigMap := make(map[string]string, len(optionValues))
+	for key, value := range optionValues {
+		paymentSettingConfigMap[strings.TrimPrefix(key, "payment_setting.")] = value
+	}
+
+	var paymentSettingErr error
+	operation_setting.UpdatePaymentSetting(func(setting *operation_setting.PaymentSetting) {
+		paymentSettingErr = config.UpdateConfigFromMap(setting, paymentSettingConfigMap)
+	})
+	if paymentSettingErr != nil {
+		return paymentSettingErr
+	}
+
+	common.OptionMapRWMutex.Lock()
+	defer common.OptionMapRWMutex.Unlock()
+	for key, value := range optionValues {
+		common.OptionMap[key] = value
+	}
+	return nil
 }
 
 func updateOptionMap(key string, value string) (err error) {

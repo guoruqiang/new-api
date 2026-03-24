@@ -76,6 +76,48 @@ func NormalizeTopUpValueUSD(topUp *TopUp) float64 {
 	}
 }
 
+func normalizePaymentAutoSwitchGroupBaseGroup(baseGroup string) string {
+	trimmed := strings.TrimSpace(baseGroup)
+	if trimmed == "" {
+		return "default"
+	}
+	return trimmed
+}
+
+func buildPaymentAutoSwitchGroupChainSet(paymentSetting operation_setting.PaymentSetting) map[string]struct{} {
+	chainGroups := make(map[string]struct{}, len(paymentSetting.AutoSwitchGroupRules)+1)
+	chainGroups[normalizePaymentAutoSwitchGroupBaseGroup(paymentSetting.AutoSwitchGroupBaseGroup)] = struct{}{}
+	for _, rule := range paymentSetting.AutoSwitchGroupRules {
+		group := strings.TrimSpace(rule.Group)
+		if group == "" {
+			continue
+		}
+		chainGroups[group] = struct{}{}
+	}
+	return chainGroups
+}
+
+func getPaymentAutoSwitchGroupChainSet() map[string]struct{} {
+	return buildPaymentAutoSwitchGroupChainSet(operation_setting.GetPaymentSetting())
+}
+
+func isPaymentAutoSwitchGroupChainMember(group string, chainGroups map[string]struct{}) bool {
+	trimmedGroup := strings.TrimSpace(group)
+	if trimmedGroup == "" {
+		return false
+	}
+	_, ok := chainGroups[trimmedGroup]
+	return ok
+}
+
+func getPaymentAutoSwitchGroupTopUpCutoffTime() int64 {
+	paymentSetting := operation_setting.GetPaymentSetting()
+	if !paymentSetting.AutoSwitchGroupOnlyNewTopups || paymentSetting.AutoSwitchGroupEnabledFrom <= 0 {
+		return 0
+	}
+	return paymentSetting.AutoSwitchGroupEnabledFrom
+}
+
 func GetUserSuccessfulTopupTotalUSDTx(tx *gorm.DB, userId int) (float64, error) {
 	if tx == nil {
 		return 0, errors.New("tx is nil")
@@ -84,11 +126,15 @@ func GetUserSuccessfulTopupTotalUSDTx(tx *gorm.DB, userId int) (float64, error) 
 		return 0, errors.New("invalid user id")
 	}
 
-	var topUps []TopUp
-	if err := tx.Model(&TopUp{}).
+	query := tx.Model(&TopUp{}).
 		Select("amount", "money", "payment_method").
-		Where("user_id = ? AND status = ? AND amount > 0", userId, common.TopUpStatusSuccess).
-		Find(&topUps).Error; err != nil {
+		Where("user_id = ? AND status = ? AND amount > 0", userId, common.TopUpStatusSuccess)
+	if cutoffTime := getPaymentAutoSwitchGroupTopUpCutoffTime(); cutoffTime > 0 {
+		query = query.Where("complete_time >= ?", cutoffTime)
+	}
+
+	var topUps []TopUp
+	if err := query.Find(&topUps).Error; err != nil {
 		return 0, err
 	}
 
@@ -105,12 +151,16 @@ func matchPaymentAutoSwitchGroupRule(totalTopUpUSD float64, rules []operation_se
 	}
 
 	matchedGroup := ""
+	matchedThreshold := -1.0
 	for _, rule := range rules {
-		if rule.ThresholdUSD <= totalTopUpUSD {
-			matchedGroup = strings.TrimSpace(rule.Group)
+		group := strings.TrimSpace(rule.Group)
+		if group == "" || rule.ThresholdUSD > totalTopUpUSD {
 			continue
 		}
-		break
+		if rule.ThresholdUSD > matchedThreshold {
+			matchedThreshold = rule.ThresholdUSD
+			matchedGroup = group
+		}
 	}
 	return matchedGroup
 }
@@ -124,7 +174,7 @@ func getTopUpAutoSwitchTargetGroupTx(tx *gorm.DB, userId int) (string, error) {
 	}
 
 	paymentSetting := operation_setting.GetPaymentSetting()
-	if paymentSetting == nil || !paymentSetting.AutoSwitchGroupEnabled {
+	if !paymentSetting.AutoSwitchGroupEnabled {
 		return "", nil
 	}
 
@@ -161,7 +211,7 @@ func applyTopUpAutoSwitchGroupTx(tx *gorm.DB, userId int) (string, error) {
 	}
 
 	paymentSetting := operation_setting.GetPaymentSetting()
-	if paymentSetting == nil || !paymentSetting.AutoSwitchGroupEnabled {
+	if !paymentSetting.AutoSwitchGroupEnabled {
 		return "", nil
 	}
 
@@ -183,6 +233,11 @@ func applyTopUpAutoSwitchGroupTx(tx *gorm.DB, userId int) (string, error) {
 			return "", err
 		}
 		return activeUpgradeGroup, nil
+	}
+
+	chainGroups := buildPaymentAutoSwitchGroupChainSet(paymentSetting)
+	if !isPaymentAutoSwitchGroupChainMember(currentGroup, chainGroups) {
+		return "", nil
 	}
 
 	targetGroup, err := getTopUpAutoSwitchTargetGroupTx(tx, userId)

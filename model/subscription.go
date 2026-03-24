@@ -441,15 +441,19 @@ func resolveUserEffectiveGroupTx(tx *gorm.DB, userId int, now int64, fallbackGro
 		return activeUpgradeGroup, nil
 	}
 
-	topUpGroup, err := getTopUpAutoSwitchTargetGroupTx(tx, userId)
-	if err != nil {
-		return "", err
-	}
-	if topUpGroup != "" {
-		return topUpGroup, nil
+	fallbackGroup = strings.TrimSpace(fallbackGroup)
+	chainGroups := getPaymentAutoSwitchGroupChainSet()
+	if isPaymentAutoSwitchGroupChainMember(fallbackGroup, chainGroups) {
+		topUpGroup, err := getTopUpAutoSwitchTargetGroupTx(tx, userId)
+		if err != nil {
+			return "", err
+		}
+		if topUpGroup != "" {
+			return topUpGroup, nil
+		}
 	}
 
-	return strings.TrimSpace(fallbackGroup), nil
+	return fallbackGroup, nil
 }
 
 func downgradeUserGroupForSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now int64) (string, error) {
@@ -888,7 +892,7 @@ func ExpireDueSubscriptions(limit int) (int, error) {
 			var lastExpired UserSubscription
 			expiredQuery := tx.Where("user_id = ? AND status = ? AND upgrade_group <> ''",
 				userId, "expired").
-				Order("created_at desc, id desc").
+				Order("end_time desc, created_at desc, id desc").
 				Limit(1).
 				Find(&lastExpired)
 			if expiredQuery.Error != nil {
