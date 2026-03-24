@@ -169,6 +169,7 @@
     "第 {{index}} 条充值自动切换分组规则的阈值必须大于 0": "Le seuil de la règle {{index}} doit être supérieur à 0",
     "第 {{index}} 条充值自动切换分组规则请选择分组": "Veuillez sélectionner un groupe pour la règle {{index}}",
     "启用充值后自动切换分组前，请至少配置一条合法规则": "Veuillez configurer au moins une règle valide avant d'activer le changement automatique de groupe après recharge",
+    "分组加载失败，请刷新后重试": "Échec du chargement des groupes, veuillez actualiser puis réessayer",
     "Key 或 Path": "Clé ou chemin",
     "Key 指纹": "Empreinte de clé",
     "Key 摘要": "Résumé de Key",

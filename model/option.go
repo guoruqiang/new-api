@@ -213,10 +213,18 @@ func UpdateOptions(optionValues map[string]string) error {
 	}
 
 	keys := make([]string, 0, len(optionValues))
+	paymentSettingOptionValues := make(map[string]string)
 	for key := range optionValues {
 		keys = append(keys, key)
+		if strings.HasPrefix(key, "payment_setting.") {
+			paymentSettingOptionValues[key] = optionValues[key]
+		}
 	}
 	sort.Strings(keys)
+
+	if err := validatePaymentSettingOptionValues(paymentSettingOptionValues); err != nil {
+		return err
+	}
 
 	if err := DB.Transaction(func(tx *gorm.DB) error {
 		for _, key := range keys {
@@ -234,10 +242,8 @@ func UpdateOptions(optionValues map[string]string) error {
 		return err
 	}
 
-	paymentSettingOptionValues := make(map[string]string)
 	for _, key := range keys {
 		if strings.HasPrefix(key, "payment_setting.") {
-			paymentSettingOptionValues[key] = optionValues[key]
 			continue
 		}
 		if err := updateOptionMap(key, optionValues[key]); err != nil {
@@ -245,6 +251,20 @@ func UpdateOptions(optionValues map[string]string) error {
 		}
 	}
 	return applyPaymentSettingOptionValues(paymentSettingOptionValues)
+}
+
+func validatePaymentSettingOptionValues(optionValues map[string]string) error {
+	if len(optionValues) == 0 {
+		return nil
+	}
+
+	paymentSettingConfigMap := make(map[string]string, len(optionValues))
+	for key, value := range optionValues {
+		paymentSettingConfigMap[strings.TrimPrefix(key, "payment_setting.")] = value
+	}
+
+	paymentSetting := operation_setting.GetPaymentSetting()
+	return config.UpdateConfigFromMap(&paymentSetting, paymentSettingConfigMap)
 }
 
 func applyPaymentSettingOptionValues(optionValues map[string]string) error {
