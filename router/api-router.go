@@ -53,6 +53,12 @@ func SetApiRouter(router *gin.Engine) {
 		// Universal secure verification routes
 		apiRouter.POST("/verify", middleware.UserAuth(), middleware.CriticalRateLimit(), controller.UniversalVerify)
 
+		oauthV1Router := apiRouter.Group("/v1/oauth")
+		{
+			oauthV1Router.GET("/tokens", middleware.OAuthAccessTokenAuth("tokens:read"), controller.OAuthListUserTokens)
+			oauthV1Router.GET("/balance", middleware.OAuthAccessTokenAuth("balance:read"), controller.OAuthBalance)
+		}
+
 		userRoute := apiRouter.Group("/user")
 		{
 			userRoute.POST("/register", middleware.CriticalRateLimit(), middleware.TurnstileCheck(), controller.Register)

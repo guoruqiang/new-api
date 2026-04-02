@@ -112,6 +112,41 @@ const LoginForm = () => {
   const githubTimeoutRef = useRef(null);
   const githubButtonText = t(githubButtonTextKeyByState[githubButtonState]);
   const [customOAuthLoading, setCustomOAuthLoading] = useState({});
+  const oauthRedirect = searchParams.get('redirect') || '';
+
+  useEffect(() => {
+    if (oauthRedirect) {
+      sessionStorage.setItem('post_login_redirect', oauthRedirect);
+    }
+  }, [oauthRedirect]);
+
+  const consumePostLoginRedirect = () => {
+    const redirect =
+      oauthRedirect || sessionStorage.getItem('post_login_redirect') || '';
+    if (redirect) {
+      sessionStorage.removeItem('post_login_redirect');
+      return redirect;
+    }
+    return '/console';
+  };
+
+  const continuePostLoginRedirect = () => {
+    const redirect = consumePostLoginRedirect();
+    // OAuth Authorization Server endpoints must be re-requested from the server,
+    // not handled by the SPA router, otherwise the browser never reaches the
+    // backend redirect that wakes the OAuth client callback.
+    if (
+      typeof redirect === 'string' &&
+      (redirect.startsWith('/oauth2/') ||
+        redirect.startsWith('/.well-known/') ||
+        redirect.startsWith('http://') ||
+        redirect.startsWith('https://'))
+    ) {
+      window.location.assign(redirect);
+      return;
+    }
+    navigate(redirect);
+  };
 
   const logo = getLogo();
   const systemName = getSystemName();
@@ -193,7 +228,7 @@ const LoginForm = () => {
         `/api/oauth/wechat?code=${inputs.wechat_verification_code}`,
       );
       const { success, message, data } = res.data;
-      if (success) {
+          if (success) {
         userDispatch({ type: 'login', payload: data });
         localStorage.setItem('user', JSON.stringify(data));
         setUserData(data);
@@ -255,7 +290,7 @@ const LoginForm = () => {
               centered: true,
             });
           }
-          navigate('/console');
+          continuePostLoginRedirect();
         } else {
           showError(message);
         }
@@ -300,7 +335,7 @@ const LoginForm = () => {
         showSuccess('登录成功！');
         setUserData(data);
         updateAPI();
-        navigate('/');
+        continuePostLoginRedirect();
       } else {
         showError(message);
       }
@@ -456,7 +491,7 @@ const LoginForm = () => {
         setUserData(finish.data);
         updateAPI();
         showSuccess('登录成功！');
-        navigate('/console');
+        continuePostLoginRedirect();
       } else {
         showError(finish.message || 'Passkey 登录失败，请重试');
       }
@@ -491,7 +526,7 @@ const LoginForm = () => {
     setUserData(data);
     updateAPI();
     showSuccess('登录成功！');
-    navigate('/console');
+    continuePostLoginRedirect();
   };
 
   // 返回登录页面
