@@ -65,7 +65,10 @@ const OAuth2Callback = (props) => {
         setUserData(data);
         updateAPI();
         showSuccess(t('登录成功！'));
-        navigate('/console/token');
+        const redirect =
+          sessionStorage.getItem('post_login_redirect') || '/console/token';
+        sessionStorage.removeItem('post_login_redirect');
+        navigate(redirect);
       }
     } catch (error) {
       // 网络错误等可重试
