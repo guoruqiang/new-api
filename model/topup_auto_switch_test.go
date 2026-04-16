@@ -586,3 +586,21 @@ func TestNormalizeTopUpValueUSD(t *testing.T) {
 		assert.Equal(t, 12.0, NormalizeTopUpValueUSD(&TopUp{Amount: int64(common.QuotaPerUnit * 12), Money: 1, PaymentMethod: "creem"}))
 	})
 }
+
+func TestRequireTopUpPaymentMethod(t *testing.T) {
+	validator := requireTopUpPaymentMethod("stripe")
+
+	assert.NoError(t, validator(&TopUp{PaymentMethod: "stripe"}))
+	assert.NoError(t, validator(&TopUp{PaymentMethod: " Stripe "}))
+	assert.ErrorIs(t, validator(&TopUp{PaymentMethod: "creem"}), ErrPaymentMethodMismatch)
+}
+
+func TestRejectTopUpPaymentMethods(t *testing.T) {
+	validator := rejectTopUpPaymentMethods("stripe", "creem", "waffo")
+
+	assert.NoError(t, validator(&TopUp{PaymentMethod: "epay"}))
+	assert.NoError(t, validator(&TopUp{PaymentMethod: "alipay"}))
+	assert.ErrorIs(t, validator(&TopUp{PaymentMethod: "stripe"}), ErrPaymentMethodMismatch)
+	assert.ErrorIs(t, validator(&TopUp{PaymentMethod: " Creem "}), ErrPaymentMethodMismatch)
+	assert.ErrorIs(t, validator(&TopUp{PaymentMethod: "waffo"}), ErrPaymentMethodMismatch)
+}
