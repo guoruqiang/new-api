@@ -399,7 +399,7 @@ func getUserGroupByIdTx(tx *gorm.DB, userId int) (string, error) {
 	return group, nil
 }
 
-func getLatestActiveSubscriptionUpgradeTx(tx *gorm.DB, userId int, now int64) (*UserSubscription, error) {
+func getLatestActiveSubscriptionUpgradeTx(tx *gorm.DB, userId int, now int64, excludeSubscriptionId int) (*UserSubscription, error) {
 	if tx == nil {
 		return nil, errors.New("tx is nil")
 	}
@@ -411,7 +411,11 @@ func getLatestActiveSubscriptionUpgradeTx(tx *gorm.DB, userId int, now int64) (*
 	}
 
 	var activeSub UserSubscription
-	query := tx.Where("user_id = ? AND status = ? AND end_time > ? AND upgrade_group <> ''", userId, "active", now).
+	query := tx.Where("user_id = ? AND status = ? AND end_time > ? AND upgrade_group <> ''", userId, "active", now)
+	if excludeSubscriptionId > 0 {
+		query = query.Where("id <> ?", excludeSubscriptionId)
+	}
+	query = query.
 		Order("created_at desc, id desc").
 		Limit(1).
 		Find(&activeSub)
@@ -424,16 +428,20 @@ func getLatestActiveSubscriptionUpgradeTx(tx *gorm.DB, userId int, now int64) (*
 	return &activeSub, nil
 }
 
-func GetActiveSubscriptionUpgradeGroupTx(tx *gorm.DB, userId int, now int64) (string, error) {
-	activeSub, err := getLatestActiveSubscriptionUpgradeTx(tx, userId, now)
+func getActiveSubscriptionUpgradeGroupTx(tx *gorm.DB, userId int, now int64, excludeSubscriptionId int) (string, error) {
+	activeSub, err := getLatestActiveSubscriptionUpgradeTx(tx, userId, now, excludeSubscriptionId)
 	if err != nil || activeSub == nil {
 		return "", err
 	}
 	return strings.TrimSpace(activeSub.UpgradeGroup), nil
 }
 
-func resolveUserEffectiveGroupTx(tx *gorm.DB, userId int, now int64, fallbackGroup string) (string, error) {
-	activeUpgradeGroup, err := GetActiveSubscriptionUpgradeGroupTx(tx, userId, now)
+func GetActiveSubscriptionUpgradeGroupTx(tx *gorm.DB, userId int, now int64) (string, error) {
+	return getActiveSubscriptionUpgradeGroupTx(tx, userId, now, 0)
+}
+
+func resolveUserEffectiveGroupTx(tx *gorm.DB, userId int, now int64, fallbackGroup string, excludeSubscriptionId int) (string, error) {
+	activeUpgradeGroup, err := getActiveSubscriptionUpgradeGroupTx(tx, userId, now, excludeSubscriptionId)
 	if err != nil {
 		return "", err
 	}
@@ -468,8 +476,11 @@ func downgradeUserGroupForSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now
 	if err != nil {
 		return "", err
 	}
+	if currentGroup != upgradeGroup {
+		return "", nil
+	}
 
-	targetGroup, err := resolveUserEffectiveGroupTx(tx, sub.UserId, now, sub.PrevUserGroup)
+	targetGroup, err := resolveUserEffectiveGroupTx(tx, sub.UserId, now, sub.PrevUserGroup, sub.Id)
 	if err != nil {
 		return "", err
 	}
@@ -906,17 +917,19 @@ func ExpireDueSubscriptions(limit int) (int, error) {
 			if expiredQuery.Error != nil {
 				return expiredQuery.Error
 			}
-
-			fallbackGroup := ""
-			if expiredQuery.RowsAffected > 0 {
-				fallbackGroup = strings.TrimSpace(lastExpired.PrevUserGroup)
+			if expiredQuery.RowsAffected == 0 {
+				return nil
 			}
 
 			currentGroup, err := getUserGroupByIdTx(tx, userId)
 			if err != nil {
 				return err
 			}
-			targetGroup, err := resolveUserEffectiveGroupTx(tx, userId, now, fallbackGroup)
+			if currentGroup != strings.TrimSpace(lastExpired.UpgradeGroup) {
+				return nil
+			}
+
+			targetGroup, err := resolveUserEffectiveGroupTx(tx, userId, now, lastExpired.PrevUserGroup, 0)
 			if err != nil {
 				return err
 			}

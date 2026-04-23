@@ -229,6 +229,165 @@ func TestExpireDueSubscriptions_FallsBackToTopUpGroupAfterSubscriptionEnds(t *te
 	assert.Equal(t, "expired", reloadedSub.Status)
 }
 
+func TestAdminDeleteUserSubscription_FallsBackToTopUpGroupAfterRemovingActiveUpgrade(t *testing.T) {
+	prepareTopUpAutoSwitchTest(t)
+
+	user := &User{
+		Username: "delete_sub_fallback_topup",
+		Password: "password123",
+		Group:    "svip",
+		Role:     common.RoleCommonUser,
+		Status:   common.UserStatusEnabled,
+	}
+	require.NoError(t, DB.Create(user).Error)
+
+	require.NoError(t, DB.Create(&TopUp{
+		UserId:        user.Id,
+		Amount:        20,
+		Money:         20,
+		TradeNo:       "trade_delete_sub_fallback_topup",
+		PaymentMethod: "epay",
+		Status:        common.TopUpStatusSuccess,
+	}).Error)
+
+	subscription := &UserSubscription{
+		UserId:        user.Id,
+		PlanId:        1,
+		Status:        "active",
+		StartTime:     GetDBTimestamp() - 60,
+		EndTime:       GetDBTimestamp() + 3600,
+		UpgradeGroup:  "svip",
+		PrevUserGroup: "default",
+	}
+	require.NoError(t, DB.Create(subscription).Error)
+
+	message, err := AdminDeleteUserSubscription(subscription.Id)
+	require.NoError(t, err)
+	assert.Equal(t, "用户分组将回退到 vip", message)
+
+	var reloaded User
+	require.NoError(t, DB.First(&reloaded, user.Id).Error)
+	assert.Equal(t, "vip", reloaded.Group)
+
+	var count int64
+	require.NoError(t, DB.Model(&UserSubscription{}).Where("id = ?", subscription.Id).Count(&count).Error)
+	assert.Zero(t, count)
+}
+
+func TestAdminDeleteUserSubscription_DoesNotOverrideManualGroupOutsideUpgrade(t *testing.T) {
+	prepareTopUpAutoSwitchTest(t)
+
+	user := &User{
+		Username: "delete_sub_manual_group",
+		Password: "password123",
+		Group:    "manual",
+		Role:     common.RoleCommonUser,
+		Status:   common.UserStatusEnabled,
+	}
+	require.NoError(t, DB.Create(user).Error)
+
+	subscription := &UserSubscription{
+		UserId:        user.Id,
+		PlanId:        1,
+		Status:        "active",
+		StartTime:     GetDBTimestamp() - 60,
+		EndTime:       GetDBTimestamp() + 3600,
+		UpgradeGroup:  "svip",
+		PrevUserGroup: "default",
+	}
+	require.NoError(t, DB.Create(subscription).Error)
+
+	message, err := AdminDeleteUserSubscription(subscription.Id)
+	require.NoError(t, err)
+	assert.Equal(t, "", message)
+
+	var reloaded User
+	require.NoError(t, DB.First(&reloaded, user.Id).Error)
+	assert.Equal(t, "manual", reloaded.Group)
+}
+
+func TestAdminInvalidateUserSubscription_DoesNotOverrideManualGroupOutsideUpgrade(t *testing.T) {
+	prepareTopUpAutoSwitchTest(t)
+
+	user := &User{
+		Username: "invalidate_sub_manual_group",
+		Password: "password123",
+		Group:    "manual",
+		Role:     common.RoleCommonUser,
+		Status:   common.UserStatusEnabled,
+	}
+	require.NoError(t, DB.Create(user).Error)
+
+	subscription := &UserSubscription{
+		UserId:        user.Id,
+		PlanId:        1,
+		Status:        "active",
+		StartTime:     GetDBTimestamp() - 60,
+		EndTime:       GetDBTimestamp() + 3600,
+		UpgradeGroup:  "svip",
+		PrevUserGroup: "default",
+	}
+	require.NoError(t, DB.Create(subscription).Error)
+
+	message, err := AdminInvalidateUserSubscription(subscription.Id)
+	require.NoError(t, err)
+	assert.Equal(t, "", message)
+
+	var reloaded User
+	require.NoError(t, DB.First(&reloaded, user.Id).Error)
+	assert.Equal(t, "manual", reloaded.Group)
+
+	var reloadedSub UserSubscription
+	require.NoError(t, DB.First(&reloadedSub, subscription.Id).Error)
+	assert.Equal(t, "cancelled", reloadedSub.Status)
+}
+
+func TestExpireDueSubscriptions_DoesNotOverrideManualGroupOutsideExpiredUpgrade(t *testing.T) {
+	prepareTopUpAutoSwitchTest(t)
+
+	user := &User{
+		Username: "expire_sub_manual_group",
+		Password: "password123",
+		Group:    "manual",
+		Role:     common.RoleCommonUser,
+		Status:   common.UserStatusEnabled,
+	}
+	require.NoError(t, DB.Create(user).Error)
+
+	require.NoError(t, DB.Create(&TopUp{
+		UserId:        user.Id,
+		Amount:        20,
+		Money:         20,
+		TradeNo:       "trade_expire_sub_manual_group",
+		PaymentMethod: "epay",
+		Status:        common.TopUpStatusSuccess,
+	}).Error)
+
+	now := GetDBTimestamp()
+	subscription := &UserSubscription{
+		UserId:        user.Id,
+		PlanId:        1,
+		Status:        "active",
+		StartTime:     now - 3600,
+		EndTime:       now - 1,
+		UpgradeGroup:  "svip",
+		PrevUserGroup: "default",
+	}
+	require.NoError(t, DB.Create(subscription).Error)
+
+	expiredCount, err := ExpireDueSubscriptions(10)
+	require.NoError(t, err)
+	assert.Equal(t, 1, expiredCount)
+
+	var reloaded User
+	require.NoError(t, DB.First(&reloaded, user.Id).Error)
+	assert.Equal(t, "manual", reloaded.Group)
+
+	var reloadedSub UserSubscription
+	require.NoError(t, DB.First(&reloadedSub, subscription.Id).Error)
+	assert.Equal(t, "expired", reloadedSub.Status)
+}
+
 func TestGetUserSuccessfulTopupTotalUSDTx_DefaultModeCountsHistoricalTopups(t *testing.T) {
 	prepareTopUpAutoSwitchTest(t)
 
