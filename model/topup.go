@@ -13,15 +13,16 @@ import (
 )
 
 type TopUp struct {
-	Id            int     `json:"id"`
-	UserId        int     `json:"user_id" gorm:"index"`
-	Amount        int64   `json:"amount"`
-	Money         float64 `json:"money"`
-	TradeNo       string  `json:"trade_no" gorm:"unique;type:varchar(255);index"`
-	PaymentMethod string  `json:"payment_method" gorm:"type:varchar(50)"`
-	CreateTime    int64   `json:"create_time"`
-	CompleteTime  int64   `json:"complete_time"`
-	Status        string  `json:"status"`
+	Id              int     `json:"id"`
+	UserId          int     `json:"user_id" gorm:"index"`
+	Amount          int64   `json:"amount"`
+	Money           float64 `json:"money"`
+	TradeNo         string  `json:"trade_no" gorm:"unique;type:varchar(255);index"`
+	PaymentMethod   string  `json:"payment_method" gorm:"type:varchar(50)"`
+	PaymentProvider string  `json:"payment_provider" gorm:"type:varchar(50);default:''"`
+	CreateTime      int64   `json:"create_time"`
+	CompleteTime    int64   `json:"complete_time"`
+	Status          string  `json:"status"`
 }
 
 const (
@@ -29,6 +30,14 @@ const (
 	PaymentMethodCreem        = "creem"
 	PaymentMethodWaffo        = "waffo"
 	PaymentMethodWaffoPancake = "waffo_pancake"
+)
+
+const (
+	PaymentProviderEpay         = "epay"
+	PaymentProviderStripe       = "stripe"
+	PaymentProviderCreem        = "creem"
+	PaymentProviderWaffo        = "waffo"
+	PaymentProviderWaffoPancake = "waffo_pancake"
 )
 
 var (
@@ -52,6 +61,36 @@ func requireTopUpPaymentMethod(expectedMethod string) func(topUp *TopUp) error {
 		}
 		if normalizeTopUpPaymentMethod(topUp.PaymentMethod) != expectedMethod {
 			return ErrPaymentMethodMismatch
+		}
+		return nil
+	}
+}
+
+func requireTopUpPaymentProvider(expectedProvider string) func(topUp *TopUp) error {
+	expectedProvider = normalizeTopUpPaymentMethod(expectedProvider)
+	return func(topUp *TopUp) error {
+		if topUp == nil {
+			return errors.New("topup is nil")
+		}
+		if expectedProvider == "" {
+			return nil
+		}
+		if normalizeTopUpPaymentMethod(topUp.PaymentProvider) != expectedProvider {
+			return ErrPaymentMethodMismatch
+		}
+		return nil
+	}
+}
+
+func combineTopUpValidators(validators ...func(topUp *TopUp) error) func(topUp *TopUp) error {
+	return func(topUp *TopUp) error {
+		for _, validator := range validators {
+			if validator == nil {
+				continue
+			}
+			if err := validator(topUp); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -109,7 +148,7 @@ func GetTopUpByTradeNo(tradeNo string) *TopUp {
 	return topUp
 }
 
-func UpdatePendingTopUpStatus(tradeNo string, expectedPaymentMethod string, targetStatus string) error {
+func UpdatePendingTopUpStatus(tradeNo string, expectedPaymentProvider string, targetStatus string) error {
 	if tradeNo == "" {
 		return errors.New("未提供支付单号")
 	}
@@ -124,7 +163,7 @@ func UpdatePendingTopUpStatus(tradeNo string, expectedPaymentMethod string, targ
 		if err := tx.Set("gorm:query_option", "FOR UPDATE").Where(refCol+" = ?", tradeNo).First(topUp).Error; err != nil {
 			return ErrTopUpNotFound
 		}
-		if expectedPaymentMethod != "" && topUp.PaymentMethod != expectedPaymentMethod {
+		if expectedPaymentProvider != "" && normalizeTopUpPaymentMethod(topUp.PaymentProvider) != normalizeTopUpPaymentMethod(expectedPaymentProvider) {
 			return ErrPaymentMethodMismatch
 		}
 		if topUp.Status != common.TopUpStatusPending {
@@ -218,7 +257,7 @@ func completeTopUpByTradeNo(
 
 func Recharge(referenceId string, customerId string, callerIp string) (err error) {
 	var quota int
-	topUp, switchedGroup, completed, err := completeTopUpByTradeNo(referenceId, requireTopUpPaymentMethod(PaymentMethodStripe), func(topUp *TopUp, tx *gorm.DB) (map[string]interface{}, error) {
+	topUp, switchedGroup, completed, err := completeTopUpByTradeNo(referenceId, combineTopUpValidators(requireTopUpPaymentMethod(PaymentMethodStripe), requireTopUpPaymentProvider(PaymentProviderStripe)), func(topUp *TopUp, tx *gorm.DB) (map[string]interface{}, error) {
 		dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
 		quota = int(decimal.NewFromFloat(topUp.Money).Mul(dQuotaPerUnit).IntPart())
 		if quota <= 0 {
@@ -440,7 +479,7 @@ func ManualCompleteTopUp(tradeNo string, callerIp string) error {
 
 func RechargeCreem(referenceId string, customerEmail string, customerName string, callerIp string) (err error) {
 	var quota int64
-	topUp, switchedGroup, completed, err := completeTopUpByTradeNo(referenceId, requireTopUpPaymentMethod(PaymentMethodCreem), func(topUp *TopUp, tx *gorm.DB) (map[string]interface{}, error) {
+	topUp, switchedGroup, completed, err := completeTopUpByTradeNo(referenceId, combineTopUpValidators(requireTopUpPaymentMethod(PaymentMethodCreem), requireTopUpPaymentProvider(PaymentProviderCreem)), func(topUp *TopUp, tx *gorm.DB) (map[string]interface{}, error) {
 		// Creem 直接使用 Amount 作为充值额度（整数）
 		quota = topUp.Amount
 
@@ -481,7 +520,7 @@ func RechargeCreem(referenceId string, customerEmail string, customerName string
 
 func RechargeWaffo(tradeNo string, callerIp string) (err error) {
 	var quotaToAdd int
-	topUp, switchedGroup, completed, err := completeTopUpByTradeNo(tradeNo, requireTopUpPaymentMethod(PaymentMethodWaffo), func(topUp *TopUp, tx *gorm.DB) (map[string]interface{}, error) {
+	topUp, switchedGroup, completed, err := completeTopUpByTradeNo(tradeNo, combineTopUpValidators(requireTopUpPaymentMethod(PaymentMethodWaffo), requireTopUpPaymentProvider(PaymentProviderWaffo)), func(topUp *TopUp, tx *gorm.DB) (map[string]interface{}, error) {
 		dAmount := decimal.NewFromInt(topUp.Amount)
 		dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
 		quotaToAdd = int(dAmount.Mul(dQuotaPerUnit).IntPart())
@@ -511,7 +550,7 @@ func RechargeWaffo(tradeNo string, callerIp string) (err error) {
 
 func RechargeWaffoPancake(tradeNo string) (err error) {
 	var quotaToAdd int
-	topUp, switchedGroup, completed, err := completeTopUpByTradeNo(tradeNo, requireTopUpPaymentMethod(PaymentMethodWaffoPancake), func(topUp *TopUp, tx *gorm.DB) (map[string]interface{}, error) {
+	topUp, switchedGroup, completed, err := completeTopUpByTradeNo(tradeNo, combineTopUpValidators(requireTopUpPaymentMethod(PaymentMethodWaffoPancake), requireTopUpPaymentProvider(PaymentProviderWaffoPancake)), func(topUp *TopUp, tx *gorm.DB) (map[string]interface{}, error) {
 		quotaToAdd = int(decimal.NewFromInt(topUp.Amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit)).IntPart())
 		if quotaToAdd <= 0 {
 			return nil, errors.New("无效的充值额度")
@@ -540,6 +579,9 @@ func RechargeWaffoPancake(tradeNo string) (err error) {
 func RechargeEpay(tradeNo string, callbackPaymentMethod string, callerIp string) (*TopUp, bool, error) {
 	var quotaToAdd int
 	validator := func(topUp *TopUp) error {
+		if err := requireTopUpPaymentProvider(PaymentProviderEpay)(topUp); err != nil {
+			return err
+		}
 		if err := rejectTopUpPaymentMethods(PaymentMethodStripe, PaymentMethodCreem, PaymentMethodWaffo, PaymentMethodWaffoPancake)(topUp); err != nil {
 			return err
 		}
