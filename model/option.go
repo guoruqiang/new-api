@@ -21,6 +21,8 @@ type Option struct {
 	Value string `json:"value"`
 }
 
+const paymentSettingOptionPrefix = "payment_setting."
+
 func AllOption() ([]*Option, error) {
 	var options []*Option
 	var err error
@@ -251,15 +253,27 @@ func UpdateOptions(optionValues map[string]string) error {
 		return err
 	}
 
+	paymentSettingOptionValues := make(map[string]string)
 	for _, key := range keys {
+		if isPaymentSettingOptionKey(key) {
+			paymentSettingOptionValues[key] = optionValues[key]
+			continue
+		}
 		if err := updateOptionMap(key, optionValues[key]); err != nil {
 			return err
 		}
+	}
+	if err := updatePaymentSettingOptionMap(paymentSettingOptionValues); err != nil {
+		return err
 	}
 	return nil
 }
 
 func updateOptionMap(key string, value string) (err error) {
+	if isPaymentSettingOptionKey(key) {
+		return updatePaymentSettingOptionMap(map[string]string{key: value})
+	}
+
 	common.OptionMapRWMutex.Lock()
 	defer common.OptionMapRWMutex.Unlock()
 	common.OptionMap[key] = value
@@ -586,6 +600,43 @@ func updateOptionMap(key string, value string) (err error) {
 		// No additional in-memory variable to update.
 	}
 	return err
+}
+
+func isPaymentSettingOptionKey(key string) bool {
+	return strings.HasPrefix(key, paymentSettingOptionPrefix)
+}
+
+func updatePaymentSettingOptionMap(optionValues map[string]string) error {
+	if len(optionValues) == 0 {
+		return nil
+	}
+
+	configMap := make(map[string]string, len(optionValues))
+	for key, value := range optionValues {
+		configKey := strings.TrimPrefix(key, paymentSettingOptionPrefix)
+		if configKey == "" || configKey == key {
+			continue
+		}
+		configMap[configKey] = value
+	}
+	if len(configMap) == 0 {
+		return nil
+	}
+
+	var updateErr error
+	operation_setting.UpdatePaymentSetting(func(setting *operation_setting.PaymentSetting) {
+		updateErr = config.UpdateConfigFromMap(setting, configMap)
+	})
+	if updateErr != nil {
+		return updateErr
+	}
+
+	common.OptionMapRWMutex.Lock()
+	defer common.OptionMapRWMutex.Unlock()
+	for key, value := range optionValues {
+		common.OptionMap[key] = value
+	}
+	return nil
 }
 
 // handleConfigUpdate 处理分层配置更新，返回是否已处理

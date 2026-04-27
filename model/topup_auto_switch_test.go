@@ -24,16 +24,17 @@ func snapshotPaymentSettingForTopUpAutoSwitchTest() operation_setting.PaymentSet
 }
 
 func restorePaymentSettingForTopUpAutoSwitchTest(snapshot operation_setting.PaymentSetting) {
-	paymentSetting := operation_setting.GetPaymentSetting()
-	*paymentSetting = snapshot
-	paymentSetting.AmountOptions = append([]int(nil), snapshot.AmountOptions...)
-	paymentSetting.AutoSwitchGroupRules = append([]operation_setting.PaymentAutoSwitchGroupRule(nil), snapshot.AutoSwitchGroupRules...)
-	if snapshot.AmountDiscount != nil {
-		paymentSetting.AmountDiscount = make(map[int]float64, len(snapshot.AmountDiscount))
-		for amount, discount := range snapshot.AmountDiscount {
-			paymentSetting.AmountDiscount[amount] = discount
+	operation_setting.UpdatePaymentSetting(func(paymentSetting *operation_setting.PaymentSetting) {
+		*paymentSetting = snapshot
+		paymentSetting.AmountOptions = append([]int(nil), snapshot.AmountOptions...)
+		paymentSetting.AutoSwitchGroupRules = append([]operation_setting.PaymentAutoSwitchGroupRule(nil), snapshot.AutoSwitchGroupRules...)
+		if snapshot.AmountDiscount != nil {
+			paymentSetting.AmountDiscount = make(map[int]float64, len(snapshot.AmountDiscount))
+			for amount, discount := range snapshot.AmountDiscount {
+				paymentSetting.AmountDiscount[amount] = discount
+			}
 		}
-	}
+	})
 }
 
 func prepareTopUpAutoSwitchTest(t *testing.T) {
@@ -56,14 +57,15 @@ func prepareTopUpAutoSwitchTest(t *testing.T) {
 		restorePaymentSettingForTopUpAutoSwitchTest(originPaymentSetting)
 	})
 
-	paymentSetting := operation_setting.GetPaymentSetting()
-	paymentSetting.AutoSwitchGroupEnabled = true
-	paymentSetting.AutoSwitchGroupOnlyNewTopups = false
-	paymentSetting.AutoSwitchGroupEnabledFrom = 0
-	paymentSetting.AutoSwitchGroupBaseGroup = "default"
-	paymentSetting.AutoSwitchGroupRules = []operation_setting.PaymentAutoSwitchGroupRule{
-		{ThresholdUSD: 10, Group: "vip"},
-	}
+	operation_setting.UpdatePaymentSetting(func(paymentSetting *operation_setting.PaymentSetting) {
+		paymentSetting.AutoSwitchGroupEnabled = true
+		paymentSetting.AutoSwitchGroupOnlyNewTopups = false
+		paymentSetting.AutoSwitchGroupEnabledFrom = 0
+		paymentSetting.AutoSwitchGroupBaseGroup = "default"
+		paymentSetting.AutoSwitchGroupRules = []operation_setting.PaymentAutoSwitchGroupRule{
+			{ThresholdUSD: 10, Group: "vip"},
+		}
+	})
 }
 
 func createTopUpAutoSwitchUser(t *testing.T, username string, group string) *User {
@@ -225,9 +227,10 @@ func TestAdminDeleteUserSubscription_ExcludesDeletedSubscriptionWhenResolvingFal
 func TestGetUserSuccessfulTopupTotalUSDTx_OnlyNewTopupsUsesEnabledFromCutoff(t *testing.T) {
 	prepareTopUpAutoSwitchTest(t)
 
-	paymentSetting := operation_setting.GetPaymentSetting()
-	paymentSetting.AutoSwitchGroupOnlyNewTopups = true
-	paymentSetting.AutoSwitchGroupEnabledFrom = 150
+	operation_setting.UpdatePaymentSetting(func(paymentSetting *operation_setting.PaymentSetting) {
+		paymentSetting.AutoSwitchGroupOnlyNewTopups = true
+		paymentSetting.AutoSwitchGroupEnabledFrom = 150
+	})
 	user := createTopUpAutoSwitchUser(t, "topup_auto_switch_only_new", "default")
 	createSuccessfulTopUpForAutoSwitchTest(t, user.Id, "topup_auto_switch_only_new_old", 100, 149)
 	createSuccessfulTopUpForAutoSwitchTest(t, user.Id, "topup_auto_switch_only_new_new", 1, 150)
