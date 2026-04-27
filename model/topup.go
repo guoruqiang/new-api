@@ -102,20 +102,12 @@ func NormalizeTopUpValueUSD(topUp *TopUp) float64 {
 	}
 }
 
-func normalizePaymentAutoSwitchGroupBaseGroup(baseGroup string) string {
-	trimmed := strings.TrimSpace(baseGroup)
-	if trimmed == "" {
-		return "default"
-	}
-	return trimmed
-}
-
 func buildPaymentAutoSwitchGroupChainSet(paymentSetting *operation_setting.PaymentSetting) map[string]struct{} {
 	if paymentSetting == nil {
 		paymentSetting = operation_setting.GetPaymentSetting()
 	}
 	chainGroups := make(map[string]struct{}, len(paymentSetting.AutoSwitchGroupRules)+1)
-	chainGroups[normalizePaymentAutoSwitchGroupBaseGroup(paymentSetting.AutoSwitchGroupBaseGroup)] = struct{}{}
+	chainGroups[operation_setting.NormalizePaymentAutoSwitchGroupBaseGroup(paymentSetting.AutoSwitchGroupBaseGroup)] = struct{}{}
 	for _, rule := range paymentSetting.AutoSwitchGroupRules {
 		group := strings.TrimSpace(rule.Group)
 		if group == "" {
@@ -157,7 +149,13 @@ func GetUserSuccessfulTopupTotalUSDTx(tx *gorm.DB, userId int) (float64, error) 
 
 	query := tx.Model(&TopUp{}).
 		Select("amount", "money", "payment_method").
-		Where("user_id = ? AND status = ? AND amount > 0", userId, common.TopUpStatusSuccess)
+		Where(
+			"user_id = ? AND status = ? AND ((LOWER(payment_method) = ? AND money > 0) OR (LOWER(payment_method) <> ? AND amount > 0))",
+			userId,
+			common.TopUpStatusSuccess,
+			PaymentMethodStripe,
+			PaymentMethodStripe,
+		)
 	if cutoffTime := getPaymentAutoSwitchGroupTopUpCutoffTime(); cutoffTime > 0 {
 		query = query.Where("complete_time >= ?", cutoffTime)
 	}

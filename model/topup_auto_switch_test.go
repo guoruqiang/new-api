@@ -241,6 +241,26 @@ func TestGetUserSuccessfulTopupTotalUSDTx_OnlyNewTopupsUsesEnabledFromCutoff(t *
 	assert.Equal(t, 1.0, totalUSD)
 }
 
+func TestGetUserSuccessfulTopupTotalUSDTx_CountsStripeMoneyWhenAmountIsZero(t *testing.T) {
+	prepareTopUpAutoSwitchTest(t)
+
+	user := createTopUpAutoSwitchUser(t, "topup_auto_switch_stripe_money", "default")
+	require.NoError(t, DB.Create(&TopUp{
+		UserId:        user.Id,
+		Amount:        0,
+		Money:         9.99,
+		TradeNo:       "topup_auto_switch_stripe_money",
+		PaymentMethod: PaymentMethodStripe,
+		CompleteTime:  100,
+		Status:        common.TopUpStatusSuccess,
+	}).Error)
+
+	totalUSD, err := GetUserSuccessfulTopupTotalUSDTx(DB, user.Id)
+	require.NoError(t, err)
+
+	assert.Equal(t, 9.99, totalUSD)
+}
+
 func TestMatchPaymentAutoSwitchGroupRule_UsesHighestEligibleThreshold(t *testing.T) {
 	rules := []operation_setting.PaymentAutoSwitchGroupRule{
 		{ThresholdUSD: 50, Group: "svip"},

@@ -35,7 +35,21 @@ var paymentSetting = PaymentSetting{
 var paymentSettingRWMutex sync.RWMutex
 
 func init() {
-	config.GlobalConfig.Register("payment_setting", &paymentSetting)
+	config.GlobalConfig.Register("payment_setting", paymentSettingConfig{})
+}
+
+type paymentSettingConfig struct{}
+
+func (paymentSettingConfig) Snapshot() interface{} {
+	return GetPaymentSetting()
+}
+
+func (paymentSettingConfig) UpdateConfig(configMap map[string]string) error {
+	var updateErr error
+	UpdatePaymentSetting(func(setting *PaymentSetting) {
+		updateErr = config.UpdateConfigFromMap(setting, configMap)
+	})
+	return updateErr
 }
 
 func GetPaymentSetting() *PaymentSetting {
@@ -51,7 +65,7 @@ func UpdatePaymentSetting(update func(setting *PaymentSetting)) *PaymentSetting 
 	if update != nil {
 		update(&paymentSetting)
 	}
-	paymentSetting.AutoSwitchGroupBaseGroup = normalizePaymentAutoSwitchGroupBaseGroup(paymentSetting.AutoSwitchGroupBaseGroup)
+	paymentSetting.AutoSwitchGroupBaseGroup = NormalizePaymentAutoSwitchGroupBaseGroup(paymentSetting.AutoSwitchGroupBaseGroup)
 	detachPaymentSettingLocked()
 	return clonePaymentSettingLocked()
 }
@@ -81,7 +95,7 @@ func clonePaymentSettingLocked() *PaymentSetting {
 	return &snapshot
 }
 
-func normalizePaymentAutoSwitchGroupBaseGroup(group string) string {
+func NormalizePaymentAutoSwitchGroupBaseGroup(group string) string {
 	group = strings.TrimSpace(group)
 	if group == "" {
 		return "default"

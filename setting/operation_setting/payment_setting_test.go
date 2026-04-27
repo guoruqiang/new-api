@@ -1,6 +1,10 @@
 package operation_setting
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/QuantumNous/new-api/setting/config"
+)
 
 func TestGetPaymentSettingReturnsDeepCopy(t *testing.T) {
 	original := GetPaymentSetting()
@@ -40,5 +44,41 @@ func TestGetPaymentSettingReturnsDeepCopy(t *testing.T) {
 	}
 	if fresh.AutoSwitchGroupRules[0].Group != "vip" {
 		t.Fatalf("AutoSwitchGroupRules shared mutable state: got %s", fresh.AutoSwitchGroupRules[0].Group)
+	}
+}
+
+func TestPaymentSettingConfigProviderUsesSnapshotAndLockedUpdate(t *testing.T) {
+	original := GetPaymentSetting()
+	t.Cleanup(func() {
+		UpdatePaymentSetting(func(setting *PaymentSetting) {
+			*setting = *original
+			setting.AmountOptions = append([]int(nil), original.AmountOptions...)
+			if original.AmountDiscount != nil {
+				setting.AmountDiscount = make(map[int]float64, len(original.AmountDiscount))
+				for amount, discount := range original.AmountDiscount {
+					setting.AmountDiscount[amount] = discount
+				}
+			}
+			setting.AutoSwitchGroupRules = append([]PaymentAutoSwitchGroupRule(nil), original.AutoSwitchGroupRules...)
+		})
+	})
+
+	if err := config.GlobalConfig.LoadFromDB(map[string]string{
+		"payment_setting.auto_switch_group_base_group": "   ",
+	}); err != nil {
+		t.Fatalf("LoadFromDB failed: %v", err)
+	}
+
+	paymentSetting := GetPaymentSetting()
+	if paymentSetting.AutoSwitchGroupBaseGroup != "default" {
+		t.Fatalf("base group = %q, want default", paymentSetting.AutoSwitchGroupBaseGroup)
+	}
+
+	cfgMap, err := config.ConfigToMap(config.GlobalConfig.Get("payment_setting"))
+	if err != nil {
+		t.Fatalf("ConfigToMap failed: %v", err)
+	}
+	if cfgMap["auto_switch_group_base_group"] != "default" {
+		t.Fatalf("config snapshot base group = %q, want default", cfgMap["auto_switch_group_base_group"])
 	}
 }
