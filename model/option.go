@@ -64,6 +64,7 @@ func InitOptionMap() {
 	common.OptionMap["SMTPAccount"] = ""
 	common.OptionMap["SMTPToken"] = ""
 	common.OptionMap["SMTPSSLEnabled"] = strconv.FormatBool(common.SMTPSSLEnabled)
+	common.OptionMap["SMTPForceAuthLogin"] = strconv.FormatBool(common.SMTPForceAuthLogin)
 	common.OptionMap["Notice"] = ""
 	common.OptionMap["About"] = ""
 	common.OptionMap["HomePageContent"] = ""
@@ -107,6 +108,18 @@ func InitOptionMap() {
 	common.OptionMap["WaffoUnitPrice"] = strconv.FormatFloat(setting.WaffoUnitPrice, 'f', -1, 64)
 	common.OptionMap["WaffoMinTopUp"] = strconv.Itoa(setting.WaffoMinTopUp)
 	common.OptionMap["WaffoPayMethods"] = setting.WaffoPayMethods2JsonString()
+	common.OptionMap["WaffoPancakeEnabled"] = strconv.FormatBool(setting.WaffoPancakeEnabled)
+	common.OptionMap["WaffoPancakeSandbox"] = strconv.FormatBool(setting.WaffoPancakeSandbox)
+	common.OptionMap["WaffoPancakeMerchantID"] = setting.WaffoPancakeMerchantID
+	common.OptionMap["WaffoPancakePrivateKey"] = setting.WaffoPancakePrivateKey
+	common.OptionMap["WaffoPancakeWebhookPublicKey"] = setting.WaffoPancakeWebhookPublicKey
+	common.OptionMap["WaffoPancakeWebhookTestKey"] = setting.WaffoPancakeWebhookTestKey
+	common.OptionMap["WaffoPancakeStoreID"] = setting.WaffoPancakeStoreID
+	common.OptionMap["WaffoPancakeProductID"] = setting.WaffoPancakeProductID
+	common.OptionMap["WaffoPancakeReturnURL"] = setting.WaffoPancakeReturnURL
+	common.OptionMap["WaffoPancakeCurrency"] = setting.WaffoPancakeCurrency
+	common.OptionMap["WaffoPancakeUnitPrice"] = strconv.FormatFloat(setting.WaffoPancakeUnitPrice, 'f', -1, 64)
+	common.OptionMap["WaffoPancakeMinTopUp"] = strconv.Itoa(setting.WaffoPancakeMinTopUp)
 	common.OptionMap["TopupGroupRatio"] = common.TopupGroupRatio2JSONString()
 	common.OptionMap["Chats"] = setting.Chats2JsonString()
 	common.OptionMap["AutoGroups"] = setting.AutoGroups2JsonString()
@@ -179,19 +192,11 @@ func InitOptionMap() {
 
 func loadOptionsFromDatabase() {
 	options, _ := AllOption()
-	paymentSettingOptions := make(map[string]string)
 	for _, option := range options {
-		if strings.HasPrefix(option.Key, "payment_setting.") {
-			paymentSettingOptions[option.Key] = option.Value
-			continue
-		}
 		err := updateOptionMap(option.Key, option.Value)
 		if err != nil {
 			common.SysLog("failed to update option map: " + err.Error())
 		}
-	}
-	if err := applyPaymentSettingOptionValues(paymentSettingOptions); err != nil {
-		common.SysLog("failed to update option map: " + err.Error())
 	}
 }
 
@@ -204,7 +209,19 @@ func SyncOptions(frequency int) {
 }
 
 func UpdateOption(key string, value string) error {
-	return UpdateOptions(map[string]string{key: value})
+	// Save to database first
+	option := Option{
+		Key: key,
+	}
+	// https://gorm.io/docs/update.html#Save-All-Fields
+	DB.FirstOrCreate(&option, Option{Key: key})
+	option.Value = value
+	// Save is a combination function.
+	// If save value does not contain primary key, it will execute Create,
+	// otherwise it will execute Update (with all fields).
+	DB.Save(&option)
+	// Update OptionMap
+	return updateOptionMap(key, value)
 }
 
 func UpdateOptions(optionValues map[string]string) error {
@@ -213,18 +230,10 @@ func UpdateOptions(optionValues map[string]string) error {
 	}
 
 	keys := make([]string, 0, len(optionValues))
-	paymentSettingOptionValues := make(map[string]string)
 	for key := range optionValues {
 		keys = append(keys, key)
-		if strings.HasPrefix(key, "payment_setting.") {
-			paymentSettingOptionValues[key] = optionValues[key]
-		}
 	}
 	sort.Strings(keys)
-
-	if err := validatePaymentSettingOptionValues(paymentSettingOptionValues); err != nil {
-		return err
-	}
 
 	if err := DB.Transaction(func(tx *gorm.DB) error {
 		for _, key := range keys {
@@ -243,52 +252,9 @@ func UpdateOptions(optionValues map[string]string) error {
 	}
 
 	for _, key := range keys {
-		if strings.HasPrefix(key, "payment_setting.") {
-			continue
-		}
 		if err := updateOptionMap(key, optionValues[key]); err != nil {
 			return err
 		}
-	}
-	return applyPaymentSettingOptionValues(paymentSettingOptionValues)
-}
-
-func validatePaymentSettingOptionValues(optionValues map[string]string) error {
-	if len(optionValues) == 0 {
-		return nil
-	}
-
-	paymentSettingConfigMap := make(map[string]string, len(optionValues))
-	for key, value := range optionValues {
-		paymentSettingConfigMap[strings.TrimPrefix(key, "payment_setting.")] = value
-	}
-
-	paymentSetting := operation_setting.GetPaymentSetting()
-	return config.UpdateConfigFromMap(&paymentSetting, paymentSettingConfigMap)
-}
-
-func applyPaymentSettingOptionValues(optionValues map[string]string) error {
-	if len(optionValues) == 0 {
-		return nil
-	}
-
-	paymentSettingConfigMap := make(map[string]string, len(optionValues))
-	for key, value := range optionValues {
-		paymentSettingConfigMap[strings.TrimPrefix(key, "payment_setting.")] = value
-	}
-
-	var paymentSettingErr error
-	operation_setting.UpdatePaymentSetting(func(setting *operation_setting.PaymentSetting) {
-		paymentSettingErr = config.UpdateConfigFromMap(setting, paymentSettingConfigMap)
-	})
-	if paymentSettingErr != nil {
-		return paymentSettingErr
-	}
-
-	common.OptionMapRWMutex.Lock()
-	defer common.OptionMapRWMutex.Unlock()
-	for key, value := range optionValues {
-		common.OptionMap[key] = value
 	}
 	return nil
 }
@@ -317,7 +283,7 @@ func updateOptionMap(key string, value string) (err error) {
 			common.ImageDownloadPermission = intValue
 		}
 	}
-	if strings.HasSuffix(key, "Enabled") || key == "DefaultCollapseSidebar" || key == "DefaultUseAutoGroup" {
+	if strings.HasSuffix(key, "Enabled") || key == "DefaultCollapseSidebar" || key == "DefaultUseAutoGroup" || key == "SMTPForceAuthLogin" {
 		boolValue := value == "true"
 		switch key {
 		case "PasswordRegisterEnabled":
@@ -392,6 +358,8 @@ func updateOptionMap(key string, value string) (err error) {
 			setting.StopOnSensitiveEnabled = boolValue
 		case "SMTPSSLEnabled":
 			common.SMTPSSLEnabled = boolValue
+		case "SMTPForceAuthLogin":
+			common.SMTPForceAuthLogin = boolValue
 		case "WorkerAllowHttpImageRequestEnabled":
 			system_setting.WorkerAllowHttpImageRequestEnabled = boolValue
 		case "DefaultUseAutoGroup":
@@ -488,6 +456,30 @@ func updateOptionMap(key string, value string) (err error) {
 		setting.WaffoUnitPrice, _ = strconv.ParseFloat(value, 64)
 	case "WaffoMinTopUp":
 		setting.WaffoMinTopUp, _ = strconv.Atoi(value)
+	case "WaffoPancakeEnabled":
+		setting.WaffoPancakeEnabled = value == "true"
+	case "WaffoPancakeSandbox":
+		setting.WaffoPancakeSandbox = value == "true"
+	case "WaffoPancakeMerchantID":
+		setting.WaffoPancakeMerchantID = value
+	case "WaffoPancakePrivateKey":
+		setting.WaffoPancakePrivateKey = value
+	case "WaffoPancakeWebhookPublicKey":
+		setting.WaffoPancakeWebhookPublicKey = value
+	case "WaffoPancakeWebhookTestKey":
+		setting.WaffoPancakeWebhookTestKey = value
+	case "WaffoPancakeStoreID":
+		setting.WaffoPancakeStoreID = value
+	case "WaffoPancakeProductID":
+		setting.WaffoPancakeProductID = value
+	case "WaffoPancakeReturnURL":
+		setting.WaffoPancakeReturnURL = value
+	case "WaffoPancakeCurrency":
+		setting.WaffoPancakeCurrency = value
+	case "WaffoPancakeUnitPrice":
+		setting.WaffoPancakeUnitPrice, _ = strconv.ParseFloat(value, 64)
+	case "WaffoPancakeMinTopUp":
+		setting.WaffoPancakeMinTopUp, _ = strconv.Atoi(value)
 	case "TopupGroupRatio":
 		err = common.UpdateTopupGroupRatioByJSONString(value)
 	case "GitHubClientId":
@@ -620,8 +612,12 @@ func handleConfigUpdate(key, value string) bool {
 
 	// 特定配置的后处理
 	if configName == "performance_setting" {
-		// 同步磁盘缓存配置到 common 包
 		performance_setting.UpdateAndSync()
+	} else if configName == "tool_price_setting" {
+		operation_setting.RebuildToolPriceIndex()
+	} else if configName == "billing_setting" {
+		InvalidatePricingCache()
+		ratio_setting.InvalidateExposedDataCache()
 	}
 
 	return true // 已处理
