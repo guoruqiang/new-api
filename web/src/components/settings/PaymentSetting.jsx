@@ -20,6 +20,7 @@ For commercial licensing, please contact support@quantumnous.com
 import React, { useEffect, useState } from 'react';
 import { Card, Spin, Tabs } from '@douyinfe/semi-ui';
 import SettingsGeneralPayment from '../../pages/Setting/Payment/SettingsGeneralPayment';
+import SettingsPaymentAutoSwitchGroup from '../../pages/Setting/Payment/SettingsPaymentAutoSwitchGroup';
 import SettingsPaymentGateway from '../../pages/Setting/Payment/SettingsPaymentGateway';
 import SettingsPaymentGatewayStripe from '../../pages/Setting/Payment/SettingsPaymentGatewayStripe';
 import SettingsPaymentGatewayCreem from '../../pages/Setting/Payment/SettingsPaymentGatewayCreem';
@@ -45,7 +46,8 @@ const PaymentSetting = () => {
     AutoSwitchGroupEnabled: false,
     AutoSwitchGroupOnlyNewTopups: false,
     AutoSwitchGroupBaseGroup: 'default',
-    AutoSwitchGroupRules: [],
+    AutoSwitchGroupRules: '[]',
+    AutoSwitchGroupEnabledFrom: 0,
 
     StripeApiSecret: '',
     StripeWebhookSecret: '',
@@ -119,12 +121,18 @@ const PaymentSetting = () => {
             break;
           case 'payment_setting.auto_switch_group_rules':
             try {
-              newInputs['AutoSwitchGroupRules'] = JSON.parse(
-                item.value || '[]',
+              newInputs['AutoSwitchGroupRules'] = JSON.stringify(
+                JSON.parse(item.value),
+                null,
+                2,
               );
             } catch (error) {
-              newInputs['AutoSwitchGroupRules'] = [];
+              newInputs['AutoSwitchGroupRules'] = item.value || '[]';
             }
+            break;
+          case 'payment_setting.auto_switch_group_enabled_from':
+            newInputs['AutoSwitchGroupEnabledFrom'] =
+              parseInt(item.value, 10) || 0;
             break;
           case 'Price':
           case 'MinTopUp':
@@ -187,6 +195,13 @@ const PaymentSetting = () => {
           >
             <Tabs.TabPane tab={t('通用设置')} itemKey='general'>
               <SettingsGeneralPayment
+                options={inputs}
+                refresh={onRefresh}
+                hideSectionTitle
+              />
+            </Tabs.TabPane>
+            <Tabs.TabPane tab={t('充值自动切组')} itemKey='auto-switch-group'>
+              <SettingsPaymentAutoSwitchGroup
                 options={inputs}
                 refresh={onRefresh}
                 hideSectionTitle

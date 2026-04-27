@@ -199,156 +199,35 @@ func normalizePaymentAutoSwitchGroupRulesList(rules []operation_setting.PaymentA
 	}, nil
 }
 
-func normalizePaymentAutoSwitchGroupRules(optionValue string) (*normalizedPaymentAutoSwitchGroupRules, error) {
-	trimmed := strings.TrimSpace(optionValue)
-	if trimmed == "" || trimmed == "null" {
-		return normalizePaymentAutoSwitchGroupRulesList(nil)
+func finalizeRequestedPaymentAutoSwitchGroupState(currentState *operation_setting.PaymentSetting, enabled bool, onlyNewTopups bool) (bool, bool, int64) {
+	enabledFrom := int64(0)
+	currentEnabled := false
+	currentOnlyNewTopups := false
+	currentEnabledFrom := int64(0)
+	if currentState != nil {
+		currentEnabled = currentState.AutoSwitchGroupEnabled
+		currentOnlyNewTopups = currentState.AutoSwitchGroupOnlyNewTopups
+		currentEnabledFrom = currentState.AutoSwitchGroupEnabledFrom
 	}
 
-	var rules []operation_setting.PaymentAutoSwitchGroupRule
-	if err := common.UnmarshalJsonStr(trimmed, &rules); err != nil {
-		return nil, fmt.Errorf("充值自动切换分组规则不是合法的 JSON 数组: %w", err)
-	}
-
-	return normalizePaymentAutoSwitchGroupRulesList(rules)
-}
-
-func getRequestedPaymentAutoSwitchGroupRules(optionKey, optionValue string) ([]operation_setting.PaymentAutoSwitchGroupRule, error) {
-	paymentSetting := operation_setting.GetPaymentSetting()
-	if optionKey == "payment_setting.auto_switch_group_rules" {
-		normalizedRules, err := normalizePaymentAutoSwitchGroupRules(optionValue)
-		if err != nil {
-			return nil, err
-		}
-		return normalizedRules.Rules, nil
-	}
-
-	rules := paymentSetting.AutoSwitchGroupRules
-	if len(rules) == 0 {
-		return []operation_setting.PaymentAutoSwitchGroupRule{}, nil
-	}
-
-	copiedRules := make([]operation_setting.PaymentAutoSwitchGroupRule, len(rules))
-	copy(copiedRules, rules)
-	return copiedRules, nil
-}
-
-func normalizeAndValidatePaymentAutoSwitchGroupBaseGroup(baseGroup string) (string, error) {
-	normalizedBaseGroup := normalizePaymentAutoSwitchGroupBaseGroup(baseGroup)
-	if !isValidPaymentAutoSwitchGroup(normalizedBaseGroup) {
-		return "", fmt.Errorf("充值自动切换分组的基础分组不存在")
-	}
-	return normalizedBaseGroup, nil
-}
-
-func getRequestedPaymentAutoSwitchGroupBaseGroup(optionKey, optionValue string) string {
-	paymentSetting := operation_setting.GetPaymentSetting()
-	if optionKey == "payment_setting.auto_switch_group_base_group" {
-		return normalizePaymentAutoSwitchGroupBaseGroup(optionValue)
-	}
-	return normalizePaymentAutoSwitchGroupBaseGroup(paymentSetting.AutoSwitchGroupBaseGroup)
-}
-
-func getValidatedRequestedPaymentAutoSwitchGroupBaseGroup(optionKey, optionValue string) (string, error) {
-	return normalizeAndValidatePaymentAutoSwitchGroupBaseGroup(getRequestedPaymentAutoSwitchGroupBaseGroup(optionKey, optionValue))
-}
-
-func getRequestedPaymentAutoSwitchGroupEnabled(optionKey, optionValue string) bool {
-	paymentSetting := operation_setting.GetPaymentSetting()
-	if optionKey == "payment_setting.auto_switch_group_enabled" {
-		enabled, err := strconv.ParseBool(optionValue)
-		if err != nil {
-			return false
-		}
-		return enabled
-	}
-	return paymentSetting.AutoSwitchGroupEnabled
-}
-
-func getRequestedPaymentAutoSwitchGroupOnlyNewTopups(optionKey, optionValue string) bool {
-	paymentSetting := operation_setting.GetPaymentSetting()
-	if optionKey == "payment_setting.auto_switch_group_only_new_topups" {
-		onlyNewTopups, err := strconv.ParseBool(optionValue)
-		if err != nil {
-			return false
-		}
-		return onlyNewTopups
-	}
-	return paymentSetting.AutoSwitchGroupOnlyNewTopups
-}
-
-type requestedPaymentAutoSwitchGroupState struct {
-	Enabled       bool
-	OnlyNewTopups bool
-	EnabledFrom   int64
-}
-
-func finalizeRequestedPaymentAutoSwitchGroupState(currentState operation_setting.PaymentSetting, enabled bool, onlyNewTopups bool) requestedPaymentAutoSwitchGroupState {
-	requestedState := requestedPaymentAutoSwitchGroupState{
-		Enabled:       enabled,
-		OnlyNewTopups: enabled && onlyNewTopups,
-		EnabledFrom:   currentState.AutoSwitchGroupEnabledFrom,
-	}
-
-	if !requestedState.Enabled || !requestedState.OnlyNewTopups {
-		requestedState.EnabledFrom = 0
-		return requestedState
-	}
-
-	if (!currentState.AutoSwitchGroupEnabled && requestedState.Enabled) ||
-		(!currentState.AutoSwitchGroupOnlyNewTopups && requestedState.OnlyNewTopups) {
-		requestedState.EnabledFrom = common.GetTimestamp() + 1
-	}
-
-	return requestedState
-}
-
-func buildRequestedPaymentAutoSwitchGroupState(currentState operation_setting.PaymentSetting, optionKey, optionValue string) requestedPaymentAutoSwitchGroupState {
-	enabled := currentState.AutoSwitchGroupEnabled
-	onlyNewTopups := currentState.AutoSwitchGroupOnlyNewTopups
-
-	switch optionKey {
-	case "payment_setting.auto_switch_group_enabled":
-		parsedEnabled, err := strconv.ParseBool(optionValue)
-		if err == nil {
-			enabled = parsedEnabled
-		}
-	case "payment_setting.auto_switch_group_only_new_topups":
-		parsedOnlyNewTopups, err := strconv.ParseBool(optionValue)
-		if err == nil {
-			onlyNewTopups = parsedOnlyNewTopups
+	onlyNewTopups = enabled && onlyNewTopups
+	if enabled && onlyNewTopups {
+		enabledFrom = currentEnabledFrom
+		if !currentEnabled || !currentOnlyNewTopups {
+			enabledFrom = common.GetTimestamp() + 1
 		}
 	}
-
-	return finalizeRequestedPaymentAutoSwitchGroupState(currentState, enabled, onlyNewTopups)
+	return enabled, onlyNewTopups, enabledFrom
 }
 
-func buildPaymentAutoSwitchGroupOptionValues(currentState operation_setting.PaymentSetting, normalizedBaseGroup string, normalizedRules *normalizedPaymentAutoSwitchGroupRules, requestedState requestedPaymentAutoSwitchGroupState) (map[string]string, error) {
-	optionValues := make(map[string]string, 5)
-
-	if normalizePaymentAutoSwitchGroupBaseGroup(currentState.AutoSwitchGroupBaseGroup) != normalizedBaseGroup {
-		optionValues["payment_setting.auto_switch_group_base_group"] = normalizedBaseGroup
+func buildPaymentAutoSwitchGroupOptionValues(normalizedBaseGroup string, normalizedRules *normalizedPaymentAutoSwitchGroupRules, enabled bool, onlyNewTopups bool, enabledFrom int64) map[string]string {
+	return map[string]string{
+		"payment_setting.auto_switch_group_base_group":      normalizedBaseGroup,
+		"payment_setting.auto_switch_group_rules":           normalizedRules.JSON,
+		"payment_setting.auto_switch_group_enabled":         strconv.FormatBool(enabled),
+		"payment_setting.auto_switch_group_only_new_topups": strconv.FormatBool(onlyNewTopups),
+		"payment_setting.auto_switch_group_enabled_from":    strconv.FormatInt(enabledFrom, 10),
 	}
-
-	currentRulesJSON, err := marshalPaymentAutoSwitchGroupRules(currentState.AutoSwitchGroupRules)
-	if err != nil {
-		return nil, err
-	}
-	if currentRulesJSON != normalizedRules.JSON {
-		optionValues["payment_setting.auto_switch_group_rules"] = normalizedRules.JSON
-	}
-
-	if currentState.AutoSwitchGroupOnlyNewTopups != requestedState.OnlyNewTopups {
-		optionValues["payment_setting.auto_switch_group_only_new_topups"] = strconv.FormatBool(requestedState.OnlyNewTopups)
-	}
-	if currentState.AutoSwitchGroupEnabled != requestedState.Enabled {
-		optionValues["payment_setting.auto_switch_group_enabled"] = strconv.FormatBool(requestedState.Enabled)
-	}
-	if currentState.AutoSwitchGroupEnabledFrom != requestedState.EnabledFrom {
-		optionValues["payment_setting.auto_switch_group_enabled_from"] = strconv.FormatInt(requestedState.EnabledFrom, 10)
-	}
-
-	return optionValues, nil
 }
 
 func UpdatePaymentAutoSwitchGroup(c *gin.Context) {
@@ -361,11 +240,11 @@ func UpdatePaymentAutoSwitchGroup(c *gin.Context) {
 		return
 	}
 
-	normalizedBaseGroup, err := normalizeAndValidatePaymentAutoSwitchGroupBaseGroup(request.BaseGroup)
-	if err != nil {
+	normalizedBaseGroup := normalizePaymentAutoSwitchGroupBaseGroup(request.BaseGroup)
+	if !isValidPaymentAutoSwitchGroup(normalizedBaseGroup) {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": err.Error(),
+			"message": "充值自动切换分组的基础分组不存在",
 		})
 		return
 	}
@@ -387,13 +266,12 @@ func UpdatePaymentAutoSwitchGroup(c *gin.Context) {
 	}
 
 	currentPaymentSetting := operation_setting.GetPaymentSetting()
-	requestedState := finalizeRequestedPaymentAutoSwitchGroupState(currentPaymentSetting, request.Enabled, request.OnlyNewTopups)
-	optionValues, err := buildPaymentAutoSwitchGroupOptionValues(currentPaymentSetting, normalizedBaseGroup, normalizedRules, requestedState)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-
+	enabled, onlyNewTopups, enabledFrom := finalizeRequestedPaymentAutoSwitchGroupState(
+		&currentPaymentSetting,
+		request.Enabled,
+		request.OnlyNewTopups,
+	)
+	optionValues := buildPaymentAutoSwitchGroupOptionValues(normalizedBaseGroup, normalizedRules, enabled, onlyNewTopups, enabledFrom)
 	if err := model.UpdateOptions(optionValues); err != nil {
 		common.ApiError(c, err)
 		return
@@ -404,7 +282,6 @@ func UpdatePaymentAutoSwitchGroup(c *gin.Context) {
 		"message": "",
 	})
 }
-
 func UpdateOption(c *gin.Context) {
 	var option OptionUpdateRequest
 	err := common.DecodeJson(c.Request.Body, &option)
@@ -470,7 +347,7 @@ func UpdateOption(c *gin.Context) {
 		if option.Value == "true" && common.WeChatServerAddress == "" {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
-				"message": "无法启用微信登录，请先填入微信登录相关配置信息！",
+				"message": "鏃犳硶鍚敤寰俊鐧诲綍锛岃鍏堝～鍏ュ井淇＄櫥褰曠浉鍏抽厤缃俊鎭紒",
 			})
 			return
 		}
@@ -505,7 +382,7 @@ func UpdateOption(c *gin.Context) {
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
-				"message": "图片倍率设置失败: " + err.Error(),
+				"message": "鍥剧墖鍊嶇巼璁剧疆澶辫触: " + err.Error(),
 			})
 			return
 		}
@@ -514,7 +391,7 @@ func UpdateOption(c *gin.Context) {
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
-				"message": "音频倍率设置失败: " + err.Error(),
+				"message": "闊抽鍊嶇巼璁剧疆澶辫触: " + err.Error(),
 			})
 			return
 		}
@@ -523,7 +400,7 @@ func UpdateOption(c *gin.Context) {
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
-				"message": "音频补全倍率设置失败: " + err.Error(),
+				"message": "闊抽琛ュ叏鍊嶇巼璁剧疆澶辫触: " + err.Error(),
 			})
 			return
 		}
@@ -532,7 +409,7 @@ func UpdateOption(c *gin.Context) {
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
-				"message": "缓存创建倍率设置失败: " + err.Error(),
+				"message": "缂撳瓨鍒涘缓鍊嶇巼璁剧疆澶辫触: " + err.Error(),
 			})
 			return
 		}
@@ -563,94 +440,6 @@ func UpdateOption(c *gin.Context) {
 			})
 			return
 		}
-	case "payment_setting.auto_switch_group_base_group":
-		normalizedBaseGroup, normalizeErr := normalizeAndValidatePaymentAutoSwitchGroupBaseGroup(option.Value.(string))
-		if normalizeErr != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": normalizeErr.Error(),
-			})
-			return
-		}
-		option.Value = normalizedBaseGroup
-	case "payment_setting.auto_switch_group_rules":
-		normalizedRules, normalizeErr := normalizePaymentAutoSwitchGroupRules(option.Value.(string))
-		if normalizeErr != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": normalizeErr.Error(),
-			})
-			return
-		}
-		if _, baseGroupErr := getValidatedRequestedPaymentAutoSwitchGroupBaseGroup(option.Key, option.Value.(string)); baseGroupErr != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": baseGroupErr.Error(),
-			})
-			return
-		}
-		if getRequestedPaymentAutoSwitchGroupEnabled(option.Key, option.Value.(string)) && len(normalizedRules.Rules) == 0 {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": paymentAutoSwitchGroupRulesRequiredMessage,
-			})
-			return
-		}
-		option.Value = normalizedRules.JSON
-	case "payment_setting.auto_switch_group_enabled":
-		enabled, parseErr := strconv.ParseBool(option.Value.(string))
-		if parseErr != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "无效的开关值",
-			})
-			return
-		}
-		if _, baseGroupErr := getValidatedRequestedPaymentAutoSwitchGroupBaseGroup(option.Key, option.Value.(string)); baseGroupErr != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": baseGroupErr.Error(),
-			})
-			return
-		}
-		if enabled {
-			rules, rulesErr := getRequestedPaymentAutoSwitchGroupRules(option.Key, option.Value.(string))
-			if rulesErr != nil {
-				c.JSON(http.StatusOK, gin.H{
-					"success": false,
-					"message": rulesErr.Error(),
-				})
-				return
-			}
-			if len(rules) == 0 {
-				c.JSON(http.StatusOK, gin.H{
-					"success": false,
-					"message": paymentAutoSwitchGroupRulesRequiredMessage,
-				})
-				return
-			}
-		}
-	case "payment_setting.auto_switch_group_only_new_topups":
-		if _, parseErr := strconv.ParseBool(option.Value.(string)); parseErr != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "无效的开关值",
-			})
-			return
-		}
-		if _, baseGroupErr := getValidatedRequestedPaymentAutoSwitchGroupBaseGroup(option.Key, option.Value.(string)); baseGroupErr != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": baseGroupErr.Error(),
-			})
-			return
-		}
-	case "payment_setting.auto_switch_group_enabled_from":
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "不支持直接修改充值后自动切换分组的累计起始时间",
-		})
-		return
 	case "console_setting.api_info":
 		err = console_setting.ValidateConsoleSettings(option.Value.(string), "ApiInfo")
 		if err != nil {
@@ -688,18 +477,7 @@ func UpdateOption(c *gin.Context) {
 			return
 		}
 	}
-	optionValues := map[string]string{
-		option.Key: option.Value.(string),
-	}
-	if option.Key == "payment_setting.auto_switch_group_enabled" || option.Key == "payment_setting.auto_switch_group_only_new_topups" {
-		currentPaymentSetting := operation_setting.GetPaymentSetting()
-		requestedState := buildRequestedPaymentAutoSwitchGroupState(currentPaymentSetting, option.Key, option.Value.(string))
-		optionValues["payment_setting.auto_switch_group_enabled"] = strconv.FormatBool(requestedState.Enabled)
-		optionValues["payment_setting.auto_switch_group_only_new_topups"] = strconv.FormatBool(requestedState.OnlyNewTopups)
-		optionValues["payment_setting.auto_switch_group_enabled_from"] = strconv.FormatInt(requestedState.EnabledFrom, 10)
-	}
-
-	err = model.UpdateOptions(optionValues)
+	err = model.UpdateOption(option.Key, option.Value.(string))
 	if err != nil {
 		common.ApiError(c, err)
 		return
