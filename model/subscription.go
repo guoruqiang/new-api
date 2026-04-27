@@ -473,7 +473,7 @@ func downgradeUserGroupForSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now
 	if upgradeGroup == "" {
 		return "", nil
 	}
-	currentGroup, err := getUserGroupByIdTx(tx, sub.UserId)
+	currentGroup, err := getUserGroupForUpdateTx(tx, sub.UserId)
 	if err != nil {
 		return "", err
 	}
@@ -530,7 +530,7 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 	upgradeGroup := strings.TrimSpace(plan.UpgradeGroup)
 	prevGroup := ""
 	if upgradeGroup != "" {
-		currentGroup, err := getUserGroupByIdTx(tx, userId)
+		currentGroup, err := getUserGroupForUpdateTx(tx, userId)
 		if err != nil {
 			return nil, err
 		}
@@ -927,7 +927,7 @@ func ExpireDueSubscriptions(limit int) (int, error) {
 				return nil
 			}
 
-			currentGroup, err := getUserGroupByIdTx(tx, userId)
+			currentGroup, err := getUserGroupForUpdateTx(tx, userId)
 			if err != nil {
 				return err
 			}

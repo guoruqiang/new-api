@@ -21,6 +21,8 @@ type Option struct {
 	Value string `json:"value"`
 }
 
+const paymentSettingOptionPrefix = "payment_setting."
+
 func AllOption() ([]*Option, error) {
 	var options []*Option
 	var err error
@@ -229,7 +231,7 @@ func UpdateOptions(optionValues map[string]string) error {
 	paymentSettingOptionValues := make(map[string]string)
 	for key := range optionValues {
 		keys = append(keys, key)
-		if strings.HasPrefix(key, "payment_setting.") {
+		if isPaymentSettingOptionKey(key) {
 			paymentSettingOptionValues[key] = optionValues[key]
 		}
 	}
@@ -256,7 +258,7 @@ func UpdateOptions(optionValues map[string]string) error {
 	}
 
 	for _, key := range keys {
-		if strings.HasPrefix(key, "payment_setting.") {
+		if isPaymentSettingOptionKey(key) {
 			continue
 		}
 		if err := updateOptionMap(key, optionValues[key]); err != nil {
@@ -266,6 +268,14 @@ func UpdateOptions(optionValues map[string]string) error {
 	return applyPaymentSettingOptionValues(paymentSettingOptionValues)
 }
 
+func isPaymentSettingOptionKey(key string) bool {
+	return strings.HasPrefix(key, paymentSettingOptionPrefix)
+}
+
+func paymentSettingConfigKey(key string) string {
+	return strings.TrimPrefix(key, paymentSettingOptionPrefix)
+}
+
 func validatePaymentSettingOptionValues(optionValues map[string]string) error {
 	if len(optionValues) == 0 {
 		return nil
@@ -273,7 +283,7 @@ func validatePaymentSettingOptionValues(optionValues map[string]string) error {
 
 	paymentSettingConfigMap := make(map[string]string, len(optionValues))
 	for key, value := range optionValues {
-		paymentSettingConfigMap[strings.TrimPrefix(key, "payment_setting.")] = value
+		paymentSettingConfigMap[paymentSettingConfigKey(key)] = value
 	}
 
 	paymentSetting := operation_setting.GetPaymentSetting()
@@ -287,7 +297,7 @@ func applyPaymentSettingOptionValues(optionValues map[string]string) error {
 
 	paymentSettingConfigMap := make(map[string]string, len(optionValues))
 	for key, value := range optionValues {
-		paymentSettingConfigMap[strings.TrimPrefix(key, "payment_setting.")] = value
+		paymentSettingConfigMap[paymentSettingConfigKey(key)] = value
 	}
 
 	var paymentSettingErr error
@@ -307,6 +317,10 @@ func applyPaymentSettingOptionValues(optionValues map[string]string) error {
 }
 
 func updateOptionMap(key string, value string) (err error) {
+	if isPaymentSettingOptionKey(key) {
+		return applyPaymentSettingOptionValues(map[string]string{key: value})
+	}
+
 	common.OptionMapRWMutex.Lock()
 	defer common.OptionMapRWMutex.Unlock()
 	common.OptionMap[key] = value

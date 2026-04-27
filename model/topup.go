@@ -11,6 +11,7 @@ import (
 
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type TopUp struct {
@@ -297,6 +298,25 @@ func updateUserGroupTx(tx *gorm.DB, userId int, targetGroup string) error {
 	return tx.Model(&User{}).Where("id = ?", userId).Update("group", targetGroup).Error
 }
 
+func getUserGroupForUpdateTx(tx *gorm.DB, userId int) (string, error) {
+	if tx == nil {
+		return "", errors.New("tx is nil")
+	}
+	if userId <= 0 {
+		return "", errors.New("invalid user id")
+	}
+
+	var group string
+	query := tx.Model(&User{}).Where("id = ?", userId).Select(commonGroupCol)
+	if !common.UsingSQLite {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	if err := query.Find(&group).Error; err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(group), nil
+}
+
 func applyTopUpAutoSwitchGroupTx(tx *gorm.DB, userId int) (string, error) {
 	if tx == nil {
 		return "", errors.New("tx is nil")
@@ -310,7 +330,7 @@ func applyTopUpAutoSwitchGroupTx(tx *gorm.DB, userId int) (string, error) {
 		return "", nil
 	}
 
-	currentGroup, err := getUserGroupByIdTx(tx, userId)
+	currentGroup, err := getUserGroupForUpdateTx(tx, userId)
 	if err != nil {
 		return "", err
 	}

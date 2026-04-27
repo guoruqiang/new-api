@@ -44,20 +44,7 @@ func GetPaymentSetting() PaymentSetting {
 	paymentSettingRWMutex.RLock()
 	defer paymentSettingRWMutex.RUnlock()
 
-	copiedSetting := paymentSetting
-	if paymentSetting.AmountOptions != nil {
-		copiedSetting.AmountOptions = append([]int(nil), paymentSetting.AmountOptions...)
-	}
-	if paymentSetting.AmountDiscount != nil {
-		copiedSetting.AmountDiscount = make(map[int]float64, len(paymentSetting.AmountDiscount))
-		for amount, discount := range paymentSetting.AmountDiscount {
-			copiedSetting.AmountDiscount[amount] = discount
-		}
-	}
-	if paymentSetting.AutoSwitchGroupRules != nil {
-		copiedSetting.AutoSwitchGroupRules = append([]PaymentAutoSwitchGroupRule(nil), paymentSetting.AutoSwitchGroupRules...)
-	}
-	return copiedSetting
+	return clonePaymentSettingLocked()
 }
 
 func normalizePaymentAutoSwitchGroupBaseGroup(baseGroup string) string {
@@ -72,21 +59,35 @@ func UpdatePaymentSetting(mutator func(setting *PaymentSetting)) PaymentSetting 
 	paymentSettingRWMutex.Lock()
 	defer paymentSettingRWMutex.Unlock()
 
-	mutator(&paymentSetting)
-	paymentSetting.AutoSwitchGroupBaseGroup = normalizePaymentAutoSwitchGroupBaseGroup(paymentSetting.AutoSwitchGroupBaseGroup)
-
-	copiedSetting := paymentSetting
-	if paymentSetting.AmountOptions != nil {
-		copiedSetting.AmountOptions = append([]int(nil), paymentSetting.AmountOptions...)
+	if mutator != nil {
+		mutator(&paymentSetting)
 	}
+	paymentSetting.AutoSwitchGroupBaseGroup = normalizePaymentAutoSwitchGroupBaseGroup(paymentSetting.AutoSwitchGroupBaseGroup)
+	detachPaymentSettingLocked()
+	return clonePaymentSettingLocked()
+}
+
+func detachPaymentSettingLocked() {
+	paymentSetting.AmountOptions = append([]int(nil), paymentSetting.AmountOptions...)
+	if paymentSetting.AmountDiscount != nil {
+		amountDiscount := make(map[int]float64, len(paymentSetting.AmountDiscount))
+		for amount, discount := range paymentSetting.AmountDiscount {
+			amountDiscount[amount] = discount
+		}
+		paymentSetting.AmountDiscount = amountDiscount
+	}
+	paymentSetting.AutoSwitchGroupRules = append([]PaymentAutoSwitchGroupRule(nil), paymentSetting.AutoSwitchGroupRules...)
+}
+
+func clonePaymentSettingLocked() PaymentSetting {
+	copiedSetting := paymentSetting
+	copiedSetting.AmountOptions = append([]int(nil), paymentSetting.AmountOptions...)
 	if paymentSetting.AmountDiscount != nil {
 		copiedSetting.AmountDiscount = make(map[int]float64, len(paymentSetting.AmountDiscount))
 		for amount, discount := range paymentSetting.AmountDiscount {
 			copiedSetting.AmountDiscount[amount] = discount
 		}
 	}
-	if paymentSetting.AutoSwitchGroupRules != nil {
-		copiedSetting.AutoSwitchGroupRules = append([]PaymentAutoSwitchGroupRule(nil), paymentSetting.AutoSwitchGroupRules...)
-	}
+	copiedSetting.AutoSwitchGroupRules = append([]PaymentAutoSwitchGroupRule(nil), paymentSetting.AutoSwitchGroupRules...)
 	return copiedSetting
 }
