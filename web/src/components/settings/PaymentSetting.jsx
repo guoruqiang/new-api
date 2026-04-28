@@ -121,8 +121,9 @@ const PaymentSetting = () => {
             break;
           case 'payment_setting.auto_switch_group_rules':
             try {
+              const parsed = JSON.parse(item.value || '[]');
               newInputs['AutoSwitchGroupRules'] = JSON.stringify(
-                JSON.parse(item.value),
+                Array.isArray(parsed) ? parsed : [],
                 null,
                 2,
               );
