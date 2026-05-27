@@ -79,7 +79,7 @@ const EditTokenModal = (props) => {
     model_limits_enabled: false,
     model_limits: [],
     allow_ips: '',
-    group: '',
+    group: statusState?.status?.default_use_auto_group ? 'auto' : '',
     cross_group_retry: false,
     tokenCount: 1,
   });
@@ -145,12 +145,12 @@ const EditTokenModal = (props) => {
       if (statusState?.status?.default_use_auto_group) {
         if (localGroupOptions.some((group) => group.value === 'auto')) {
           localGroupOptions.sort((a, b) => (a.value === 'auto' ? -1 : 1));
+          if (!isEdit && formApiRef.current) {
+            formApiRef.current.setValue('group', 'auto');
+          }
         }
       }
       setGroups(localGroupOptions);
-      // if (statusState?.status?.default_use_auto_group && formApiRef.current) {
-      //   formApiRef.current.setValue('group', 'auto');
-      // }
     } else {
       showError(t(message));
     }
