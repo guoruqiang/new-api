@@ -153,6 +153,19 @@ const BILLING_SECTIONS = [
           CreemTestMode: settings.CreemTestMode,
           CreemProducts: settings.CreemProducts,
         }}
+        autoSwitchGroupDefaults={{
+          enabled:
+            settings['payment_setting.auto_switch_group_enabled'] ?? false,
+          onlyNewTopups:
+            settings['payment_setting.auto_switch_group_only_new_topups'] ??
+            false,
+          enabledFrom:
+            settings['payment_setting.auto_switch_group_enabled_from'] ?? 0,
+          baseGroup:
+            settings['payment_setting.auto_switch_group_base_group'] ??
+            'default',
+          rules: settings['payment_setting.auto_switch_group_rules'] ?? '[]',
+        }}
         waffoDefaultValues={{
           WaffoEnabled: settings.WaffoEnabled ?? false,
           WaffoApiKey: settings.WaffoApiKey ?? '',

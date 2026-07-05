@@ -442,13 +442,11 @@ func downgradeUserGroupForSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now
 		return "", err
 	}
 	// If another active upgraded subscription exists, keep the current group.
-	var activeSub UserSubscription
-	activeQuery := tx.Where("user_id = ? AND status = ? AND end_time > ? AND id <> ? AND upgrade_group <> ''",
-		sub.UserId, "active", now, sub.Id).
-		Order("end_time desc, id desc").
-		Limit(1).
-		Find(&activeSub)
-	if activeQuery.Error == nil && activeQuery.RowsAffected > 0 {
+	activeUpgradeGroup, err := getActiveSubscriptionUpgradeGroupTx(tx, sub.UserId, now, sub.Id)
+	if err != nil {
+		return "", err
+	}
+	if activeUpgradeGroup != "" {
 		return "", nil
 	}
 	// Determine the downgrade target: an explicit downgrade group takes precedence,
@@ -459,7 +457,10 @@ func downgradeUserGroupForSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now
 		if currentGroup != upgradeGroup {
 			return "", nil
 		}
-		target = strings.TrimSpace(sub.PrevUserGroup)
+		target, err = resolveUserEffectiveGroupTx(tx, sub.UserId, now, sub.PrevUserGroup, sub.Id)
+		if err != nil {
+			return "", err
+		}
 	}
 	if target == "" || target == currentGroup {
 		return "", nil
@@ -1020,13 +1021,11 @@ func ExpireDueSubscriptions(limit int) (int, error) {
 			expiredCount += int(res.RowsAffected)
 
 			// If there's an active upgraded subscription, keep current group.
-			var activeSub UserSubscription
-			activeQuery := tx.Where("user_id = ? AND status = ? AND end_time > ? AND upgrade_group <> ''",
-				userId, "active", now).
-				Order("end_time desc, id desc").
-				Limit(1).
-				Find(&activeSub)
-			if activeQuery.Error == nil && activeQuery.RowsAffected > 0 {
+			activeUpgradeGroup, err := getActiveSubscriptionUpgradeGroupTx(tx, userId, now, 0)
+			if err != nil {
+				return err
+			}
+			if activeUpgradeGroup != "" {
 				return nil
 			}
 
@@ -1058,7 +1057,10 @@ func ExpireDueSubscriptions(limit int) (int, error) {
 				if currentGroup != upgradeGroup {
 					return nil
 				}
-				target = prevGroup
+				target, err = resolveUserEffectiveGroupTx(tx, userId, now, prevGroup, 0)
+				if err != nil {
+					return err
+				}
 			}
 			if target == "" || target == currentGroup {
 				return nil

@@ -112,6 +112,7 @@ func Recharge(referenceId string, customerId string, callerIp string) (err error
 	}
 
 	var quota float64
+	var switchedGroup string
 	topUp := &TopUp{}
 
 	refCol := "`trade_no`"
@@ -146,12 +147,16 @@ func Recharge(referenceId string, customerId string, callerIp string) (err error
 			return err
 		}
 
-		return nil
+		switchedGroup, err = applyTopUpAutoSwitchGroupTx(tx, topUp.UserId)
+		return err
 	})
 
 	if err != nil {
 		common.SysError("topup failed: " + err.Error())
 		return errors.New("充值失败，请稍后重试")
+	}
+	if switchedGroup != "" {
+		_ = UpdateUserGroupCache(topUp.UserId, switchedGroup)
 	}
 
 	RecordTopupLog(topUp.UserId, fmt.Sprintf("使用在线充值成功，充值金额: %v，支付金额：%d", logger.FormatQuota(int(quota)), topUp.Amount), callerIp, topUp.PaymentMethod, PaymentMethodStripe)
@@ -331,6 +336,7 @@ func ManualCompleteTopUp(tradeNo string, callerIp string) error {
 	var quotaToAdd int
 	var payMoney float64
 	var paymentMethod string
+	var switchedGroup string
 
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		topUp := &TopUp{}
@@ -378,11 +384,16 @@ func ManualCompleteTopUp(tradeNo string, callerIp string) error {
 		userId = topUp.UserId
 		payMoney = topUp.Money
 		paymentMethod = topUp.PaymentMethod
-		return nil
+		var switchErr error
+		switchedGroup, switchErr = applyTopUpAutoSwitchGroupTx(tx, topUp.UserId)
+		return switchErr
 	})
 
 	if err != nil {
 		return err
+	}
+	if switchedGroup != "" {
+		_ = UpdateUserGroupCache(userId, switchedGroup)
 	}
 
 	// 事务外记录日志，避免阻塞
@@ -395,6 +406,7 @@ func RechargeCreem(referenceId string, customerEmail string, customerName string
 	}
 
 	var quota int64
+	var switchedGroup string
 	topUp := &TopUp{}
 
 	refCol := "`trade_no`"
@@ -451,12 +463,16 @@ func RechargeCreem(referenceId string, customerEmail string, customerName string
 			return err
 		}
 
-		return nil
+		switchedGroup, err = applyTopUpAutoSwitchGroupTx(tx, topUp.UserId)
+		return err
 	})
 
 	if err != nil {
 		common.SysError("creem topup failed: " + err.Error())
 		return errors.New("充值失败，请稍后重试")
+	}
+	if switchedGroup != "" {
+		_ = UpdateUserGroupCache(topUp.UserId, switchedGroup)
 	}
 
 	RecordTopupLog(topUp.UserId, fmt.Sprintf("使用Creem充值成功，充值额度: %v，支付金额：%.2f", quota, topUp.Money), callerIp, topUp.PaymentMethod, PaymentMethodCreem)
@@ -470,6 +486,7 @@ func RechargeWaffo(tradeNo string, callerIp string) (err error) {
 	}
 
 	var quotaToAdd int
+	var switchedGroup string
 	topUp := &TopUp{}
 
 	refCol := "`trade_no`"
@@ -512,12 +529,16 @@ func RechargeWaffo(tradeNo string, callerIp string) (err error) {
 			return err
 		}
 
-		return nil
+		switchedGroup, err = applyTopUpAutoSwitchGroupTx(tx, topUp.UserId)
+		return err
 	})
 
 	if err != nil {
 		common.SysError("waffo topup failed: " + err.Error())
 		return errors.New("充值失败，请稍后重试")
+	}
+	if switchedGroup != "" {
+		_ = UpdateUserGroupCache(topUp.UserId, switchedGroup)
 	}
 
 	if quotaToAdd > 0 {
@@ -533,6 +554,7 @@ func RechargeWaffoPancake(tradeNo string) (err error) {
 	}
 
 	var quotaToAdd int
+	var switchedGroup string
 	topUp := &TopUp{}
 
 	refCol := "`trade_no`"
@@ -573,12 +595,16 @@ func RechargeWaffoPancake(tradeNo string) (err error) {
 			return err
 		}
 
-		return nil
+		switchedGroup, err = applyTopUpAutoSwitchGroupTx(tx, topUp.UserId)
+		return err
 	})
 
 	if err != nil {
 		common.SysError("waffo pancake topup failed: " + err.Error())
 		return errors.New("充值失败，请稍后重试")
+	}
+	if switchedGroup != "" {
+		_ = UpdateUserGroupCache(topUp.UserId, switchedGroup)
 	}
 
 	if quotaToAdd > 0 {

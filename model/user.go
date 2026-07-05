@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -17,6 +18,8 @@ import (
 )
 
 const UserNameMaxLength = 20
+
+var usernamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // User if you add sensitive fields, don't forget to clean them in setupLogin function.
 // Otherwise, the sensitive information will be saved on local storage in plain text!
@@ -406,6 +409,9 @@ func (user *User) Insert(inviterId int) error {
 		if err != nil {
 			return err
 		}
+	}
+	if !usernamePattern.MatchString(user.Username) {
+		return errors.New("用户名只能包含字母、数字、下划线和中划线")
 	}
 	user.Quota = common.QuotaForNewUser
 	//user.SetAccessToken(common.GetUUID())

@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Code2, Eye, ShieldAlert } from 'lucide-react'
+import { Code2, Eye, Plus, ShieldAlert, Trash2 } from 'lucide-react'
 import * as React from 'react'
 import { useForm, type Resolver } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
@@ -43,12 +43,13 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 
-import { confirmPaymentCompliance } from '../api'
+import { confirmPaymentCompliance, updatePaymentAutoSwitchGroup } from '../api'
 import {
   SettingsForm,
   SettingsSwitchContent,
@@ -79,6 +80,19 @@ import {
   WaffoSettingsSection,
   type WaffoSettingsValues,
 } from './waffo-settings-section'
+
+type PaymentAutoSwitchGroupRule = {
+  threshold_usd: number
+  group: string
+}
+
+type PaymentAutoSwitchGroupDefaults = {
+  enabled: boolean
+  onlyNewTopups: boolean
+  enabledFrom: number
+  baseGroup: string
+  rules: string
+}
 
 function isHttpOriginUrl(value: string) {
   const trimmed = value.trim()
@@ -197,6 +211,7 @@ type PaymentComplianceDefaults = {
 
 type PaymentSettingsSectionProps = {
   defaultValues: PaymentBaseFormValues
+  autoSwitchGroupDefaults: PaymentAutoSwitchGroupDefaults
   waffoDefaultValues: WaffoSettingsValues
   waffoPancakeDefaultValues: WaffoPancakeSettingsValues
   waffoPancakeProvisionedStoreID?: string
@@ -213,8 +228,35 @@ function parseWaffoPayMethods(value: string): PayMethod[] {
   }
 }
 
+function parseAutoSwitchGroupRules(
+  value: string
+): PaymentAutoSwitchGroupRule[] {
+  try {
+    const parsed = JSON.parse(value || '[]')
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .map((item) => ({
+        threshold_usd: Number(item?.threshold_usd ?? 0),
+        group: String(item?.group ?? '').trim(),
+      }))
+      .filter((item) => item.threshold_usd > 0 || item.group)
+  } catch {
+    return []
+  }
+}
+
+function normalizeAutoSwitchGroupRules(rules: PaymentAutoSwitchGroupRule[]) {
+  return rules
+    .map((rule) => ({
+      threshold_usd: Number(rule.threshold_usd),
+      group: rule.group.trim(),
+    }))
+    .filter((rule) => rule.threshold_usd > 0 && rule.group)
+}
+
 export function PaymentSettingsSection({
   defaultValues,
+  autoSwitchGroupDefaults,
   waffoDefaultValues,
   waffoPancakeDefaultValues,
   waffoPancakeProvisionedStoreID,
@@ -245,6 +287,18 @@ export function PaymentSettingsSection({
     React.useState(true)
   const [creemProductsVisualMode, setCreemProductsVisualMode] =
     React.useState(true)
+  const [autoSwitchEnabled, setAutoSwitchEnabled] = React.useState(
+    autoSwitchGroupDefaults.enabled
+  )
+  const [autoSwitchOnlyNew, setAutoSwitchOnlyNew] = React.useState(
+    autoSwitchGroupDefaults.onlyNewTopups
+  )
+  const [autoSwitchBaseGroup, setAutoSwitchBaseGroup] = React.useState(
+    autoSwitchGroupDefaults.baseGroup || 'default'
+  )
+  const [autoSwitchRules, setAutoSwitchRules] = React.useState<
+    PaymentAutoSwitchGroupRule[]
+  >(() => parseAutoSwitchGroupRules(autoSwitchGroupDefaults.rules))
   const [showComplianceDialog, setShowComplianceDialog] = React.useState(false)
   const [waffoPayMethods, setWaffoPayMethods] = React.useState<PayMethod[]>(
     () => parseWaffoPayMethods(waffoDefaultValues.WaffoPayMethods)
@@ -263,6 +317,18 @@ export function PaymentSettingsSection({
   React.useEffect(() => {
     setWaffoPayMethods(parseWaffoPayMethods(waffoDefaultValues.WaffoPayMethods))
   }, [waffoDefaultValues.WaffoPayMethods])
+
+  React.useEffect(() => {
+    setAutoSwitchEnabled(autoSwitchGroupDefaults.enabled)
+    setAutoSwitchOnlyNew(autoSwitchGroupDefaults.onlyNewTopups)
+    setAutoSwitchBaseGroup(autoSwitchGroupDefaults.baseGroup || 'default')
+    setAutoSwitchRules(parseAutoSwitchGroupRules(autoSwitchGroupDefaults.rules))
+  }, [
+    autoSwitchGroupDefaults.baseGroup,
+    autoSwitchGroupDefaults.enabled,
+    autoSwitchGroupDefaults.onlyNewTopups,
+    autoSwitchGroupDefaults.rules,
+  ])
 
   React.useEffect(() => {
     const nextBinding = {
@@ -344,6 +410,25 @@ export function PaymentSettingsSection({
     },
     onError: (error: Error) => {
       toast.error(error.message || t('Failed to confirm compliance'))
+    },
+  })
+
+  const autoSwitchGroupMutation = useMutation({
+    mutationFn: updatePaymentAutoSwitchGroup,
+    onSuccess: (data) => {
+      if (data.success) {
+        toast.success(t('Auto-switch group settings saved'))
+        queryClient.invalidateQueries({ queryKey: ['system-options'] })
+      } else {
+        toast.error(
+          data.message || t('Failed to save auto-switch group settings')
+        )
+      }
+    },
+    onError: (error: Error) => {
+      toast.error(
+        error.message || t('Failed to save auto-switch group settings')
+      )
     },
   })
 
@@ -566,7 +651,10 @@ export function PaymentSettingsSection({
       sanitized.StripeApiSecret &&
       sanitized.StripeApiSecret !== initial.StripeApiSecret
     ) {
-      updates.push({ key: 'StripeApiSecret', value: sanitized.StripeApiSecret })
+      updates.push({
+        key: 'StripeApiSecret',
+        value: sanitized.StripeApiSecret,
+      })
     }
 
     if (
@@ -584,7 +672,10 @@ export function PaymentSettingsSection({
     }
 
     if (sanitized.StripeUnitPrice !== initial.StripeUnitPrice) {
-      updates.push({ key: 'StripeUnitPrice', value: sanitized.StripeUnitPrice })
+      updates.push({
+        key: 'StripeUnitPrice',
+        value: sanitized.StripeUnitPrice,
+      })
     }
 
     if (sanitized.StripeMinTopUp !== initial.StripeMinTopUp) {
@@ -638,7 +729,10 @@ export function PaymentSettingsSection({
     }
 
     if (sanitized.WaffoMerchantId !== initial.WaffoMerchantId) {
-      updates.push({ key: 'WaffoMerchantId', value: sanitized.WaffoMerchantId })
+      updates.push({
+        key: 'WaffoMerchantId',
+        value: sanitized.WaffoMerchantId,
+      })
     }
 
     if (sanitized.WaffoCurrency !== initial.WaffoCurrency) {
@@ -662,7 +756,10 @@ export function PaymentSettingsSection({
     }
 
     if (sanitized.WaffoPublicCert !== initial.WaffoPublicCert) {
-      updates.push({ key: 'WaffoPublicCert', value: sanitized.WaffoPublicCert })
+      updates.push({
+        key: 'WaffoPublicCert',
+        value: sanitized.WaffoPublicCert,
+      })
     }
 
     if (sanitized.WaffoSandboxPublicCert !== initial.WaffoSandboxPublicCert) {
@@ -677,7 +774,10 @@ export function PaymentSettingsSection({
     }
 
     if (sanitized.WaffoPrivateKey) {
-      updates.push({ key: 'WaffoPrivateKey', value: sanitized.WaffoPrivateKey })
+      updates.push({
+        key: 'WaffoPrivateKey',
+        value: sanitized.WaffoPrivateKey,
+      })
     }
 
     if (sanitized.WaffoSandboxApiKey) {
@@ -698,7 +798,10 @@ export function PaymentSettingsSection({
       normalizeJsonForComparison(sanitized.WaffoPayMethods) !==
       normalizeJsonForComparison(initial.WaffoPayMethods)
     ) {
-      updates.push({ key: 'WaffoPayMethods', value: sanitized.WaffoPayMethods })
+      updates.push({
+        key: 'WaffoPayMethods',
+        value: sanitized.WaffoPayMethods,
+      })
     }
 
     const hasWaffoPancakeChanges =
@@ -707,14 +810,39 @@ export function PaymentSettingsSection({
       sanitized.WaffoPancakeReturnURL !== initial.WaffoPancakeReturnURL ||
       waffoPancakeSelection.storeID !== waffoPancakeSavedBinding.storeID ||
       waffoPancakeSelection.productID !== waffoPancakeSavedBinding.productID
+    const normalizedAutoSwitchRules =
+      normalizeAutoSwitchGroupRules(autoSwitchRules)
+    const initialAutoSwitchRules = normalizeAutoSwitchGroupRules(
+      parseAutoSwitchGroupRules(autoSwitchGroupDefaults.rules)
+    )
+    const hasAutoSwitchChanges =
+      autoSwitchEnabled !== autoSwitchGroupDefaults.enabled ||
+      autoSwitchOnlyNew !== autoSwitchGroupDefaults.onlyNewTopups ||
+      autoSwitchBaseGroup.trim() !==
+        (autoSwitchGroupDefaults.baseGroup || 'default').trim() ||
+      JSON.stringify(normalizedAutoSwitchRules) !==
+        JSON.stringify(initialAutoSwitchRules)
 
-    if (updates.length === 0 && !hasWaffoPancakeChanges) {
+    if (
+      updates.length === 0 &&
+      !hasWaffoPancakeChanges &&
+      !hasAutoSwitchChanges
+    ) {
       toast.info(t('No changes to save'))
       return
     }
 
     for (const update of updates) {
       await updateOption.mutateAsync(update)
+    }
+
+    if (hasAutoSwitchChanges) {
+      await autoSwitchGroupMutation.mutateAsync({
+        enabled: autoSwitchEnabled,
+        only_new_topups: autoSwitchOnlyNew,
+        base_group: autoSwitchBaseGroup.trim() || 'default',
+        rules: normalizedAutoSwitchRules,
+      })
     }
 
     if (!hasWaffoPancakeChanges) {
@@ -872,13 +1000,20 @@ export function PaymentSettingsSection({
         >
           <SettingsPageFormActions
             onSave={form.handleSubmit(onSubmit)}
-            isSaving={updateOption.isPending || isSubmitting}
+            isSaving={
+              updateOption.isPending ||
+              autoSwitchGroupMutation.isPending ||
+              isSubmitting
+            }
             saveLabel='Save all settings'
           />
           <Tabs defaultValue='general' className='min-w-0'>
             <div className='overflow-x-auto pb-1'>
-              <TabsList className='grid min-w-[44rem] grid-cols-6'>
+              <TabsList className='grid min-w-[52rem] grid-cols-7'>
                 <TabsTrigger value='general'>{t('General')}</TabsTrigger>
+                <TabsTrigger value='auto-switch'>
+                  {t('Group Switch')}
+                </TabsTrigger>
                 <TabsTrigger value='epay'>Epay</TabsTrigger>
                 <TabsTrigger value='stripe'>{t('Stripe')}</TabsTrigger>
                 <TabsTrigger value='creem'>Creem</TabsTrigger>
@@ -1118,6 +1253,193 @@ export function PaymentSettingsSection({
                       </FormItem>
                     )}
                   />
+                </div>
+              </div>
+            </TabsContent>
+
+            <TabsContent
+              value='auto-switch'
+              className={paymentTabContentClassName}
+            >
+              <div className='space-y-6'>
+                <div>
+                  <h3 className='text-lg font-medium'>
+                    {t('Top-up Auto Group Switch')}
+                  </h3>
+                  <p className='text-muted-foreground text-sm'>
+                    {t(
+                      'Switch users to a target group after successful ordinary top-ups reach configured cumulative USD thresholds.'
+                    )}
+                  </p>
+                </div>
+
+                <SettingsSwitchItem>
+                  <SettingsSwitchContent>
+                    <Label className='text-sm font-medium'>
+                      {t('Enable auto group switch')}
+                    </Label>
+                    <p className='text-muted-foreground text-xs'>
+                      {t(
+                        'When enabled, successful ordinary top-ups can move users along the configured group chain.'
+                      )}
+                    </p>
+                  </SettingsSwitchContent>
+                  <Switch
+                    checked={autoSwitchEnabled}
+                    onCheckedChange={setAutoSwitchEnabled}
+                  />
+                </SettingsSwitchItem>
+
+                <SettingsSwitchItem>
+                  <SettingsSwitchContent>
+                    <Label className='text-sm font-medium'>
+                      {t('Only count new top-ups')}
+                    </Label>
+                    <p className='text-muted-foreground text-xs'>
+                      {t(
+                        'Start counting from the moment this option is enabled instead of including historical successful top-ups.'
+                      )}
+                    </p>
+                  </SettingsSwitchContent>
+                  <Switch
+                    checked={autoSwitchOnlyNew}
+                    onCheckedChange={setAutoSwitchOnlyNew}
+                    disabled={!autoSwitchEnabled}
+                  />
+                </SettingsSwitchItem>
+
+                <div className='grid gap-6 md:grid-cols-2'>
+                  <div className='space-y-2'>
+                    <Label htmlFor='auto-switch-base-group'>
+                      {t('Base group')}
+                    </Label>
+                    <Input
+                      id='auto-switch-base-group'
+                      value={autoSwitchBaseGroup}
+                      onChange={(event) =>
+                        setAutoSwitchBaseGroup(event.target.value)
+                      }
+                      placeholder='default'
+                    />
+                    <p className='text-muted-foreground text-sm'>
+                      {t(
+                        'Only users currently in this group or a configured target group are eligible for automatic switching.'
+                      )}
+                    </p>
+                  </div>
+                  <div className='space-y-2'>
+                    <Label>{t('Counting start time')}</Label>
+                    <Input
+                      value={
+                        autoSwitchGroupDefaults.enabledFrom > 0
+                          ? new Date(
+                              autoSwitchGroupDefaults.enabledFrom * 1000
+                            ).toLocaleString()
+                          : t('All historical successful top-ups')
+                      }
+                      readOnly
+                    />
+                    <p className='text-muted-foreground text-sm'>
+                      {t(
+                        'This timestamp is set automatically when only-new top-up counting is enabled.'
+                      )}
+                    </p>
+                  </div>
+                </div>
+
+                <div className='space-y-3'>
+                  <div className='flex items-center justify-between gap-3'>
+                    <div>
+                      <Label>{t('Switch rules')}</Label>
+                      <p className='text-muted-foreground text-sm'>
+                        {t(
+                          'The highest threshold not exceeding the user cumulative top-up amount wins.'
+                        )}
+                      </p>
+                    </div>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      onClick={() =>
+                        setAutoSwitchRules((rules) => [
+                          ...rules,
+                          { threshold_usd: 0, group: '' },
+                        ])
+                      }
+                    >
+                      <Plus className='mr-2 h-4 w-4' />
+                      {t('Add rule')}
+                    </Button>
+                  </div>
+
+                  <div className='space-y-3'>
+                    {autoSwitchRules.map((rule, index) => (
+                      <div
+                        key={index}
+                        className='grid gap-3 rounded-md border p-3 md:grid-cols-[1fr_1fr_auto]'
+                      >
+                        <div className='space-y-2'>
+                          <Label>{t('Threshold USD')}</Label>
+                          <Input
+                            type='number'
+                            min={0}
+                            step='0.01'
+                            value={rule.threshold_usd || ''}
+                            onChange={(event) => {
+                              const next = Number(event.target.value || 0)
+                              setAutoSwitchRules((rules) =>
+                                rules.map((item, itemIndex) =>
+                                  itemIndex === index
+                                    ? { ...item, threshold_usd: next }
+                                    : item
+                                )
+                              )
+                            }}
+                          />
+                        </div>
+                        <div className='space-y-2'>
+                          <Label>{t('Target group')}</Label>
+                          <Input
+                            value={rule.group}
+                            onChange={(event) => {
+                              const next = event.target.value
+                              setAutoSwitchRules((rules) =>
+                                rules.map((item, itemIndex) =>
+                                  itemIndex === index
+                                    ? { ...item, group: next }
+                                    : item
+                                )
+                              )
+                            }}
+                            placeholder='vip'
+                          />
+                        </div>
+                        <div className='flex items-end'>
+                          <Button
+                            type='button'
+                            variant='outline'
+                            size='icon'
+                            aria-label={t('Remove rule')}
+                            onClick={() =>
+                              setAutoSwitchRules((rules) =>
+                                rules.filter(
+                                  (_, itemIndex) => itemIndex !== index
+                                )
+                              )
+                            }
+                          >
+                            <Trash2 className='h-4 w-4' />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                    {autoSwitchRules.length === 0 && (
+                      <div className='text-muted-foreground rounded-md border border-dashed p-4 text-sm'>
+                        {t('No switch rules configured')}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             </TabsContent>

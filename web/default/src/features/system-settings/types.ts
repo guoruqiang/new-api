@@ -39,6 +39,18 @@ export type UpdateOptionResponse = {
   message: string
 }
 
+export type PaymentAutoSwitchGroupRule = {
+  threshold_usd: number
+  group: string
+}
+
+export type PaymentAutoSwitchGroupRequest = {
+  enabled: boolean
+  only_new_topups: boolean
+  base_group: string
+  rules: PaymentAutoSwitchGroupRule[]
+}
+
 export type ConfirmPaymentComplianceResponse = {
   success: boolean
   message: string
@@ -142,6 +154,14 @@ export type AuthSettings = {
   'oidc.authorization_endpoint': string
   'oidc.token_endpoint': string
   'oidc.user_info_endpoint': string
+  'oauth_server.enabled': boolean
+  'oauth_server.client_name': string
+  'oauth_server.client_id': string
+  'oauth_server.client_secret': string
+  'oauth_server.redirect_uris': string
+  'oauth_server.allowed_scopes': string
+  'oauth_server.is_public': boolean
+  'oauth_server.require_pkce': boolean
   TelegramOAuthEnabled: boolean
   TelegramBotToken: string
   TelegramBotName: string
@@ -287,6 +307,11 @@ export type BillingSettings = {
   PayMethods: string
   'payment_setting.amount_options': string
   'payment_setting.amount_discount': string
+  'payment_setting.auto_switch_group_enabled': boolean
+  'payment_setting.auto_switch_group_only_new_topups': boolean
+  'payment_setting.auto_switch_group_enabled_from': number
+  'payment_setting.auto_switch_group_base_group': string
+  'payment_setting.auto_switch_group_rules': string
   'payment_setting.compliance_confirmed': boolean
   'payment_setting.compliance_terms_version': string
   'payment_setting.compliance_confirmed_at': number

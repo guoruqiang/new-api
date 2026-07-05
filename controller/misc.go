@@ -231,6 +231,30 @@ func GetHomePageContent(c *gin.Context) {
 	return
 }
 
+func isEmailDomainAllowed(domain string, whitelist []string) bool {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if domain == "" {
+		return false
+	}
+	allowed := make(map[string]struct{}, len(whitelist))
+	for _, item := range whitelist {
+		item = strings.ToLower(strings.TrimSpace(item))
+		if item != "" {
+			allowed[item] = struct{}{}
+		}
+	}
+	for {
+		if _, ok := allowed[domain]; ok {
+			return true
+		}
+		idx := strings.IndexByte(domain, '.')
+		if idx < 0 {
+			return false
+		}
+		domain = domain[idx+1:]
+	}
+}
+
 func SendEmailVerification(c *gin.Context) {
 	email := c.Query("email")
 	if err := common.Validate.Var(email, "required,email"); err != nil {
@@ -251,14 +275,7 @@ func SendEmailVerification(c *gin.Context) {
 	localPart := parts[0]
 	domainPart := parts[1]
 	if common.EmailDomainRestrictionEnabled {
-		allowed := false
-		for _, domain := range common.EmailDomainWhitelist {
-			if domainPart == domain {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
+		if !isEmailDomainAllowed(domainPart, common.EmailDomainWhitelist) {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
 				"message": "The administrator has enabled the email domain name whitelist, and your email address is not allowed due to special symbols or it's not in the whitelist.",

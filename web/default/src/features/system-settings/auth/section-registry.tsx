@@ -21,6 +21,7 @@ import { createSectionRegistry } from '../utils/section-registry'
 import { BasicAuthSection } from './basic-auth-section'
 import { BotProtectionSection } from './bot-protection-section'
 import { CustomOAuthSection } from './custom-oauth/custom-oauth-section'
+import { OAuthServerSection } from './oauth-server-section'
 import { OAuthSection } from './oauth-section'
 import { PasskeySection } from './passkey-section'
 
@@ -116,6 +117,24 @@ const AUTH_SECTIONS = [
     id: 'custom-oauth',
     titleKey: 'Custom OAuth',
     build: () => <CustomOAuthSection />,
+  },
+  {
+    id: 'oauth-server',
+    titleKey: 'OAuth Authorization Server',
+    build: (settings: AuthSettings) => (
+      <OAuthServerSection
+        defaultValues={{
+          'oauth_server.enabled': settings['oauth_server.enabled'],
+          'oauth_server.client_name': settings['oauth_server.client_name'],
+          'oauth_server.client_id': settings['oauth_server.client_id'],
+          'oauth_server.client_secret': settings['oauth_server.client_secret'],
+          'oauth_server.redirect_uris': settings['oauth_server.redirect_uris'],
+          'oauth_server.allowed_scopes': settings['oauth_server.allowed_scopes'],
+          'oauth_server.is_public': settings['oauth_server.is_public'],
+          'oauth_server.require_pkce': settings['oauth_server.require_pkce'],
+        }}
+      />
+    ),
   },
 ] as const
 

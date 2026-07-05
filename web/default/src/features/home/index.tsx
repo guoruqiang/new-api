@@ -47,12 +47,14 @@ export function Home() {
     if (isUrl) {
       return (
         <PublicLayout showMainContainer={false}>
-          <iframe
-            src={content}
-            className='h-screen w-full border-none'
-            title={t('Custom Home Page')}
-            sandbox='allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts'
-          />
+          <div className='pt-[72px]'>
+            <iframe
+              src={content}
+              className='h-[calc(100vh-72px)] w-full border-none'
+              title={t('Custom Home Page')}
+              sandbox='allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts'
+            />
+          </div>
         </PublicLayout>
       )
     }
@@ -74,7 +76,7 @@ export function Home() {
 
     return (
       <PublicLayout>
-        <div className='mx-auto max-w-6xl px-4 py-8'>
+        <div className='mx-auto max-w-6xl px-4 pt-[40px] pb-8'>
           <RichContent
             mode='markdown'
             content={content}
