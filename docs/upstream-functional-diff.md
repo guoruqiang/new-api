@@ -15,8 +15,10 @@
 2. 微信登录不再允许未绑定用户自动注册，只允许已存在且已绑定的用户登录。
 3. 注册页被收敛为邮箱注册主路径，并新增“仅限教育邮箱注册”的前端提示。
 4. 后端注册校验增加用户名正则限制，邮箱白名单改为逐级域名匹配；同时登录失败提示语也被统一为更泛化的文案。
-5. 顶部导航新增“点我聊天”，Playground 改成仅管理员可见，首页内容区增加了顶部留白。
-6. 新增 Docker 自动构建发布工作流。
+5. 顶部导航新增“点我聊天”，首页内容区增加了顶部留白。
+6. 新增 OAuth2 / OIDC 授权服务器能力，对应功能分支 `feature/oauth2-authorization-server`。
+7. 新增支付/充值后自动切换分组能力，对应功能分支 `feature/topup-auto-switch-group`。
+8. 新增 Docker 自动构建发布工作流。
 
 ## 1. 登录入口调整
 
@@ -166,21 +168,8 @@
 
 在导航项数组中直接插入了一个新的菜单项，目标地址为聊天页。这个变化本质上是把聊天能力前置，缩短从首页进入核心使用场景的路径。
 
-### 4.2 Playground 改成仅管理员可见
 
-#### 变更结论
-
-侧边栏中的“操练场”不再对普通用户默认显示，仅管理员可见。
-
-#### 对应实现
-
-- 侧边栏可见性控制：[`web/src/components/layout/SiderBar.jsx:204-210`](../web/src/components/layout/SiderBar.jsx#L204-L210)
-
-#### 核心逻辑
-
-`playground` 菜单项新增了 `className: isAdmin() ? '' : 'tableHiddle'`，也就是非管理员会直接被隐藏入口。功能本身仍存在，但入口权限发生了变化。
-
-### 4.3 首页内容区增加顶部留白
+### 4.2 首页内容区增加顶部留白
 
 #### 变更结论
 
@@ -194,7 +183,73 @@
 
 主容器从 `overflow-x-hidden w-full` 改成 `overflow-x-hidden w-full pt-[40px]`，因此页面在垂直方向上会多出一段顶部空白。
 
-## 5. Docker 自动构建发布工作流
+## 5. OAuth2 / OIDC 授权服务器能力
+
+### 变更结论
+
+项目新增了一套站内 OAuth2 / OIDC 授权服务器能力，可让第三方客户端通过当前站点完成授权登录，并获取访问用户信息、余额、令牌列表等受 scope 控制的资源。
+
+该能力对应独立功能分支：`feature/oauth2-authorization-server`。
+
+### 对应实现
+
+- OAuth2 / OIDC 路由入口：[`router/oauth-router.go:10-30`](../router/oauth-router.go#L10-L30)
+- 授权、换 token、撤销、userinfo、JWKS、discovery 控制器：[`controller/oauth2.go:81-289`](../controller/oauth2.go#L81-L289)
+- OAuth2 核心服务逻辑：[`service/oauth2.go:23-633`](../service/oauth2.go#L23-L633)
+- OAuth access token 鉴权中间件：[`middleware/oauth2.go:1-58`](../middleware/oauth2.go#L1-L58)
+- OAuth client、authorization code、access token、refresh token 数据模型：[`model/oauth2.go:1-235`](../model/oauth2.go#L1-L235)
+- 数据库迁移新增 OAuth 相关表：[`model/main.go:258-287`](../model/main.go#L258-L287)
+- OAuth scope 保护的 API：[`router/api-router.go:57-60`](../router/api-router.go#L57-L60)
+
+### 核心逻辑
+
+该功能实现了一个最小但完整的 OAuth2 / OIDC 授权服务：
+
+1. 第三方客户端访问 `/oauth2/auth` 发起授权请求。
+2. 未登录用户会被重定向到站点登录页，已登录用户会继续授权流程。
+3. 授权码模式要求使用 PKCE，当前仅支持 `S256`。
+4. `/oauth2/token` 支持 `authorization_code` 和 `refresh_token` 两种 grant type。
+5. access token、refresh token、authorization code 都以 HMAC hash 形式入库，不直接保存明文 token。
+6. 请求包含 `openid` scope 时会签发 RS256 的 ID Token，并通过 `/oauth2/jwks` 暴露公钥。
+7. `/oauth2/userinfo` 按 scope 返回用户基础身份信息。
+8. `/api/v1/oauth/tokens` 和 `/api/v1/oauth/balance` 通过 OAuth access token 暴露用户 token 列表与余额信息。
+
+默认内置了一个 Cherry Studio public client，便于兼容支持 OAuth 登录的客户端场景。
+
+## 6. 支付/充值后自动切换分组
+
+### 变更结论
+
+项目新增“普通充值成功后自动切换用户分组”的能力。管理员可以配置累计充值金额阈值与目标分组，用户充值成功后系统会按规则自动调整其分组。
+
+该能力对应独立功能分支：`feature/topup-auto-switch-group`。
+
+### 对应实现
+
+- 自动切换分组规则与配置结构：[`setting/operation_setting/payment_setting.go:10-35`](../setting/operation_setting/payment_setting.go#L10-L35)
+- 自动切换分组策略核心逻辑：[`model/payment_group_policy.go:15-209`](../model/payment_group_policy.go#L15-L209)
+- 充值完成后应用自动切换逻辑：[`model/topup.go:195`](../model/topup.go#L195)
+- 易支付回调改为复用统一充值完成逻辑：[`model/topup.go:579-605`](../model/topup.go#L579-L605)
+- 管理端配置接口：[`controller/option.go:121-405`](../controller/option.go#L121-L405)
+- 支付设置页新增配置 UI：[`web/src/pages/Setting/Payment/SettingsGeneralPayment.jsx:539-657`](../web/src/pages/Setting/Payment/SettingsGeneralPayment.jsx#L539-L657)
+- 自动切换分组测试覆盖：[`model/topup_auto_switch_test.go:1-765`](../model/topup_auto_switch_test.go#L1-L765)
+
+### 核心逻辑
+
+自动切换分组的核心流程是：
+
+1. 管理员在支付设置中开启“充值后自动切换分组”。
+2. 配置基础分组、阈值金额和目标分组列表。
+3. 用户普通充值成功后，系统统计该用户成功充值总额。
+4. 统计金额按支付方式归一到 USD 口径，避免不同支付渠道金额单位不一致。
+5. 系统选择不超过累计充值金额的最高阈值规则，并将用户切换到对应分组。
+6. 如果启用“仅统计新充值”，系统会从启用时刻开始统计，不回溯历史充值。
+7. 自动切换只作用于配置链路内的基础分组和目标分组，避免覆盖不相关的手动分组。
+8. 如果用户存在有效订阅升级分组，普通充值自动切换不会覆盖订阅升级分组。
+
+这项能力把“充值金额等级”和“用户可用分组”绑定起来，适合按付费累计额度自动解锁更高分组的场景。
+
+## 7. Docker 自动构建发布工作流
 
 ### 变更结论
 
@@ -225,7 +280,7 @@
 3. 注册页被收敛为邮箱注册主路径，并新增教育邮箱提示。
 4. 注册后端增加了用户名正则限制，并优化了邮箱白名单的域名匹配逻辑。
 5. 登录失败提示语被统一为更泛化的文案。
-6. 顶部导航新增聊天入口，Playground 改成仅管理员可见，首页有轻微 UI 调整。
-7. 新增 Docker 自动构建与发布工作流。
-
-这版内容更适合作为“当前分支相对 upstream/main 的准确功能差异说明”。
+6. 顶部导航新增聊天入口，首页有轻微 UI 调整。
+7. 新增 OAuth2 / OIDC 授权服务器能力，对应 `feature/oauth2-authorization-server` 分支。
+8. 新增支付/充值后自动切换分组能力，对应 `feature/topup-auto-switch-group` 分支。
+9. 新增 Docker 自动构建与发布工作流。
