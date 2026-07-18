@@ -16,7 +16,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import type { PermissionCatalog } from '@/lib/admin-permissions'
 import { api } from '@/lib/api'
+
 import type {
   User,
   GetUsersParams,
@@ -38,8 +40,15 @@ import type {
 export async function getUsers(
   params: GetUsersParams = {}
 ): Promise<GetUsersResponse> {
-  const { p = 1, page_size = 10 } = params
-  const res = await api.get(`/api/user/?p=${p}&page_size=${page_size}`)
+  const { p = 1, page_size = 10, sort_by, sort_order } = params
+  const res = await api.get('/api/user/', {
+    params: {
+      p,
+      page_size,
+      sort_by,
+      sort_order,
+    },
+  })
   return res.data
 }
 
@@ -49,10 +58,26 @@ export async function getUsers(
 export async function searchUsers(
   params: SearchUsersParams
 ): Promise<GetUsersResponse> {
-  const { keyword = '', group = '', p = 1, page_size = 10 } = params
-  const res = await api.get(
-    `/api/user/search?keyword=${keyword}&group=${group}&p=${p}&page_size=${page_size}`
-  )
+  const {
+    keyword = '',
+    group = '',
+    role = '',
+    status = '',
+    p = 1,
+    page_size = 10,
+    sort_by,
+    sort_order,
+  } = params
+  const queryParams = new URLSearchParams()
+  queryParams.set('keyword', keyword)
+  queryParams.set('group', group)
+  if (role) queryParams.set('role', role)
+  if (status) queryParams.set('status', status)
+  queryParams.set('p', String(p))
+  queryParams.set('page_size', String(page_size))
+  if (sort_by) queryParams.set('sort_by', sort_by)
+  if (sort_order) queryParams.set('sort_order', sort_order)
+  const res = await api.get(`/api/user/search?${queryParams.toString()}`)
   return res.data
 }
 
@@ -135,6 +160,18 @@ export async function resetUserTwoFA(id: number): Promise<ApiResponse> {
 export async function getGroups(): Promise<ApiResponse<string[]>> {
   const res = await api.get('/api/group/')
   return res.data
+}
+
+/**
+ * Get the permission catalog (resources, actions, and role baselines).
+ * Source of truth lives in the backend authz package.
+ */
+export async function getPermissionCatalog(): Promise<PermissionCatalog> {
+  const res = await api.get('/api/authz/catalog')
+  return {
+    resources: res.data?.data?.resources ?? [],
+    roles: res.data?.data?.roles ?? [],
+  }
 }
 
 // ============================================================================

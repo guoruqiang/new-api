@@ -18,6 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { z } from 'zod'
 
+import type { AdminPermissionMatrix } from '@/lib/admin-permissions'
+
 // ============================================================================
 // User Schema & Types
 // ============================================================================
@@ -57,6 +59,9 @@ export const userSchema = z.object({
   last_login_at: z.number().optional(),
   DeletedAt: z.any().nullable().optional(),
   remark: z.string().optional(),
+  admin_permissions: z
+    .record(z.string(), z.record(z.string(), z.boolean()))
+    .optional(),
 })
 export type User = z.infer<typeof userSchema>
 
@@ -73,9 +78,21 @@ export interface ApiResponse<T = unknown> {
   data?: T
 }
 
+export type UserSortBy =
+  | 'id'
+  | 'username'
+  | 'quota'
+  | 'group'
+  | 'created_at'
+  | 'last_login_at'
+
+export type UserSortOrder = 'asc' | 'desc'
+
 export interface GetUsersParams {
   p?: number
   page_size?: number
+  sort_by?: UserSortBy
+  sort_order?: UserSortOrder
 }
 
 export interface GetUsersResponse {
@@ -92,8 +109,12 @@ export interface GetUsersResponse {
 export interface SearchUsersParams {
   keyword?: string
   group?: string
+  role?: string
+  status?: string
   p?: number
   page_size?: number
+  sort_by?: UserSortBy
+  sort_order?: UserSortOrder
 }
 
 export interface UserFormData {
@@ -104,6 +125,7 @@ export interface UserFormData {
   quota?: number // Only used when updating user
   group?: string // Only used when updating user
   remark?: string // Only used when updating user
+  admin_permissions?: AdminPermissionMatrix
 }
 
 export type ManageUserAction =
