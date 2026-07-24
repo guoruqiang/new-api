@@ -11,7 +11,7 @@ func SetOAuthRouter(router *gin.Engine) {
 	oauthRouter := router.Group("")
 	oauthRouter.Use(middleware.RouteTag("oauth"))
 	{
-		oauthRouter.GET("/oauth2/auth", controller.OAuthAuthorize)
+		oauthRouter.POST("/api/oauth2/auth", middleware.UserAuth(), controller.OAuthAuthorize)
 		oauthRouter.POST("/oauth2/token", controller.OAuthToken)
 		oauthRouter.POST("/oauth2/revoke", controller.OAuthRevoke)
 		oauthRouter.GET("/oauth2/userinfo", middleware.OAuthAccessTokenAuth("openid"), controller.OAuthUserInfo)

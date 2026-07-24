@@ -2,12 +2,12 @@ package model
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 func normalizeTopUpPaymentMethod(method string) string {
@@ -133,10 +133,7 @@ func getUserGroupForUpdateTx(tx *gorm.DB, userId int) (string, error) {
 		return "", errors.New("invalid user id")
 	}
 	var group string
-	query := tx.Model(&User{}).Where("id = ?", userId).Select(commonGroupCol)
-	if !common.UsingMainDatabase(common.DatabaseTypeSQLite) {
-		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
-	}
+	query := lockForUpdate(tx).Model(&User{}).Where("id = ?", userId).Select(commonGroupCol)
 	if err := query.Find(&group).Error; err != nil {
 		return "", err
 	}
@@ -233,7 +230,13 @@ func ApplyTopUpAutoSwitchGroup(userId int) (string, error) {
 		return "", err
 	}
 	if switchedGroup != "" {
-		_ = UpdateUserGroupCache(userId, switchedGroup)
+		refreshTopUpAutoSwitchUserGroupCache(userId)
 	}
 	return switchedGroup, nil
+}
+
+func refreshTopUpAutoSwitchUserGroupCache(userId int) {
+	if err := RefreshUserGroupCache(userId); err != nil {
+		common.SysError(fmt.Sprintf("failed to refresh user group cache after top-up auto-switch for user %d: %v", userId, err))
+	}
 }

@@ -10,7 +10,6 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
-	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 )
 
@@ -47,7 +46,16 @@ func oauthErrorResponse(c *gin.Context, err error) {
 	})
 }
 
-func redirectOAuthError(c *gin.Context, redirectURI string, errorCode string, description string, state string) {
+func writeOAuthAuthorizationRedirect(c *gin.Context, redirectURI string) {
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"redirect_uri": redirectURI,
+		},
+	})
+}
+
+func writeOAuthAuthorizationErrorRedirect(c *gin.Context, redirectURI string, errorCode string, description string, state string) {
 	u, err := url.Parse(redirectURI)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -65,15 +73,7 @@ func redirectOAuthError(c *gin.Context, redirectURI string, errorCode string, de
 		q.Set("state", state)
 	}
 	u.RawQuery = q.Encode()
-	c.Redirect(http.StatusFound, u.String())
-}
-
-func buildLoginRedirectTarget(c *gin.Context) string {
-	loginURL := &url.URL{Path: "/login"}
-	query := loginURL.Query()
-	query.Set("redirect", c.Request.URL.RequestURI())
-	loginURL.RawQuery = query.Encode()
-	return loginURL.String()
+	writeOAuthAuthorizationRedirect(c, u.String())
 }
 
 func OAuthAuthorize(c *gin.Context) {
@@ -95,36 +95,25 @@ func OAuthAuthorize(c *gin.Context) {
 	if err != nil {
 		var oauthErr *service.OAuthError
 		if errors.As(err, &oauthErr) && service.IsRedirectURIAllowed(client, redirectURI) {
-			redirectOAuthError(c, redirectURI, oauthErr.Code, oauthErr.Description, state)
+			writeOAuthAuthorizationErrorRedirect(c, redirectURI, oauthErr.Code, oauthErr.Description, state)
 			return
 		}
 		oauthErrorResponse(c, err)
 		return
 	}
 
-	session := sessions.Default(c)
-	userIDRaw := session.Get("id")
-	if userIDRaw == nil {
-		c.Redirect(http.StatusFound, buildLoginRedirectTarget(c))
-		return
-	}
-	userID, ok := userIDRaw.(int)
-	if !ok || userID <= 0 {
-		c.Redirect(http.StatusFound, buildLoginRedirectTarget(c))
-		return
-	}
-	user, err := model.GetUserById(userID, false)
-	if err != nil {
-		redirectOAuthError(c, redirectURI, "access_denied", "user not found", state)
-		return
-	}
-	if user.Status != common.UserStatusEnabled {
-		redirectOAuthError(c, redirectURI, "access_denied", "user is disabled", state)
+	userID := c.GetInt("id")
+	if userID <= 0 {
+		oauthErrorResponse(c, &service.OAuthError{
+			Code:        "access_denied",
+			Description: "dashboard login is required",
+			StatusCode:  http.StatusUnauthorized,
+		})
 		return
 	}
 
 	code, err := service.CreateOAuthAuthorizationCode(
-		user.Id,
+		userID,
 		client,
 		redirectURI,
 		normalizedScopes,
@@ -132,7 +121,7 @@ func OAuthAuthorize(c *gin.Context) {
 		c.Query("code_challenge_method"),
 	)
 	if err != nil {
-		redirectOAuthError(c, redirectURI, "server_error", err.Error(), state)
+		writeOAuthAuthorizationErrorRedirect(c, redirectURI, "server_error", err.Error(), state)
 		return
 	}
 	u, err := url.Parse(redirectURI)
@@ -146,7 +135,7 @@ func OAuthAuthorize(c *gin.Context) {
 		q.Set("state", state)
 	}
 	u.RawQuery = q.Encode()
-	c.Redirect(http.StatusFound, u.String())
+	writeOAuthAuthorizationRedirect(c, u.String())
 }
 
 func oauthClientCredentialsFromRequest(c *gin.Context) (string, *string) {
