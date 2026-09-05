@@ -192,7 +192,7 @@ func applyTopUpAutoSwitchGroupTx(tx *gorm.DB, userId int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	activeUpgradeGroup, err := getActiveSubscriptionUpgradeGroupTx(tx, userId, GetDBTimestamp(), 0)
+	activeUpgradeGroup, err := getActiveSubscriptionUpgradeGroupTx(tx, userId, getDBTimestamp(tx), 0)
 	if err != nil {
 		return "", err
 	}
