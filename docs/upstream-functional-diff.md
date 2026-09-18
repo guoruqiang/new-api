@@ -15,7 +15,7 @@
 
 邮箱白名单按完整域名或父级后缀匹配。例如白名单包含 `edu.cn` 时，`school.edu.cn` 和 `mail.school.edu.cn` 均可通过，但 `edu.glnc.cn` 不会命中。
 
-- 后端校验：[`controller/misc.go`](../controller/misc.go)
+- 后端统一校验：[`service/email_binding.go`](../service/email_binding.go)，注册发信与邮箱绑定共用上游入口，保留邮箱格式、长度和别名限制。
 - 注册页提示：[`web/src/features/auth/sign-up/components/sign-up-form.tsx`](../web/src/features/auth/sign-up/components/sign-up-form.tsx)
 
 ### 用户名格式限制

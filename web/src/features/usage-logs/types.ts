@@ -1,3 +1,4 @@
+import type { PolicyEvent } from '@/features/system-settings/request-policies/api'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -115,6 +116,7 @@ export interface ToolSurchargeItem {
 
 export interface LogOtherData {
   admin_info?: {
+    request_policy?: PolicyEvent[]
     is_multi_key?: boolean
     multi_key_index?: number
     use_channel?: number[]
@@ -178,6 +180,8 @@ export interface LogOtherData {
   text_input?: number
   text_output?: number
   cache_tokens?: number
+  image_cache_tokens?: number
+  billing_tokens?: Record<string, number>
   cache_creation_tokens?: number
   cache_creation_tokens_5m?: number
   cache_creation_tokens_1h?: number
@@ -193,6 +197,12 @@ export interface LogOtherData {
   cache_creation_ratio_1h?: number
   is_model_mapped?: boolean
   upstream_model_name?: string
+  response_model?: {
+    requested_model: string
+    upstream_model: string
+    returned_model: string
+    mismatch: boolean
+  }
   audio_ratio?: number
   audio_completion_ratio?: number
   frt?: number
@@ -201,6 +211,9 @@ export interface LogOtherData {
   // expression; the matched tier and request-rule traces come from the actual
   // settlement run.
   billing_mode?: string
+  billing_unit?: 'token' | 'request'
+  fixed_price?: number
+  image_count?: number
   expr_b64?: string
   matched_tier?: string
   request_rules?: RequestRuleTrace[]
