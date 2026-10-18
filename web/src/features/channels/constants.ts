@@ -16,6 +16,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+
+export const CHANNEL_PRIORITY_GUIDE_KEYS = {
+  card: 'channels:priority-drag-guide:card:v1',
+  table: 'channels:priority-drag-guide:v1',
+} as const
 // ============================================================================
 // Channel Types (from constant/channel.go)
 // All label/name values are i18n keys; use t(value) when displaying.
@@ -84,7 +89,7 @@ export const CHANNEL_TYPES = {
   51: 'Jimeng',
   52: 'Vidu',
   53: 'Submodel',
-  54: 'DoubaoVideo',
+  54: 'Doubao',
   55: 'Sora',
   56: 'Replicate',
   57: 'ChatGPT Subscription (Codex)',
@@ -157,7 +162,8 @@ export const CHANNEL_PROVIDER_PRESENTATION: Partial<
   52: { descriptionKey: 'Connect to Vidu video generation services' },
   53: { descriptionKey: 'Connect to Submodel model services' },
   54: {
-    descriptionKey: 'Generate Doubao Seedance videos through Volcengine Ark',
+    descriptionKey:
+      'Connect to Doubao Seedance video and Seedream image generation through Volcengine Ark',
   },
   55: { descriptionKey: 'Connect to OpenAI Sora video generation services' },
   56: { descriptionKey: 'Access hosted model predictions through Replicate' },
@@ -171,7 +177,8 @@ export const CHANNEL_PROVIDER_PRESENTATION: Partial<
   },
   59: { descriptionKey: 'Connect to model services through a Sub2API gateway' },
   60: {
-    descriptionKey: 'Connect to model services from another New API instance',
+    descriptionKey:
+      'Connect to New API model services with support for multiple task plugins',
   },
   62: { descriptionKey: 'Connect to self-hosted models served by vLLM' },
   63: { descriptionKey: 'Connect to self-hosted models served by SGLang' },

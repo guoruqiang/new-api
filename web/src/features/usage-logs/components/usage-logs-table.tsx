@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 import type { ColumnDef } from '@tanstack/react-table'
+import { useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -28,7 +29,6 @@ import {
 } from '@/components/data-table'
 import {
   getAdminPlans,
-  getPublicPlans,
   getSelfSubscriptionFull,
 } from '@/features/subscriptions/api'
 import { useMediaQuery } from '@/hooks'
@@ -86,6 +86,10 @@ interface UsageLogsTableProps {
 
 export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
   const { t } = useTranslation()
+  const getColumnClassName = useCallback(
+    () => (logCategory === 'common' ? 'py-2' : 'py-3.5'),
+    [logCategory]
+  )
   const {
     isAdminView: isAdmin,
     isRootView: isRoot,
@@ -107,16 +111,13 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
         })
       }
 
-      const [plansResult, selfResult] = await Promise.all([
-        getPublicPlans(),
-        getSelfSubscriptionFull(),
-      ])
-      const subscriptions =
-        selfResult.data?.all_subscriptions ?? selfResult.data?.subscriptions
+      const selfResult = await getSelfSubscriptionFull()
       return shouldShowBillingSource({
         isAdmin,
-        plans: plansResult.success ? plansResult.data : undefined,
-        subscriptions: selfResult.success ? subscriptions : undefined,
+        plans: undefined,
+        subscriptions: selfResult.success
+          ? selfResult.data?.subscriptions
+          : undefined,
       })
     },
   })
@@ -276,7 +277,8 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
             key={row.id}
             row={row}
             className={cn('transition-colors', tintClass)}
-            getColumnClassName={() => (isCommon ? 'py-2' : 'py-3.5')}
+            getColumnClassName={getColumnClassName}
+            cellRenderColumns={table.options.columns}
           />
         )
       }}

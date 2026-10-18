@@ -332,7 +332,7 @@ func TestWeChatLoginDoesNotRegisterUnboundIdentity(t *testing.T) {
 	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
 	assert.Equal(t, http.StatusOK, response.Code)
 	assert.False(t, result.Success)
-	assert.Equal(t, "该微信账号尚未绑定，请先使用邮箱注册或登录后绑定微信", result.Message)
+	assert.Equal(t, "This WeChat account is not linked. Register with an email or sign in and link WeChat first.", result.Message)
 	assert.Empty(t, response.Header().Values("Set-Cookie"))
 	var after int64
 	require.NoError(t, model.DB.Model(&model.User{}).Count(&after).Error)

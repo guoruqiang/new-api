@@ -30,7 +30,7 @@ func setupOAuthAuthorizeControllerTest(t *testing.T) {
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
-	require.NoError(t, db.AutoMigrate(&model.OAuthClient{}, &model.OAuthAuthorizationCode{}, &model.User{}, &model.UserSession{}))
+	require.NoError(t, db.AutoMigrate(&model.OAuthClient{}, &model.OAuthAuthorizationCode{}, &model.User{}, &model.UserSession{}, &model.UserAccessToken{}))
 	model.DB = db
 	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
 
@@ -83,7 +83,7 @@ func TestOAuthAuthorizeReturnsAuthenticatedFrontendRedirect(t *testing.T) {
 }
 
 func TestOAuthAuthorizeRequiresActiveDashboardSession(t *testing.T) {
-	for _, state := range []string{"active", "missing", "malformed", "revoked", "expired", "disabled"} {
+	for _, state := range []string{"active", "missing", "malformed", "revoked", "expired", "disabled", "scoped_token", "expired_scoped_token"} {
 		t.Run(state, func(t *testing.T) {
 			setupOAuthAuthorizeControllerTest(t)
 			previousRedis := common.RedisEnabled
@@ -121,6 +121,16 @@ func TestOAuthAuthorizeRequiresActiveDashboardSession(t *testing.T) {
 				require.NoError(t, model.DB.Model(&model.UserSession{}).Where("sid = ?", session.Session.SID).Update("expires_at", 1).Error)
 			case "disabled":
 				require.NoError(t, model.DB.Model(user).Update("status", common.UserStatusDisabled).Error)
+			case "scoped_token", "expired_scoped_token":
+				token = model.AccessTokenPrefix + "oauth-authorization-test"
+				expiresAt := common.GetTimestamp() + 3600
+				if state == "expired_scoped_token" {
+					expiresAt = 1
+				}
+				require.NoError(t, model.DB.Create(&model.UserAccessToken{
+					UserId: user.Id, Name: "OAuth authorization test", TokenHash: model.AccessTokenFingerprint(token),
+					Scopes: `["profile:read","account_security:write","option:write"]`, ExpiresAt: expiresAt,
+				}).Error)
 			}
 			router := gin.New()
 			router.POST("/api/oauth2/auth", middleware.UserAuth(), OAuthAuthorize)
@@ -133,7 +143,12 @@ func TestOAuthAuthorizeRequiresActiveDashboardSession(t *testing.T) {
 			var codes []model.OAuthAuthorizationCode
 			require.NoError(t, model.DB.Find(&codes).Error)
 			if state != "active" {
-				assert.Equal(t, http.StatusUnauthorized, recorder.Code)
+				expectedStatus := http.StatusUnauthorized
+				if state == "scoped_token" {
+					expectedStatus = http.StatusForbidden
+					assert.Contains(t, recorder.Body.String(), "AUTH_SESSION_REQUIRED")
+				}
+				assert.Equal(t, expectedStatus, recorder.Code)
 				assert.Empty(t, codes)
 				return
 			}
