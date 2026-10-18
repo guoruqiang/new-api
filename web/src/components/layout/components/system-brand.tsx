@@ -52,8 +52,7 @@ export function SystemBrand(props: SystemBrandProps) {
 
   const variant = props.variant ?? 'sidebar'
   const name = status?.system_name || props.defaultName || 'New API'
-  const version =
-    status?.version || props.defaultVersion || t('Unknown version')
+  const version = status?.version || props.defaultVersion || t('Custom version')
 
   if (variant === 'inline') {
     return (

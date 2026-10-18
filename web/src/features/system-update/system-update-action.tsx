@@ -55,7 +55,7 @@ function AdminSystemUpdateAction(props: SystemUpdateActionProps) {
   const [open, setOpen] = useState(false)
   const compact = props.compact ?? true
   const versionPresentation = props.presentation === 'version'
-  const version = update.currentVersion?.trim() || t('Unknown version')
+  const version = update.currentVersion?.trim() || t('Custom version')
   const label = update.shouldNotify
     ? t('Update available')
     : t('Check for updates')

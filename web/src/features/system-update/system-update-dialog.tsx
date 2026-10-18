@@ -127,7 +127,7 @@ export function SystemUpdateDialog(props: SystemUpdateDialogProps) {
         <div className='min-w-0'>
           <dt className='text-muted-foreground'>{t('Current version')}</dt>
           <dd className='font-medium break-all'>
-            {update.currentVersion || t('Unknown version')}
+            {update.currentVersion || t('Custom version')}
           </dd>
         </div>
         <div className='min-w-0'>
