@@ -4,18 +4,24 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/middleware"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // accessTokenExemptRoutes are /api routes that never reach dashboard
@@ -79,8 +85,139 @@ var accessTokenExemptRoutes = []string{
 // accessTokenHelperRoutes are declared through handlePermissionRoute outside
 // channelPermissionRoutes.
 var accessTokenHelperRoutes = map[string]authz.Permission{
-	"GET /api/task_plugin_options": authz.TaskPluginBind,
-	"GET /api/audit":               authz.AuditRead,
+	"GET /api/task_plugin_options":                    authz.TaskPluginBind,
+	"GET /api/audit":                                  authz.AuditRead,
+	"GET /api/risk/overview":                          authz.RiskRead,
+	"GET /api/risk/defaults":                          authz.RiskRead,
+	"GET /api/risk/config":                            authz.RiskRead,
+	"PUT /api/risk/config":                            authz.RiskWrite,
+	"GET /api/risk/groups":                            authz.RiskRead,
+	"GET /api/risk/policies":                          authz.RiskRead,
+	"POST /api/risk/policies":                         authz.RiskWrite,
+	"GET /api/risk/policies/:key/revisions":           authz.RiskRead,
+	"GET /api/risk/policies/:key/revisions/:revision": authz.RiskRead,
+	"GET /api/risk/providers":                         authz.RiskRead,
+	"POST /api/risk/providers":                        authz.RiskWrite,
+	"PUT /api/risk/providers/:id":                     authz.RiskWrite,
+	"GET /api/risk/events":                            authz.RiskRead,
+	"GET /api/risk/events/:id":                        authz.RiskRead,
+	"GET /api/risk/refusals":                          authz.RiskRead,
+	"DELETE /api/risk/refusals/:id":                   authz.RiskWrite,
+	"POST /api/risk/refusals/clear":                   authz.RiskWrite,
+	"GET /api/risk/blocks":                            authz.RiskRead,
+	"POST /api/risk/blocks/:id/release":               authz.RiskUnblock,
+	"POST /api/risk/blocks/clear":                     authz.RiskUnblock,
+	"POST /api/risk/preview":                          authz.RiskWrite,
+	"POST /api/risk/providers/models":                 authz.RiskWrite,
+}
+
+func TestRiskRoutesRequireAccountPermissionAndScopedLiveToken(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	previousDB, previousLog := model.DB, model.LOG_DB
+	previousMainType, previousLogType := common.MainDatabaseType(), common.LogDatabaseType()
+	previousRedis, previousMaster := common.RedisEnabled, common.IsMasterNode
+	previousRateLimit, previousCritical := common.GlobalApiRateLimitEnable, common.CriticalRateLimitEnable
+	model.DB, model.LOG_DB = db, db
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	common.RedisEnabled, common.IsMasterNode = false, true
+	common.GlobalApiRateLimitEnable, common.CriticalRateLimitEnable = false, false
+	t.Cleanup(func() {
+		model.DB, model.LOG_DB = previousDB, previousLog
+		common.SetDatabaseTypes(previousMainType, previousLogType)
+		common.RedisEnabled, common.IsMasterNode = previousRedis, previousMaster
+		common.GlobalApiRateLimitEnable, common.CriticalRateLimitEnable = previousRateLimit, previousCritical
+		require.NoError(t, sqlDB.Close())
+	})
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserAccessToken{}, &model.Option{}, &model.AuditLog{}, &model.CasbinRule{}, &model.AuthzRole{}))
+	require.NoError(t, db.AutoMigrate(model.RiskModels()...))
+	require.NoError(t, authz.Init(db))
+	admin := &model.User{Username: "risk-route-admin", Role: common.RoleAdminUser, Status: common.UserStatusEnabled, Group: "default", AffCode: "risk-route-admin", AuthVersion: 1}
+	root := &model.User{Username: "risk-route-root", Role: common.RoleRootUser, Status: common.UserStatusEnabled, Group: "default", AffCode: "risk-route-root", AuthVersion: 1}
+	require.NoError(t, db.Create(admin).Error)
+	require.NoError(t, db.Create(root).Error)
+	newToken := func(userID int, expires int64, scopes ...string) (string, *model.UserAccessToken) {
+		suffix, err := common.GenerateRandomCharsKey(43)
+		require.NoError(t, err)
+		raw := model.AccessTokenPrefix + suffix
+		pat := &model.UserAccessToken{Name: "risk test", TokenHash: model.AccessTokenFingerprint(raw), TokenHint: model.AccessTokenHint(raw), ExpiresAt: expires}
+		require.NoError(t, pat.SetScopes(scopes))
+		require.NoError(t, model.CreateUserAccessToken(userID, pat, service.AccessTokenMaxPerUser))
+		return raw, pat
+	}
+	adminRead, _ := newToken(admin.Id, 0, "risk:read")
+	rootRead, _ := newToken(root.Id, 0, "risk:read")
+	rootWrite, _ := newToken(root.Id, 0, "risk:write")
+	rootUnblock, _ := newToken(root.Id, 0, "risk:unblock")
+	wrongScope, _ := newToken(root.Id, 0, "profile:read")
+	expired, _ := newToken(root.Id, time.Now().Unix()-1, "risk:read")
+	revoked, revokedRow := newToken(root.Id, 0, "risk:read")
+	require.NoError(t, db.Delete(revokedRow).Error)
+	engine := newAccessTokenScopeTestEngine(t)
+	request := func(method, path, raw, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		if raw != "" {
+			req.Header.Set("Authorization", "Bearer "+raw)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		engine.ServeHTTP(response, req)
+		return response
+	}
+	for _, tc := range []struct {
+		name, token string
+		status      int
+	}{
+		{"anonymous", "", http.StatusUnauthorized},
+		{"root reader", rootRead, http.StatusOK},
+		{"root missing token scope", wrongScope, http.StatusForbidden},
+		{"admin denied by default", adminRead, http.StatusForbidden},
+		{"expired", expired, http.StatusUnauthorized},
+		{"revoked", revoked, http.StatusUnauthorized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := request(http.MethodGet, "/api/risk/defaults", tc.token, "")
+			assert.Equal(t, tc.status, response.Code, response.Body.String())
+		})
+	}
+	for key := range accessTokenHelperRoutes {
+		method, path, _ := strings.Cut(key, " ")
+		if !strings.HasPrefix(path, "/api/risk/") {
+			continue
+		}
+		path = strings.NewReplacer(":revision", "1", ":key", "baseline", ":id", "1").Replace(path)
+		response := request(method, path, wrongScope, `{"api_keys":["provider-secret"],"text":"private-risk-input"}`)
+		assert.Equal(t, http.StatusForbidden, response.Code, key+" "+response.Body.String())
+		assert.Contains(t, response.Body.String(), "ACCESS_TOKEN_SCOPE_DENIED", key)
+		if method != http.MethodGet {
+			assert.Equal(t, http.StatusForbidden, request(method, path, rootRead, "{}").Code, key)
+		}
+	}
+	require.NoError(t, authz.SetUserPermissions(admin.Id, authz.PermissionsMap{authz.ResourceRisk: {authz.ActionRead: true}}))
+	assert.Equal(t, http.StatusOK, request(http.MethodGet, "/api/risk/defaults", adminRead, "").Code)
+	require.NoError(t, authz.SetUserPermissions(admin.Id, authz.PermissionsMap{authz.ResourceRisk: {authz.ActionRead: false}}))
+	assert.Equal(t, http.StatusForbidden, request(http.MethodGet, "/api/risk/defaults", adminRead, "").Code, "token scope cannot retain revoked account permission")
+	assert.Equal(t, http.StatusForbidden, request(http.MethodPost, "/api/risk/blocks/clear", rootWrite, "{}").Code, "configuration permission does not release blocks")
+	assert.Equal(t, http.StatusForbidden, request(http.MethodPut, "/api/risk/config", rootUnblock, "{}").Code, "unblock permission does not publish configuration")
+	created := request(http.MethodPost, "/api/risk/providers", rootWrite, `{"name":"audit-provider","provider_type":"jev","base_url":"https://example.test","api_keys":["provider-secret"]}`)
+	require.Equal(t, http.StatusOK, created.Code, created.Body.String())
+	require.Contains(t, created.Body.String(), `"success":true`)
+	assert.NotContains(t, created.Body.String(), "provider-secret")
+	var providerAudit model.AuditLog
+	require.NoError(t, db.Where("action = ?", "risk.provider_create").First(&providerAudit).Error)
+	assert.True(t, providerAudit.Success)
+	assert.Equal(t, root.Id, providerAudit.UserId)
+	var logs []model.AuditLog
+	require.NoError(t, db.Find(&logs).Error)
+	require.NotEmpty(t, logs)
+	encoded, err := common.Marshal(logs)
+	require.NoError(t, err)
+	for _, secret := range []string{adminRead, rootRead, rootWrite, rootUnblock, wrongScope, expired, revoked, "provider-secret", "private-risk-input"} {
+		assert.NotContains(t, string(encoded), secret)
+	}
 }
 
 func newAccessTokenScopeTestEngine(t *testing.T) *gin.Engine {

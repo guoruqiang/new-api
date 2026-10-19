@@ -1,0 +1,128 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+export const VIEWS = [
+  'all',
+  'distill',
+  'hard_regex',
+  'refusal',
+  'model',
+  'pass',
+] as const
+export type View = (typeof VIEWS)[number]
+export const LABELS: Record<string, string> = {
+  all: 'Overview',
+  distill: 'Distillation detection',
+  hard_regex: 'Hard regex',
+  refusal: 'Refusal memory',
+  model: 'Decision model',
+  pass: 'Passed',
+  block: 'Blocked',
+  would_block: 'Observation hit',
+  error_block: 'Blocked on error',
+  error_pass: 'Passed on error',
+  upstream_refusal: 'Upstream refusal',
+  would_stop: 'Would stop retrying',
+  exempt_group: 'Exempt group',
+  uncovered: 'Not covered',
+  model_safe: 'Model judged safe',
+  model_replay: 'Cached model verdict',
+  regex_miss: 'No regex match',
+  fail_open: 'Model failure allowed',
+  coverage_incomplete_pass: 'Incomplete coverage allowed',
+  unchecked: 'No layers enabled',
+  observe: 'Observe',
+  enforce: 'Enforce',
+  on: 'Enabled',
+  off: 'Disabled',
+  unset: 'Provider not configured',
+  incomplete: 'Incomplete coverage',
+  complete: 'Complete coverage',
+  default: 'Inherited default',
+  group: 'Group override',
+  exempt: 'Exempt group',
+  subject: 'Blocked subject',
+  exact: 'Exact match',
+  similar: 'Similar match',
+  jailbreak: 'Jailbreak',
+  crack: 'Software cracking',
+  nsfw: 'Explicit content',
+  custom: 'Custom rule',
+  user: 'User',
+  device: 'Device',
+  ok: 'Available',
+  cooling: 'Cooling down',
+  invalid: 'Invalid key',
+  gate: 'Audit gate',
+  upstream: 'Upstream response',
+  gpt_skipped: 'GPT model skipped',
+  unavailable: 'Decision model unavailable',
+  store_unavailable: 'Risk storage unavailable',
+  coverage_incomplete: 'Incomplete coverage',
+  harvest_needle: 'Harvest wrapper match',
+  distill_regex: 'Distillation regex match',
+  fingerprint: 'Prompt fingerprint match',
+  needle: 'Keyword match',
+  harvest: 'Harvest structure match',
+  refusal_guard: 'Upstream refusal',
+  using_group: 'Selected routing group',
+  auto_group: 'Auto-selected group',
+  retry_select: 'Group selected on retry',
+  pinned: 'Pinned channel group',
+  pinned_candidate: 'Pinned channel candidate group',
+  auto_unresolved: 'Unresolved auto group',
+  ws_select: 'WebSocket-selected group',
+  ws_locked: 'WebSocket-locked group',
+  upstream_usage_policy: 'Upstream policy refusal',
+  openai_responses_refusal: 'Upstream refusal',
+  'openai_responses_incomplete=content_filter': 'Upstream content filter',
+  'openai_finish_reason=content_filter': 'Upstream content filter',
+  'claude_stop_reason=refusal': 'Upstream refusal',
+}
+export const EVENT_LABELS: Record<string, string> = {
+  id: 'ID',
+  created_at: 'Time',
+  user_id: 'User ID',
+  token_id: 'Token ID',
+  effective_group: 'Effective group',
+  user_group: 'User group',
+  token_group: 'Token group',
+  group_source: 'Group source',
+  namespace: 'Group namespace',
+  attempt: 'Attempt',
+  channel_id: 'Channel ID',
+  model: 'Model',
+  route: 'Route',
+  mode: 'Mode',
+  config_revision: 'Configuration revision',
+  policy_key: 'Policy key',
+  policy_revision: 'Policy revision',
+  outcome: 'Outcome',
+  layer: 'Layer',
+  reason: 'Reason',
+  category: 'Category',
+  keyword: 'Keyword',
+  scores: 'Question scores',
+  provider_model: 'Decision model',
+  latency_ms: 'Latency (ms)',
+  coverage: 'Coverage',
+  error_code: 'Error code',
+  fingerprint: 'Fingerprint',
+  device_hash: 'Device hash',
+  similarity: 'Similarity',
+}

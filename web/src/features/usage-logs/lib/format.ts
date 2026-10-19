@@ -562,6 +562,17 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   // Logs
   'log.clear': 'Cleared historical logs',
   'log.cleanup_start': 'Log cleanup task started.',
+  // Risk audit
+  'risk.config_publish': 'Published risk audit configuration',
+  'risk.policy_publish': 'Published a risk policy revision',
+  'risk.provider_create': 'Created a risk decision provider',
+  'risk.provider_update': 'Updated a risk decision provider',
+  'risk.refusal_delete': 'Deleted a refusal memory record',
+  'risk.refusals_clear': 'Cleared refusal memory for a group',
+  'risk.block_release': 'Released a risk subject block',
+  'risk.blocks_clear': 'Cleared risk subject blocks for a group',
+  'risk.preview': 'Previewed the effective risk policy',
+  'risk.provider_probe': 'Fetched models from a risk decision provider',
   // Generic middleware fallback
   generic: '{{method}} {{route}}',
 }

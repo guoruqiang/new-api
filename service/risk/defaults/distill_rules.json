@@ -1,0 +1,44 @@
+{
+  "enabled": true,
+  "skip_official": true,
+  "skip_gpt_models": true,
+  "error": {
+    "status": 403,
+    "message": "不允许蒸馏"
+  },
+  "structure": {
+    "min_max_tokens": 8192,
+    "require_no_tools": true,
+    "require_single_turn": true,
+    "contest_pattern": "prove that|\\\\boxed|\\baime\\b|olympiad|\\bgpqa\\b|which of the following|livecodebench|amc[_\\s-]?aime"
+  },
+  "hard_needles": [
+    "Memory-stage-one extractor",
+    "MUST return strict JSON only",
+    "MUST distill reusable",
+    "MUST extract durable memory",
+    "durable rollout knowledge",
+    "You MUST extract durable memory now"
+  ],
+  "needles": [
+    "<answer>",
+    "<|begin_of_thought|>",
+    "<|end_of_thought|>",
+    "<|begin_of_solution|>",
+    "Return your final response within \\boxed{}",
+    "Generate an executable Python function generated from the given prompt",
+    "systematic long thinking process",
+    "as an internal monologue",
+    "Please reason step by step, and put your final answer within \\boxed{}"
+  ],
+  "patterns": [],
+  "fingerprints": [
+    "Let  $a,b,A,B$  be given reals. We consider the function defined by",
+    "The graph of the function $y=\\cos x - \\sin x$ has a line of symmetry given by",
+    "Prove that if $\\alpha, \\beta, \\gamma$ are the angles of a triangle, then",
+    "Jia walks from home to Yi's house. At the same time, Yi rides a bicycle",
+    "Colonoscopy reveals a fungating hemorrhagic mass in the ascending colon",
+    "reactant: Cc1ccc2c(cnn2C2CCCCO2)c1B1OC(C)(C)C(C)(C)O1",
+    "What is the area, in square units, of an isosceles right triangle with a hypotenuse of 20 units?"
+  ]
+}

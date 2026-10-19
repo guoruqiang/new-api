@@ -384,6 +384,9 @@ func migrateDB() error {
 	if err != nil {
 		return err
 	}
+	if err := DB.AutoMigrate(RiskModels()...); err != nil {
+		return err
+	}
 	if err := InitializeUserAuthVersions(); err != nil {
 		return err
 	}

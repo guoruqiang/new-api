@@ -27,6 +27,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/service/risk"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -229,7 +230,9 @@ func (s *responsesWSSession) runRequest(state *responsesWSCallState, message []b
 		upstreamURLs = common.UpstreamAddresses(c)
 		return callErr
 	})
-	if apiErr != nil && (apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden) {
+	// A local risk rejection ends only this response.create; authentication
+	// and authorization failures still close the connection.
+	if apiErr != nil && !risk.IsRiskError(apiErr) && (apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden) {
 		state.closeCode = websocket.ClosePolicyViolation
 	}
 }
@@ -253,6 +256,14 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 		// reads a termination decision after this point on the WebSocket path,
 		// so neither policy record belongs here.
 		if info != nil && billingPrepared {
+			// A local policy rejection can have custom wording; refund its
+			// reservation without interpreting it as an upstream violation fee.
+			if risk.IsRiskError(apiErr) {
+				if info.Billing != nil {
+					info.Billing.Refund(c)
+				}
+				return
+			}
 			apiErr = RefundFailedRequestBilling(c, info, apiErr)
 		}
 	}()
@@ -276,6 +287,9 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 		info = relaycommon.GenRelayInfoResponses(c, &create.Request)
 		info.IsStream = true
 		common.SetContextKey(c, appconstant.ContextKeyIsStream, true)
+		if apiErr = risk.CheckAttempt(c, info, risk.AttemptInput{Phase: risk.PhaseWSLocked, LockedGroup: s.lockedGroup, ChannelID: s.lockedChannelID, ChannelType: common.GetContextKeyInt(c, appconstant.ContextKeyChannelType), Body: create.Body}); apiErr != nil {
+			return apiErr
+		}
 		if apiErr = PrepareRequestBilling(c, info); apiErr != nil {
 			return apiErr
 		}
@@ -293,7 +307,8 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 		retry := &service.RetryParam{Ctx: c, TokenGroup: common.GetContextKeyString(c, appconstant.ContextKeyUsingGroup), ModelName: modelName, RequestPath: c.Request.URL.Path, Retry: common.GetPointer(0)}
 		for ; retry.GetRetry() <= common.RetryTimes; retry.IncreaseRetry() {
 			var channel *appmodel.Channel
-			channel, apiErr = selectResponsesWSChannel(c, modelName, retry)
+			var selectGroup string
+			channel, selectGroup, apiErr = selectResponsesWSChannel(c, modelName, retry)
 			if apiErr != nil {
 				return apiErr
 			}
@@ -302,6 +317,11 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				info = relaycommon.GenRelayInfoResponses(c, &create.Request)
 				info.IsStream = true
 				common.SetContextKey(c, appconstant.ContextKeyIsStream, true)
+			}
+			if apiErr = risk.CheckAttempt(c, info, risk.AttemptInput{Phase: risk.PhaseWSSelect, SelectGroup: selectGroup, ChannelID: channel.Id, ChannelType: channel.Type, Body: create.Body}); apiErr != nil {
+				return apiErr
+			}
+			if !billingPrepared {
 				if apiErr = PrepareRequestBilling(c, info); apiErr != nil {
 					return apiErr
 				}
@@ -417,6 +437,9 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 						continue
 					}
 					terminal, ambiguous, controlError := responsesWSErrorEndsRequest(rejection, create.StreamID, responseID, sentControl)
+					if terminal {
+						risk.ObserveResponsesEvent(c, incoming.body)
+					}
 					if !terminal {
 						if err := s.writeClient(incoming.kind, incoming.body); err != nil {
 							s.shutdown(websocket.CloseInternalServerErr, "")
@@ -473,6 +496,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				if event.Response != nil {
 					s.lastResponseID = event.Response.ID
 				}
+				risk.ObserveResponsesEvent(c, incoming.body)
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
 				state.terminal = &incoming
 				ConsumeResponsesQuota(c, info, accumulator.Finish())
@@ -927,14 +951,16 @@ func checkResponsesWSModelAccess(c *gin.Context, modelName string) *types.NewAPI
 // selectResponsesWSChannel narrows the shared HTTP selection to channels that
 // speak the Responses WebSocket protocol and renders its outcome as a
 // non-retryable NewAPIError.
-func selectResponsesWSChannel(c *gin.Context, modelName string, retryParam *service.RetryParam) (*appmodel.Channel, *types.NewAPIError) {
+// selectResponsesWSChannel returns the channel and the group it was chosen
+// from; the group is empty for a pinned channel.
+func selectResponsesWSChannel(c *gin.Context, modelName string, retryParam *service.RetryParam) (*appmodel.Channel, string, *types.NewAPIError) {
 	constraints := service.GetChannelConstraints(c)
 	if !slices.ContainsFunc(constraints.Filters, func(filter appdto.ChannelFilter) bool {
 		return filter.Kind == appdto.FilterResponsesWebSocket
 	}) {
 		constraints.AddFilter(appdto.ChannelFilter{Kind: appdto.FilterResponsesWebSocket})
 	}
-	channel, _, selectErr := service.SelectChannelForRequest(c, modelName, retryParam)
+	channel, selectGroup, selectErr := service.SelectChannelForRequest(c, modelName, retryParam)
 	if selectErr != nil {
 		message := selectErr.Message
 		if selectErr.MessageID != "" {
@@ -944,10 +970,10 @@ func selectResponsesWSChannel(c *gin.Context, modelName string, retryParam *serv
 		if code == "" {
 			code = types.ErrorCodeGetChannelFailed
 		}
-		return nil, types.NewErrorWithStatusCode(errors.New(message), code, selectErr.StatusCode, types.ErrOptionWithSkipRetry())
+		return nil, selectGroup, types.NewErrorWithStatusCode(errors.New(message), code, selectErr.StatusCode, types.ErrOptionWithSkipRetry())
 	}
 	if err := middleware.SetupContextForSelectedChannel(c, channel, modelName); err != nil {
-		return nil, err
+		return nil, selectGroup, err
 	}
-	return channel, nil
+	return channel, selectGroup, nil
 }

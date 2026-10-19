@@ -8,6 +8,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/service/risk"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 )
 
@@ -21,6 +22,35 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(modelUpdateHandler{})
 	service.RegisterSystemTaskHandler(midjourneyPollHandler{})
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
+	service.RegisterSystemTaskHandler(riskCleanupHandler{})
+}
+
+// riskCleanupHandler removes risk audit events and counters past their
+// retention and refusal records and subject blocks that have expired.
+type riskCleanupHandler struct{}
+
+func (riskCleanupHandler) Type() string { return model.SystemTaskTypeRiskCleanup }
+
+func (riskCleanupHandler) Enabled() bool { return true }
+
+func (riskCleanupHandler) Interval() time.Duration { return time.Hour }
+
+func (riskCleanupHandler) NewPayload() any { return nil }
+
+func (riskCleanupHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	retention := risk.DefaultConfigPayload().Retention
+	if snap := risk.CurrentSnapshot(); snap != nil && snap.Retention.EventsDays > 0 {
+		retention = snap.Retention
+	}
+	now := time.Now()
+	removed, err := model.CleanupRiskRecords(now.Unix(),
+		now.AddDate(0, 0, -retention.EventsDays).Unix(),
+		now.AddDate(0, 0, -retention.CountersDays).Unix())
+	if err != nil {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
+		return
+	}
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, map[string]any{"removed": removed}, nil)
 }
 
 // channelTestHandler runs the scheduled "test all channels" job. Enablement and
