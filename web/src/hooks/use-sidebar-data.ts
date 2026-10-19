@@ -164,6 +164,12 @@ export function useSidebarData(): SidebarData {
             requiredRole: ROLE.SUPER_ADMIN,
           },
           {
+            title: t('Risk Audit'),
+            url: '/risk-audit',
+            icon: ShieldCheck,
+            requiredPermission: { resource: 'risk', action: 'read' },
+          },
+          {
             title: t('Task Plugins'),
             url: '/task-plugins',
             icon: PlugZap,

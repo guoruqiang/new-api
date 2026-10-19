@@ -25,8 +25,10 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/service/risk"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/config"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
@@ -40,6 +42,7 @@ var responsesWSTestUserSequence atomic.Int64
 
 func setupResponsesWSRequestTest(t *testing.T) (*model.User, *model.Token) {
 	t.Helper()
+	require.NoError(t, i18n.Init())
 	previousDB := model.DB
 	previousLogDB := model.LOG_DB
 	previousType := common.MainDatabaseType()
@@ -100,6 +103,313 @@ func setupResponsesWSRequestTest(t *testing.T) (*model.User, *model.Token) {
 		require.NoError(t, db.Unscoped().Delete(user).Error)
 	})
 	return user, token
+}
+
+func installRelayRiskPolicy(t *testing.T, payload risk.PolicyPayload, mode string, exempt bool) {
+	t.Helper()
+	require.NoError(t, model.DB.AutoMigrate(model.RiskModels()...))
+	require.NoError(t, model.DB.AutoMigrate(&model.Option{}))
+	require.NoError(t, model.ReconcileRiskGroupNamespaces([]string{"default", "group-b"}))
+	require.NoError(t, risk.SeedBaselinePolicy())
+	rows, err := model.ListRiskPolicyRevisions("integration")
+	require.NoError(t, err)
+	baseRevision := 0
+	for _, row := range rows {
+		baseRevision = max(baseRevision, row.Revision)
+	}
+	policy, problems, err := risk.CreatePolicyRevision("integration", "Integration", baseRevision, payload, 1)
+	require.NoError(t, err)
+	require.Empty(t, problems)
+	view, err := risk.LatestConfig()
+	require.NoError(t, err)
+	cfg := risk.DefaultConfigPayload()
+	cfg.Enabled = true
+	cfg.DefaultBinding = risk.Binding{PolicyKey: policy.PolicyKey, PolicyRevision: policy.Revision, Mode: mode}
+	if exempt {
+		namespaces, err := model.ListRiskGroupNamespaces(true)
+		require.NoError(t, err)
+		for _, ns := range namespaces {
+			if ns.GroupName == "default" {
+				cfg.ExemptNamespaces = append(cfg.ExemptNamespaces, ns.Namespace)
+			}
+		}
+	}
+	_, problems, err = risk.PublishConfig(view.Revision, cfg, 1)
+	require.NoError(t, err)
+	require.Empty(t, problems)
+}
+
+func TestResponsesWebSocketRiskRechecksEveryMessageAndKeepsAuthenticationBoundary(t *testing.T) {
+	previous := risk.CurrentSnapshot()
+	previousUsable := setting.UserUsableGroups2JSONString()
+	t.Cleanup(func() {
+		risk.InstallSnapshot(previous)
+		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(previousUsable))
+	})
+	received := make(chan string, 4)
+	fixture := newResponsesWSBillingTest(t, `tier("request", fixed(0.002))`, func(ws *websocket.Conn, _ *http.Request) {
+		for index := 1; ; index++ {
+			_, body, err := ws.ReadMessage()
+			if err != nil {
+				return
+			}
+			received <- string(body)
+			terminal := fmt.Sprintf(`{"type":"response.completed","response":{"id":"risk-%d","status":"completed","usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}`, index)
+			if err := ws.WriteMessage(websocket.TextMessage, []byte(terminal)); err != nil {
+				return
+			}
+		}
+	})
+	common.RedisEnabled = false
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default","auto":"Auto"}`))
+	require.NoError(t, model.DB.Model(fixture.token).Updates(map[string]any{"group": "auto", "auto_groups": `["default"]`}).Error)
+	payload := risk.DefaultPolicyPayload()
+	payload.Distill.Enabled, payload.Refusal.Enabled, payload.Model.Enabled = false, false, false
+	payload.HardRegex.Rules = []risk.HardRule{{Category: "custom", Source: "riskblock", Enabled: true}}
+	installRelayRiskPolicy(t, payload, risk.ModeEnforce, true)
+	for _, tc := range []struct {
+		text, event string
+		quota       int
+	}{
+		{"riskblock", "error", 3000},
+		{"allowed", "response.completed", 2000},
+		{"changedrule", "error", 2000},
+		{"allowed again", "response.completed", 1000},
+	} {
+		if tc.text == "changedrule" {
+			payload.HardRegex.Rules[0].Source = "changedrule"
+			installRelayRiskPolicy(t, payload, risk.ModeEnforce, true)
+		}
+		body, err := common.Marshal(map[string]any{"type": "response.create", "model": "ws-billing", "input": tc.text})
+		require.NoError(t, err)
+		require.NoError(t, fixture.client.WriteMessage(websocket.TextMessage, body))
+		event := readResponsesWSTestEvent(t, fixture.client)
+		require.Equal(t, tc.event, event["type"], event)
+		if tc.event == "error" {
+			assert.Equal(t, float64(http.StatusForbidden), event["status"])
+			assert.Contains(t, fmt.Sprint(event), "risk_policy_blocked")
+			assert.Empty(t, received)
+		} else {
+			assert.Contains(t, <-received, tc.text)
+		}
+		require.NoError(t, model.DB.First(fixture.token, fixture.token.Id).Error)
+		assert.Equal(t, tc.quota, fixture.token.RemainQuota)
+	}
+	assert.Equal(t, int32(1), fixture.connections.Load(), "content rejection must not reconnect or rotate the upstream credential")
+	// The same 403 transport status from authorization must still close the connection.
+	require.NoError(t, model.DB.Model(fixture.channel).Update("status", common.ChannelStatusManuallyDisabled).Error)
+	require.NoError(t, fixture.client.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"ws-billing","input":"allowed"}`)))
+	event := readResponsesWSTestEvent(t, fixture.client)
+	assert.Equal(t, float64(http.StatusForbidden), event["status"])
+	_, _, err := fixture.client.ReadMessage()
+	assert.True(t, websocket.IsCloseError(err, websocket.ClosePolicyViolation), "%v", err)
+	assert.Empty(t, received)
+	fixture.closeAndWait(t)
+	assertResponsesWSAccounting(t, fixture, []int{1000, 1000})
+}
+
+func TestHTTPRiskGateRunsBeforeReservation(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode       string
+		exempt, disabled bool
+		refusal          bool
+		status           int
+	}{
+		{"enforce", risk.ModeEnforce, false, false, false, http.StatusForbidden},
+		{"observe", risk.ModeObserve, false, false, false, http.StatusOK},
+		{"exempt", risk.ModeEnforce, true, false, false, http.StatusOK},
+		{"disabled", risk.ModeEnforce, false, true, false, http.StatusOK},
+		{"upstream refusal preserves settlement", risk.ModeEnforce, false, false, true, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			previous := risk.CurrentSnapshot()
+			t.Cleanup(func() { risk.InstallSnapshot(previous) })
+			fixture := newResponsesWSBillingTest(t, `tier("request", fixed(0.002))`, func(*websocket.Conn, *http.Request) {})
+			payload := risk.DefaultPolicyPayload()
+			payload.Distill.Enabled, payload.Refusal.Enabled, payload.Model.Enabled = false, false, false
+			payload.HardRegex.Rules = []risk.HardRule{{Category: "custom", Source: "riskblock", Enabled: true}}
+			if tc.refusal {
+				payload.HardRegex.Enabled, payload.Refusal.Enabled = false, true
+				payload.Refusal.SubjectBlockEnabled = false
+			}
+			installRelayRiskPolicy(t, payload, tc.mode, tc.exempt)
+			if tc.disabled {
+				view, err := risk.LatestConfig()
+				require.NoError(t, err)
+				view.Payload.Enabled = false
+				_, problems, err := risk.PublishConfig(view.Revision, view.Payload, 1)
+				require.NoError(t, err)
+				require.Empty(t, problems)
+			}
+			var upstreamCalls atomic.Int32
+			fixture.httpUpstream = func(w http.ResponseWriter, _ *http.Request) {
+				upstreamCalls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				if tc.refusal {
+					_, _ = io.WriteString(w, `{"id":"risk-refusal","status":"incomplete","incomplete_details":{"reason":"content_filter"},"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}`)
+				} else {
+					_, _ = io.WriteString(w, `{"id":"risk-pass","status":"completed","model":"gpt-4o","usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}`)
+				}
+			}
+			var quotaWrites atomic.Int32
+			callback := "test:risk-first-quota"
+			require.NoError(t, model.DB.Callback().Update().After("gorm:commit_or_rollback_transaction").Register(callback, func(tx *gorm.DB) {
+				if tx.Statement.Table == "tokens" || tx.Statement.Table == "users" {
+					quotaWrites.Add(1)
+				}
+			}))
+			t.Cleanup(func() { model.DB.Callback().Update().Remove(callback) })
+			request, err := http.NewRequest(http.MethodPost, fixture.gatewayURL+"/v1/responses", strings.NewReader(`{"model":"ws-billing","input":"riskblock"}`))
+			require.NoError(t, err)
+			request.Header.Set("Authorization", "Bearer sk-"+fixture.token.Key)
+			request.Header.Set("Content-Type", "application/json")
+			response, err := (&http.Client{Timeout: 3 * time.Second}).Do(request)
+			require.NoError(t, err)
+			body, err := io.ReadAll(response.Body)
+			require.NoError(t, err)
+			require.NoError(t, response.Body.Close())
+			require.Equal(t, tc.status, response.StatusCode, string(body))
+			select {
+			case <-fixture.httpDone:
+			case <-time.After(3 * time.Second):
+				t.Fatal("HTTP relay did not finish")
+			}
+			fixture.closeAndWait(t)
+			if tc.status == http.StatusForbidden {
+				assert.Contains(t, string(body), "risk_policy_blocked")
+				assert.Zero(t, upstreamCalls.Load())
+				assert.Zero(t, quotaWrites.Load(), "initial rejection must not reserve or refund quota")
+				assertResponsesWSAccounting(t, fixture, nil)
+			} else {
+				assert.Equal(t, int32(1), upstreamCalls.Load())
+				assertResponsesWSAccounting(t, fixture, []int{1000})
+				if tc.refusal {
+					var records []model.RiskRefusal
+					require.NoError(t, model.DB.Find(&records).Error)
+					require.Len(t, records, 1)
+					assert.Equal(t, fixture.user.Id, records[0].UserId)
+					assert.Contains(t, string(body), `"reason":"content_filter"`)
+					assert.Contains(t, string(body), `"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}`)
+				}
+			}
+		})
+	}
+}
+
+func TestRiskAutoGroupRetryRejectsBeforeNextUpstreamAndRefunds(t *testing.T) {
+	for _, transport := range []string{"http", "websocket"} {
+		t.Run(transport, func(t *testing.T) {
+			previousSnapshot, previousRetry := risk.CurrentSnapshot(), common.RetryTimes
+			previousUsable := setting.UserUsableGroups2JSONString()
+			previousGrok := *model_setting.GetGrokSettings()
+			*model_setting.GetGrokSettings() = model_setting.GrokSettings{ViolationDeductionEnabled: true, ViolationDeductionAmount: 0.002}
+			t.Cleanup(func() {
+				risk.InstallSnapshot(previousSnapshot)
+				common.RetryTimes = previousRetry
+				*model_setting.GetGrokSettings() = previousGrok
+				require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(previousUsable))
+			})
+			fixture := newResponsesWSBillingTest(t, `tier("request", fixed(0.002))`, func(*websocket.Conn, *http.Request) {})
+			common.RedisEnabled = false
+			common.RetryTimes = 1
+			require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default","group-b":"B","auto":"Auto"}`))
+			require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{"group_ratio_setting.group_ratio": `{"default":1,"group-b":1}`}))
+			require.NoError(t, model.DB.Model(fixture.token).Updates(map[string]any{"group": "auto", "cross_group_retry": true, "auto_groups": `["default","group-b"]`}).Error)
+			channelB := &model.Channel{Name: "risk-second-group", Type: constant.ChannelTypeOpenAI, Key: "group-b-secret", Status: common.ChannelStatusEnabled, Group: "group-b", Models: "ws-billing", BaseURL: fixture.channel.BaseURL}
+			channelB.SetSetting(dto.ChannelSettings{ResponsesWebSocketEnabled: true})
+			require.NoError(t, model.DB.Create(channelB).Error)
+			require.NoError(t, model.DB.Create(&model.Ability{ChannelId: channelB.Id, Model: "ws-billing", Group: "group-b", Enabled: true}).Error)
+			payload := risk.DefaultPolicyPayload()
+			payload.Distill.Enabled, payload.Refusal.Enabled, payload.Model.Enabled, payload.HardRegex.Enabled = false, false, false, false
+			installRelayRiskPolicy(t, payload, risk.ModeEnforce, true)
+			payload.Distill.Enabled = true
+			payload.Distill.SkipGPTModels = false
+			payload.Distill.HardNeedles = []string{"riskblock"}
+			// Custom local rejection wording must never trigger the upstream violation fee.
+			payload.Distill.Error = risk.DistillError{Status: http.StatusForbidden, Message: service.CSAMViolationMarker}
+			policy, problems, err := risk.CreatePolicyRevision("retry-block", "Retry block", 0, payload, 1)
+			require.NoError(t, err)
+			require.Empty(t, problems)
+			namespaces, err := model.ListRiskGroupNamespaces(true)
+			require.NoError(t, err)
+			view, err := risk.LatestConfig()
+			require.NoError(t, err)
+			for _, namespace := range namespaces {
+				if namespace.GroupName == "group-b" {
+					view.Payload.GroupBindings = []risk.GroupBinding{{Namespace: namespace.Namespace, PolicyKey: policy.PolicyKey, PolicyRevision: policy.Revision, Mode: risk.ModeEnforce}}
+				}
+			}
+			_, problems, err = risk.PublishConfig(view.Revision, view.Payload, 1)
+			require.NoError(t, err)
+			require.Empty(t, problems)
+			var upstreamCalls atomic.Int32
+			failingUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				upstreamCalls.Add(1)
+				assert.NotEqual(t, "Bearer group-b-secret", r.Header.Get("Authorization"), "group B must reject before sending upstream")
+				var token model.Token
+				assert.NoError(t, model.DB.First(&token, fixture.token.Id).Error)
+				assert.Equal(t, 2000, token.RemainQuota, "retry retains one initial reservation")
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = io.WriteString(w, `{"error":{"type":"server_error","code":"server_error","message":"Retryable failure"}}`)
+			}))
+			t.Cleanup(failingUpstream.Close)
+			require.NoError(t, model.DB.Model(fixture.channel).Update("base_url", failingUpstream.URL).Error)
+			updates := make(chan struct{}, 8)
+			const callback = "test:risk-retry-refund"
+			require.NoError(t, model.DB.Callback().Update().After("gorm:commit_or_rollback_transaction").Register(callback, func(tx *gorm.DB) {
+				if tx.Error == nil && (tx.Statement.Table == "tokens" || tx.Statement.Table == "users") {
+					select {
+					case updates <- struct{}{}:
+					default:
+					}
+				}
+			}))
+			t.Cleanup(func() { model.DB.Callback().Update().Remove(callback) })
+			if transport == "websocket" {
+				require.NoError(t, fixture.client.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"ws-billing","input":"riskblock"}`)))
+				event := readResponsesWSTestEvent(t, fixture.client)
+				require.Equal(t, "error", event["type"])
+				assert.Equal(t, float64(http.StatusForbidden), event["status"])
+				require.Contains(t, fmt.Sprint(event), "risk_distill_blocked")
+			} else {
+				request, err := http.NewRequest(http.MethodPost, fixture.gatewayURL+"/v1/responses", strings.NewReader(`{"model":"ws-billing","input":"riskblock"}`))
+				require.NoError(t, err)
+				request.Header.Set("Authorization", "Bearer sk-"+fixture.token.Key)
+				request.Header.Set("Content-Type", "application/json")
+				response, err := (&http.Client{Timeout: 3 * time.Second}).Do(request)
+				require.NoError(t, err)
+				body, err := io.ReadAll(response.Body)
+				require.NoError(t, err)
+				require.NoError(t, response.Body.Close())
+				require.Equal(t, http.StatusForbidden, response.StatusCode, string(body))
+				require.Contains(t, string(body), "risk_distill_blocked")
+				select {
+				case <-fixture.httpDone:
+				case <-time.After(3 * time.Second):
+					t.Fatal("HTTP retry relay did not finish")
+				}
+			}
+			assert.Equal(t, int32(2), upstreamCalls.Load(), "A exhausts its retries; B must never receive the request")
+			assert.Zero(t, fixture.connections.Load(), "B must not establish an upstream connection")
+			deadline := time.NewTimer(3 * time.Second)
+			defer deadline.Stop()
+			for {
+				require.NoError(t, model.DB.First(fixture.token, fixture.token.Id).Error)
+				require.NoError(t, model.DB.First(fixture.user, fixture.user.Id).Error)
+				if fixture.token.RemainQuota == 3000 && fixture.user.Quota == 100000 {
+					break
+				}
+				select {
+				case <-updates:
+				case <-deadline.C:
+					t.Fatal("risk retry rejection did not finish refunding token and wallet reservations")
+				}
+			}
+			fixture.closeAndWait(t)
+			assertResponsesWSAccounting(t, fixture, nil)
+		})
+	}
 }
 
 func newResponsesWSTestRunner(t *testing.T, token *model.Token) (relay.ResponsesWSRequestRunner, *http.Request) {

@@ -30,6 +30,7 @@ interface TagInputProps {
   placeholder?: string
   className?: string
   disabled?: boolean
+  submitOnComma?: boolean
 }
 
 export function TagInput({
@@ -38,6 +39,7 @@ export function TagInput({
   placeholder,
   className,
   disabled = false,
+  submitOnComma = true,
 }: TagInputProps) {
   const { t } = useTranslation()
   const placeholderText = placeholder ?? t('Add tags...')
@@ -57,11 +59,12 @@ export function TagInput({
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' || e.key === ',') {
+    if (e.key === 'Enter' || (submitOnComma && e.key === ',')) {
       e.preventDefault()
       addTag(inputValue)
     } else if (e.key === 'Backspace' && !inputValue && value.length > 0) {
-      removeTag(value[value.length - 1])
+      const lastTag = value.at(-1)
+      if (lastTag !== undefined) removeTag(lastTag)
     }
   }
 

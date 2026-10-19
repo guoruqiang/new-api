@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -31,6 +33,7 @@ import (
 	"github.com/QuantumNous/new-api/router"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
+	"github.com/QuantumNous/new-api/service/risk"
 	_ "github.com/QuantumNous/new-api/setting/performance_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
@@ -113,6 +116,21 @@ func main() {
 
 	// 热更新配置
 	go model.SyncOptions(common.SyncFrequency)
+
+	// 风险审计：主节点对齐分组命名空间并写入基线策略；所有节点在服务前加载配置快照
+	if common.IsMasterNode {
+		if err := risk.SeedBaselinePolicy(); err != nil {
+			common.SysError(common.LogText("failed to seed risk baseline policy: %s", err.Error()))
+		}
+		if err := model.ReconcileRiskGroupNamespaces(slices.Collect(maps.Keys(ratio_setting.GetGroupRatioCopy()))); err != nil {
+			common.SysError(common.LogText("risk group namespace reconcile failed: %s", err.Error()))
+		}
+	}
+	if err := risk.LoadInitialSnapshot(); err != nil {
+		common.FatalLog(common.LogText("failed to load risk configuration: %s", err.Error()))
+	}
+	risk.StartSnapshotSync()
+	risk.StartRecorder()
 	go controller.SyncTaskPlugins()
 
 	// 周期性重载授权策略，保证多节点/多 master 部署下权限变更能传播到每个实例
@@ -237,6 +255,11 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
 		common.SysError(common.LogText("server forced to shutdown: %v", err))
+	}
+	recorderCtx, recorderCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer recorderCancel()
+	if err := risk.StopRecorder(recorderCtx); err != nil {
+		common.SysError(common.LogText("risk recorder shutdown failed: %v", err))
 	}
 	// 内存中的看板数据保存入库，避免重启丢失未落库数据 (issue #5679)
 	if common.DataExportEnabled {
