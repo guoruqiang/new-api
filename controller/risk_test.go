@@ -82,15 +82,21 @@ func TestRiskConfigPublicationValidationAndConflict(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		exempt   []string
+		bypass   []string
 		bindings []risk.GroupBinding
 	}{
 		{name: "unknown", exempt: []string{"missing"}},
 		{name: "auto", exempt: []string{"auto"}},
 		{name: "duplicate", exempt: []string{namespace, namespace}},
 		{name: "exempt and bound", exempt: []string{namespace}, bindings: []risk.GroupBinding{{Namespace: namespace, PolicyKey: risk.BaselinePolicyKey, PolicyRevision: 1, Mode: risk.ModeObserve}}},
+		{name: "bypass unknown", bypass: []string{"missing"}},
+		{name: "bypass auto", bypass: []string{"auto"}},
+		{name: "bypass duplicate", bypass: []string{namespace, namespace}},
+		{name: "bypass and exempt", exempt: []string{namespace}, bypass: []string{namespace}},
+		{name: "bypass and bound", bypass: []string{namespace}, bindings: []risk.GroupBinding{{Namespace: namespace, PolicyKey: risk.BaselinePolicyKey, PolicyRevision: 1, Mode: risk.ModeObserve}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			body["expected_revision"], body["exempt_namespaces"], body["group_bindings"] = 1, tc.exempt, tc.bindings
+			body["expected_revision"], body["exempt_namespaces"], body["bypass_namespaces"], body["group_bindings"] = 1, tc.exempt, tc.bypass, tc.bindings
 			w := riskManagementRequest(t, UpdateRiskConfig, http.MethodPut, "/api/risk/config", nil, body)
 			assert.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 			assert.Contains(t, w.Body.String(), `"key":`)
@@ -98,6 +104,7 @@ func TestRiskConfigPublicationValidationAndConflict(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, int64(1), view.Revision)
 			assert.Empty(t, view.Payload.ExemptNamespaces)
+			assert.Empty(t, view.Payload.BypassNamespaces)
 		})
 	}
 	policy := map[string]any{"policy_key": "published", "name": "Published", "base_revision": 0, "payload": risk.DefaultPolicyPayload()}

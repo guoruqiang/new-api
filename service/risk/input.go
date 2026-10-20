@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 )
@@ -77,10 +78,12 @@ func contentText(content any, mode textMode) string {
 	return ""
 }
 
-func responsesInputTexts(input any, mode textMode) []string {
+// responsesInputTexts reads the Responses input items of one role; items
+// without a role count as user input.
+func responsesInputTexts(input any, mode textMode, role string) []string {
 	switch v := input.(type) {
 	case string:
-		if v == "" {
+		if v == "" || role != "user" {
 			return nil
 		}
 		return []string{v}
@@ -88,7 +91,7 @@ func responsesInputTexts(input any, mode textMode) []string {
 		out := make([]string, 0, len(v))
 		for _, item := range v {
 			if s, ok := item.(string); ok {
-				if s != "" {
+				if s != "" && role == "user" {
 					out = append(out, s)
 				}
 				continue
@@ -100,8 +103,11 @@ func responsesInputTexts(input any, mode textMode) []string {
 			if mode != textAll && isToolPayload(obj) {
 				continue
 			}
-			role, _ := obj["role"].(string)
-			if role != "" && !strings.EqualFold(role, "user") {
+			itemRole, _ := obj["role"].(string)
+			if itemRole == "" {
+				itemRole = "user"
+			}
+			if !strings.EqualFold(itemRole, role) {
 				continue
 			}
 			var source any = obj
@@ -159,8 +165,46 @@ func legacyPrompt(prompt any) (texts []string, tokenOnly bool) {
 
 func userTexts(body map[string]any, messages []any, mode textMode, prompt []string) []string {
 	out := roleTexts(messages, []string{"user"}, mode)
-	out = append(out, responsesInputTexts(body["input"], mode)...)
+	out = append(out, responsesInputTexts(body["input"], mode, "user")...)
 	return append(out, prompt...)
+}
+
+// trailingToolOutputs returns the tool results that answer the latest tool
+// call. Agent sessions resend their whole history, so earlier results were
+// already audited with the request that first carried them.
+func trailingToolOutputs(messages []any, input any) []string {
+	var out []string
+	for i := len(messages) - 1; i >= 0; i-- {
+		obj, _ := messages[i].(map[string]any)
+		role, _ := obj["role"].(string)
+		if role == "tool" {
+			if text := contentText(obj["content"], textAll); text != "" {
+				out = append(out, text)
+			}
+			continue
+		}
+		if parts, ok := obj["content"].([]any); ok && role == "user" {
+			for _, part := range parts {
+				if p, ok := part.(map[string]any); ok && isToolPayload(p) {
+					if text := contentText(p, textAll); text != "" {
+						out = append(out, text)
+					}
+				}
+			}
+		}
+		break
+	}
+	items, _ := input.([]any)
+	for i := len(items) - 1; i >= 0; i-- {
+		obj, ok := items[i].(map[string]any)
+		if !ok || !isToolPayload(obj) {
+			break
+		}
+		if text := contentText(obj, textAll); text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
 }
 
 func systemFieldTexts(value any) []string {
@@ -282,6 +326,59 @@ func inboundDeviceID(body map[string]any, headers http.Header) string {
 	return id
 }
 
+// auditTextBudget bounds, in runes, each list of texts the audit reads, so a
+// padded request costs a bounded amount of CPU before billing. It exceeds
+// four model segments of the largest allowed size.
+const auditTextBudget = 256 * 1024
+
+// recentTexts keeps the newest texts that fit in budget runes; the oldest one
+// kept may be cut to its head and tail. Earlier turns of an agent session
+// were audited with the request that first carried them.
+func recentTexts(texts []string, budget int) ([]string, bool) {
+	room := budget
+	for i := len(texts) - 1; i >= 0; i-- {
+		n := utf8.RuneCountInString(texts[i])
+		if n <= room {
+			room -= n
+			continue
+		}
+		kept := slices.Clone(texts[i+1:])
+		if room > 0 {
+			cut, _ := boundText(texts[i], room)
+			kept = slices.Insert(kept, 0, cut)
+		}
+		return kept, true
+	}
+	return texts, false
+}
+
+// boundText keeps the first and the last runes of a text longer than limit.
+func boundText(text string, limit int) (string, bool) {
+	if len(text) <= limit || utf8.RuneCountInString(text) <= limit {
+		return text, false
+	}
+	if limit <= 0 {
+		return "", true
+	}
+	if limit == 1 {
+		_, size := utf8.DecodeRuneInString(text)
+		return text[:size], true
+	}
+	// The separator is part of the budget too.
+	head := (limit - 1) / 2
+	start := 0
+	for range head {
+		_, size := utf8.DecodeRuneInString(text[start:])
+		start += size
+	}
+	end := len(text)
+	for range limit - 1 - head {
+		_, size := utf8.DecodeLastRuneInString(text[:end])
+		end -= size
+	}
+	return text[:start] + "\n" + text[end:], true
+}
+
 // ExtractInput builds the audit view of a raw request body. The body is the
 // client JSON for chat completions, completions, Claude messages, Responses,
 // or a Responses WebSocket response.create payload.
@@ -305,17 +402,24 @@ func ExtractInput(body []byte, headers http.Header) (*Input, error) {
 	}
 
 	in := &Input{
-		Systems:         systems,
-		DistillUsers:    userTexts(doc, messages, textDistill, prompt),
-		UserTurns:       userTexts(doc, messages, textAll, prompt),
-		UserAuthored:    userTexts(doc, messages, textAuthored, prompt),
-		PromptTokenOnly: tokenOnly,
-		HasMedia:        hasMedia(messages) || hasMedia(doc["input"]) || hasMedia(doc["system"]),
-		DeviceID:        inboundDeviceID(doc, headers),
-		Official:        isOfficialClaudeCodeTraffic(doc, headers),
-		MaxTokens:       intField(doc, "max_tokens", "max_output_tokens", "max_completion_tokens", "max_new_tokens"),
+		Systems:           systems,
+		DistillUsers:      userTexts(doc, messages, textDistill, prompt),
+		UserTurns:         userTexts(doc, messages, textAll, prompt),
+		UserAuthored:      userTexts(doc, messages, textAuthored, prompt),
+		Assistants:        append(roleTexts(messages, []string{"assistant"}, textAuthored), responsesInputTexts(doc["input"], textAuthored, "assistant")...),
+		RecentToolOutputs: trailingToolOutputs(messages, doc["input"]),
+		PromptTokenOnly:   tokenOnly,
+		HasMedia:          hasMedia(messages) || hasMedia(doc["input"]) || hasMedia(doc["system"]),
+		DeviceID:          inboundDeviceID(doc, headers),
+		Official:          isOfficialClaudeCodeTraffic(doc, headers),
+		MaxTokens:         intField(doc, "max_tokens", "max_output_tokens", "max_completion_tokens", "max_new_tokens"),
 	}
 	in.Model, _ = doc["model"].(string)
+	for _, list := range []*[]string{&in.Systems, &in.DistillUsers, &in.UserTurns, &in.UserAuthored, &in.Assistants, &in.RecentToolOutputs} {
+		var cut bool
+		*list, cut = recentTexts(*list, auditTextBudget)
+		in.Truncated = in.Truncated || cut
+	}
 	if len(in.DistillUsers) > 0 {
 		in.LatestUser = in.DistillUsers[len(in.DistillUsers)-1]
 	}
@@ -410,26 +514,100 @@ func preparedDocument(texts []string, stripReminders, expand bool, decodedTotal 
 	return normalizedDocument(prepared), incomplete
 }
 
-// RuleDocument is the user-authored text that hard rules scan.
+// RuleDocument is the user-authored text that local rules scan with their
+// own tier; the flag reports base64 left undecoded.
 func (in *Input) RuleDocument(stripReminders, expandBase64 bool) (string, bool) {
 	decodedTotal := 0
 	return preparedDocument(in.UserAuthored, stripReminders, expandBase64, &decodedTotal)
 }
 
-// ModelDocument is what the decision model reads: system text, then the
-// user-authored text.
-func (in *Input) ModelDocument(stripReminders, expandBase64 bool) (string, bool) {
+// ContextDocument is the other client-controlled text: system and developer
+// prompts, assistant turns, the latest tool results and the content of
+// reminder blocks stripped from user turns. A rule hit here is always
+// reviewed by the decision model and never blocks on its own, so this text
+// keeps its reminders.
+func (in *Input) ContextDocument(stripReminders, expandBase64 bool) (string, bool) {
+	texts := slices.Concat(in.Systems, in.Assistants, in.RecentToolOutputs)
+	if stripReminders {
+		for _, text := range in.UserAuthored {
+			_, inside := splitReminders(text)
+			texts = append(texts, inside...)
+		}
+	}
+	decodedTotal := 0
+	return preparedDocument(texts, false, expandBase64, &decodedTotal)
+}
+
+const (
+	maxModelSegments = 4
+	segmentOverlap   = 200
+)
+
+// ModelSegments is what the decision model reads: the system text and the
+// user-authored text, cut into at most four segments of size runes when they
+// do not fit in one. A rule excerpt goes first; then the newest conversation
+// and the start of the system text alternate, so padding a request cannot
+// push its latest turn out of review. dropped reports text left unjudged.
+func (in *Input) ModelSegments(stripReminders, expandBase64 bool, size int, excerpt string) (segments []string, dropped, incomplete bool) {
 	decodedTotal := 0
 	systems, systemsPartial := preparedDocument(in.Systems, stripReminders, expandBase64, &decodedTotal)
 	users, usersPartial := preparedDocument(in.UserAuthored, stripReminders, expandBase64, &decodedTotal)
-	incomplete := systemsPartial || usersPartial
-	switch {
-	case systems == "":
-		return users, incomplete
-	case users == "":
-		return systems, incomplete
+	incomplete = systemsPartial || usersPartial
+	if excerpt != "" {
+		segments = append(segments, excerpt)
 	}
-	return systems + "\n" + users, incomplete
+	whole := strings.Join(slices.DeleteFunc([]string{systems, users}, func(s string) bool { return s == "" }), "\n")
+	if utf8.RuneCountInString(whole) <= size {
+		if whole != "" {
+			segments = append(segments, whole)
+		}
+		return segments, false, incomplete
+	}
+	conversation, conversationRest := splitRunes(users, size, maxModelSegments, true)
+	system, systemRest := splitRunes(systems, size, maxModelSegments, false)
+	for len(segments) < maxModelSegments && len(conversation)+len(system) > 0 {
+		if len(conversation) > 0 {
+			segments, conversation = append(segments, conversation[0]), conversation[1:]
+		}
+		if len(segments) < maxModelSegments && len(system) > 0 {
+			segments, system = append(segments, system[0]), system[1:]
+		}
+	}
+	dropped = conversationRest || systemRest || len(conversation)+len(system) > 0
+	return segments, dropped, incomplete
+}
+
+// splitRunes cuts text into at most limit windows of size runes that overlap
+// slightly, so a phrase on a boundary stays whole in one window. fromEnd
+// yields the last window first. rest reports text beyond the last window.
+func splitRunes(text string, size, limit int, fromEnd bool) (windows []string, rest bool) {
+	runes := []rune(text)
+	if len(runes) == 0 {
+		return nil, false
+	}
+	step := size - min(segmentOverlap, size/8)
+	if fromEnd {
+		end := len(runes)
+		for range limit {
+			start := max(end-size, 0)
+			windows = append(windows, string(runes[start:end]))
+			if start == 0 {
+				return windows, false
+			}
+			end -= step
+		}
+		return windows, true
+	}
+	start := 0
+	for range limit {
+		end := min(start+size, len(runes))
+		windows = append(windows, string(runes[start:end]))
+		if end == len(runes) {
+			return windows, false
+		}
+		start += step
+	}
+	return windows, true
 }
 
 // SimilarityDocument is the user text, tool payloads included, that the
@@ -571,7 +749,7 @@ func isOfficialClaudeCodeTraffic(doc map[string]any, headers http.Header) bool {
 		return false
 	}
 	blocks := systemBlockTexts(doc["system"])
-	text := strings.Join(blocks, "\n")
+	text, _ := boundText(strings.Join(blocks, "\n"), auditTextBudget)
 	if looksLikeOhMyPiSystem(text, headers) {
 		return false
 	}

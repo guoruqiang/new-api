@@ -6,6 +6,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // PreprocessVersion changes whenever NormalizeText, StripReminders or
@@ -23,6 +25,71 @@ const (
 	base64MaxPerPass = 8
 	base64MaxPasses  = 3
 )
+
+// confusableLatin maps Cyrillic and Greek letters that render like Latin
+// letters to the Latin letter they imitate.
+var confusableLatin = map[rune]rune{
+	'а': 'a', 'е': 'e', 'ё': 'e', 'о': 'o', 'р': 'p', 'с': 'c', 'у': 'y', 'х': 'x', 'к': 'k',
+	'і': 'i', 'ї': 'i', 'ј': 'j', 'ѕ': 's', 'ԁ': 'd', 'ӏ': 'l', 'һ': 'h', 'ԛ': 'q', 'ԝ': 'w',
+	'α': 'a', 'ε': 'e', 'ι': 'i', 'κ': 'k', 'ν': 'v', 'ο': 'o', 'ρ': 'p', 'τ': 't', 'υ': 'u',
+	'χ': 'x', 'ϲ': 'c', 'ϳ': 'j', 'ı': 'i',
+}
+
+// foldConfusables is the evasion-resistant view that local rules match in
+// addition to the normalized text: compatibility forms such as fullwidth or
+// styled letters are decomposed, combining marks and invisible format
+// characters (zero-width spaces and joiners) are dropped, and look-alike
+// letters become Latin. It is only matched against, never stored or sent.
+func foldConfusables(text string) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	for _, r := range norm.NFKD.String(text) {
+		if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Cf, r) {
+			continue
+		}
+		if latin, ok := confusableLatin[r]; ok {
+			r = latin
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// StripReminders removes <system-reminder> blocks, matching the tags without
+// regard to ASCII case. An unclosed block drops the rest of the text.
+func StripReminders(text string) string {
+	outside, _ := splitReminders(text)
+	return outside
+}
+
+// splitReminders separates the content of <system-reminder> blocks from the
+// rest of the text. An unclosed block runs to the end of the text.
+func splitReminders(text string) (string, []string) {
+	lower := asciiLower(text)
+	if !strings.Contains(lower, reminderOpen) {
+		return text, nil
+	}
+	var b strings.Builder
+	var inside []string
+	rest, restLower := text, lower
+	for {
+		open := strings.Index(restLower, reminderOpen)
+		if open < 0 {
+			b.WriteString(rest)
+			break
+		}
+		b.WriteString(rest[:open])
+		rest, restLower = rest[open+len(reminderOpen):], restLower[open+len(reminderOpen):]
+		closeAt := strings.Index(restLower, reminderClose)
+		if closeAt < 0 {
+			inside = append(inside, rest)
+			break
+		}
+		inside = append(inside, rest[:closeAt])
+		rest, restLower = rest[closeAt+len(reminderClose):], restLower[closeAt+len(reminderClose):]
+	}
+	return strings.TrimSpace(b.String()), inside
+}
 
 func isAuditSpace(r rune) bool {
 	return unicode.IsSpace(r) || r == '\uFEFF'
@@ -50,32 +117,6 @@ func NormalizeText(text string) string {
 		afterBackslash = r == '\\'
 	}
 	return b.String()
-}
-
-// StripReminders removes <system-reminder> blocks, matching the tags without
-// regard to ASCII case. An unclosed block drops the rest of the text.
-func StripReminders(text string) string {
-	lower := asciiLower(text)
-	if !strings.Contains(lower, reminderOpen) {
-		return text
-	}
-	var b strings.Builder
-	rest, restLower := text, lower
-	for {
-		open := strings.Index(restLower, reminderOpen)
-		if open < 0 {
-			b.WriteString(rest)
-			break
-		}
-		b.WriteString(rest[:open])
-		rest, restLower = rest[open+len(reminderOpen):], restLower[open+len(reminderOpen):]
-		closeAt := strings.Index(restLower, reminderClose)
-		if closeAt < 0 {
-			break
-		}
-		rest, restLower = rest[closeAt+len(reminderClose):], restLower[closeAt+len(reminderClose):]
-	}
-	return strings.TrimSpace(b.String())
 }
 
 func asciiLower(text string) string {

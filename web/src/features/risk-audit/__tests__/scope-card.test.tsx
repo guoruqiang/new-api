@@ -216,18 +216,71 @@ it('shows retired group references and makes configuration read-only without wri
   expect(screen.getByRole('button', { name: 'Override' })).toBeDisabled()
 })
 
-it('rejects auto, duplicate namespaces and a group that is both exempt and bound', () => {
+it('rejects auto, duplicate namespaces and a group that is both skipped and bound', () => {
   expect(configSchema.safeParse(config.payload).success).toBe(true)
+  const binding = { ...config.payload.default_binding, namespace: 'a' }
   for (const patch of [
     { exempt_namespaces: ['auto'] },
     { exempt_namespaces: ['a', 'a'] },
-    {
-      exempt_namespaces: ['a'],
-      group_bindings: [{ ...config.payload.default_binding, namespace: 'a' }],
-    },
+    { exempt_namespaces: ['a'], group_bindings: [binding] },
+    { bypass_namespaces: ['auto'] },
+    { bypass_namespaces: ['a', 'a'] },
+    { exempt_namespaces: ['a'], bypass_namespaces: ['a'] },
+    { bypass_namespaces: ['a'], group_bindings: [binding] },
   ]) {
     expect(
       configSchema.safeParse({ ...config.payload, ...patch }).success
     ).toBe(false)
   }
+})
+
+it('bypasses a selected group, disables its override and saves the bypass list', async () => {
+  const write = vi
+    .spyOn(api, 'request')
+    .mockResolvedValue({ data: { success: true, data: { revision: 4 } } })
+  const user = userEvent.setup()
+  renderRisk(<ScopeCard config={config} directory={directory} canWrite />)
+  expect(
+    screen.getByText(
+      'Requests from these groups skip the risk audit entirely: no checks, counters or events. Auto requests are still audited.'
+    )
+  ).toBeVisible()
+  await user.click(screen.getByLabelText('Bypassed groups'))
+  await user.click(await screen.findByRole('option', { name: 'standard' }))
+  await user.keyboard('{Escape}')
+  expect(screen.getByText('Bypassed group')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Override' })).toBeDisabled()
+  await user.click(screen.getByRole('button', { name: 'Save configuration' }))
+  await waitFor(() =>
+    expect(write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          exempt_namespaces: [],
+          bypass_namespaces: ['ns-a'],
+        }),
+      })
+    )
+  )
+})
+
+it('keeps an exempt group out of the bypass list', async () => {
+  const user = userEvent.setup()
+  renderRisk(
+    <ScopeCard
+      config={{
+        ...config,
+        payload: { ...config.payload, exempt_namespaces: ['ns-a'] },
+      }}
+      directory={directory}
+      canWrite
+    />
+  )
+  await user.click(screen.getByLabelText('Bypassed groups'))
+  await user.click(await screen.findByRole('option', { name: 'standard' }))
+  await user.keyboard('{Escape}')
+  expect(screen.getByText('Exempt group')).toBeVisible()
+  expect(screen.queryByText('Bypassed group')).not.toBeInTheDocument()
+  expect(
+    screen.getByRole('button', { name: 'Save configuration' })
+  ).toBeDisabled()
 })

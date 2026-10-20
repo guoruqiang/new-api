@@ -85,6 +85,17 @@ func ResolveAttemptGroup(c *gin.Context, in GroupResolveInput) (group string, so
 type ExemptionScope struct {
 	GroupNamespaces map[string]string
 	Exempt          map[string]bool
+	Bypass          map[string]bool
+}
+
+// IsBypassed reports whether an attempt stays out of the audit entirely. Only
+// a concrete token group can be bypassed; auto requests are always audited.
+func IsBypassed(scope ExemptionScope, group string, viaAuto bool) bool {
+	if viaAuto || group == "" {
+		return false
+	}
+	namespace, ok := scope.GroupNamespaces[group]
+	return ok && scope.Bypass[namespace]
 }
 
 // IsExempt reports whether an attempt skips the audit. Auto requests are never

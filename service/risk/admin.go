@@ -44,6 +44,9 @@ func PublishConfig(expectedRevision int64, cfg ConfigPayload, operatorID int) (i
 	if cfg.ExemptNamespaces == nil {
 		cfg.ExemptNamespaces = []string{}
 	}
+	if cfg.BypassNamespaces == nil {
+		cfg.BypassNamespaces = []string{}
+	}
 	if cfg.GroupBindings == nil {
 		cfg.GroupBindings = []GroupBinding{}
 	}
@@ -67,6 +70,7 @@ type GroupEntry struct {
 	Namespace      string `json:"namespace"`
 	Generation     int    `json:"generation"`
 	Exempt         bool   `json:"exempt"`
+	Bypassed       bool   `json:"bypassed"`
 	BindingSource  string `json:"binding_source"`
 	PolicyKey      string `json:"policy_key"`
 	PolicyRevision int    `json:"policy_revision"`
@@ -100,6 +104,10 @@ func ListGroupDirectory() (GroupDirectory, error) {
 	for _, ns := range view.Payload.ExemptNamespaces {
 		exempt[ns] = true
 	}
+	bypassed := map[string]bool{}
+	for _, ns := range view.Payload.BypassNamespaces {
+		bypassed[ns] = true
+	}
 	bindings := map[string]GroupBinding{}
 	for _, gb := range view.Payload.GroupBindings {
 		bindings[gb.Namespace] = gb
@@ -111,6 +119,9 @@ func ListGroupDirectory() (GroupDirectory, error) {
 			if exempt[row.Namespace] {
 				dir.InvalidRefs = append(dir.InvalidRefs, InvalidRef{Namespace: row.Namespace, GroupName: row.GroupName, Kind: "exempt"})
 			}
+			if bypassed[row.Namespace] {
+				dir.InvalidRefs = append(dir.InvalidRefs, InvalidRef{Namespace: row.Namespace, GroupName: row.GroupName, Kind: "bypass"})
+			}
 			if _, ok := bindings[row.Namespace]; ok {
 				dir.InvalidRefs = append(dir.InvalidRefs, InvalidRef{Namespace: row.Namespace, GroupName: row.GroupName, Kind: "binding"})
 			}
@@ -119,6 +130,8 @@ func ListGroupDirectory() (GroupDirectory, error) {
 		mapped[row.GroupName] = true
 		entry := GroupEntry{GroupName: row.GroupName, Namespace: row.Namespace, Generation: row.Generation}
 		switch gb, bound := bindings[row.Namespace]; {
+		case bypassed[row.Namespace]:
+			entry.Bypassed, entry.BindingSource = true, "bypass"
 		case exempt[row.Namespace]:
 			entry.Exempt, entry.BindingSource = true, "exempt"
 		case bound:
@@ -494,12 +507,18 @@ func BuildOverview(start, end int64, groupName string) (Overview, error) {
 		ov.InvalidRefs = len(snap.InvalidRefs)
 		if snap.Enabled {
 			binding := snap.Default
+			bypassed := groupName != "auto" && IsBypassed(snap.Scope, groupName, false)
 			exempt := groupName != "auto" && IsExempt(snap.Scope, groupName, false)
-			if exempt {
+			switch {
+			case bypassed:
+				for layer := range ov.Stages {
+					ov.Stages[layer] = "bypass"
+				}
+			case exempt:
 				for layer := range ov.Stages {
 					ov.Stages[layer] = "exempt"
 				}
-			} else {
+			default:
 				if groupName != "" && groupName != "auto" {
 					binding = snap.BindingFor(snap.Scope.NamespaceFor(groupName))
 				}
@@ -574,6 +593,7 @@ type PreviewResult struct {
 	Enabled        bool     `json:"enabled"`
 	Audited        bool     `json:"audited"`
 	Exempt         bool     `json:"exempt"`
+	Bypassed       bool     `json:"bypassed"`
 	Namespace      string   `json:"namespace"`
 	BindingSource  string   `json:"binding_source"`
 	PolicyKey      string   `json:"policy_key"`
@@ -599,6 +619,11 @@ func Preview(ctx context.Context, req PreviewRequest) (PreviewResult, error) {
 	}
 	res := PreviewResult{Enabled: snap.Enabled, Namespace: namespace}
 	if !snap.Enabled {
+		return res, nil
+	}
+	if IsBypassed(snap.Scope, group, req.ViaAuto) {
+		res.Bypassed = true
+		res.BindingSource = "bypass"
 		return res, nil
 	}
 	if IsExempt(snap.Scope, group, req.ViaAuto) {

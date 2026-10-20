@@ -25,6 +25,7 @@ export type Binding = {
 export type Config = {
   enabled: boolean
   exempt_namespaces: string[]
+  bypass_namespaces: string[]
   default_binding: Binding
   group_bindings: (Binding & { namespace: string })[]
   retention: { events_days: number; counters_days: number }
@@ -35,6 +36,7 @@ export type Group = Binding & {
   namespace: string
   generation: number
   exempt: boolean
+  bypassed: boolean
   binding_source: string
 }
 export type Directory = {
@@ -50,7 +52,12 @@ export type Question = {
   enabled: boolean
   builtin: boolean
 }
-export type HardRule = { category: string; source: string; enabled: boolean }
+export type HardRule = {
+  category: string
+  source: string
+  enabled: boolean
+  action?: 'block' | 'review'
+}
 export type Policy = import('zod').infer<
   typeof import('./lib/schema').policySchema
 >
@@ -169,6 +176,7 @@ export type PreviewResult = {
   enabled: boolean
   audited: boolean
   exempt: boolean
+  bypassed: boolean
   namespace: string
   binding_source: string
   policy_key: string

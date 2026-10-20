@@ -46,6 +46,10 @@ const (
 	ReasonSubject                = "subject"
 	ReasonUnavailable            = "unavailable"
 	ReasonCoverageIncomplete     = "coverage_incomplete"
+	// A review-tier rule hit that the decision model judged safe, or that no
+	// decision model could confirm; both pass and are logged for tuning.
+	ReasonRuleCleared     = "rule_cleared"
+	ReasonRuleUnconfirmed = "rule_unconfirmed"
 )
 
 const (
@@ -102,23 +106,31 @@ type AttemptContext struct {
 
 // Input is the role-preserving audit view of one request body.
 type Input struct {
-	Digest          string
-	Model           string
-	Systems         []string
-	DistillUsers    []string
-	UserTurns       []string
-	UserAuthored    []string
-	LatestUser      string
-	ToolNames       []string
-	MessageCount    int
-	ToolCount       int
-	MaxTokens       *int
-	Thinking        ThinkingRequest
-	DeviceID        string
-	Official        bool
-	HasMedia        bool
-	RefsHistory     bool
-	PromptTokenOnly bool
+	Digest       string
+	Model        string
+	Systems      []string
+	DistillUsers []string
+	UserTurns    []string
+	UserAuthored []string
+	// Assistants and RecentToolOutputs are client-supplied context that only
+	// the review tier of local rules scans; the latest tool results are the
+	// only ones not already audited with an earlier request of the session.
+	Assistants        []string
+	RecentToolOutputs []string
+	LatestUser        string
+	ToolNames         []string
+	MessageCount      int
+	ToolCount         int
+	MaxTokens         *int
+	Thinking          ThinkingRequest
+	DeviceID          string
+	Official          bool
+	HasMedia          bool
+	RefsHistory       bool
+	PromptTokenOnly   bool
+	// Truncated reports that older turns or the middle of a long text were
+	// left out to keep the audit bounded.
+	Truncated bool
 }
 
 // ThinkingRequest holds the reasoning knobs the distill structure check reads.
@@ -155,6 +167,9 @@ type Decision struct {
 	BlockID        int                `json:"block_id,omitempty"`
 	RefusalID      int                `json:"refusal_id,omitempty"`
 	Similarity     float64            `json:"similarity,omitempty"`
+	// Reviewed marks a decision that a review-tier rule hit sent to the
+	// decision model; such decisions are logged even when they pass.
+	Reviewed bool `json:"reviewed,omitempty"`
 }
 
 // Blocks reports whether the decision stops the request in enforce mode.

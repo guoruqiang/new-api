@@ -39,10 +39,12 @@ type Retention struct {
 	CountersDays int `json:"counters_days"`
 }
 
-// ConfigPayload is one published configuration revision.
+// ConfigPayload is one published configuration revision. Exempt groups are
+// counted but not audited; bypassed groups never enter the audit at all.
 type ConfigPayload struct {
 	Enabled          bool           `json:"enabled"`
 	ExemptNamespaces []string       `json:"exempt_namespaces"`
+	BypassNamespaces []string       `json:"bypass_namespaces"`
 	DefaultBinding   Binding        `json:"default_binding"`
 	GroupBindings    []GroupBinding `json:"group_bindings"`
 	Retention        Retention      `json:"retention"`
@@ -51,6 +53,7 @@ type ConfigPayload struct {
 func DefaultConfigPayload() ConfigPayload {
 	return ConfigPayload{
 		ExemptNamespaces: []string{},
+		BypassNamespaces: []string{},
 		DefaultBinding:   Binding{PolicyKey: BaselinePolicyKey, PolicyRevision: 1, Mode: ModeObserve},
 		GroupBindings:    []GroupBinding{},
 		Retention:        Retention{EventsDays: 30, CountersDays: 90},
@@ -67,6 +70,9 @@ func ParseConfigPayload(raw []byte) (ConfigPayload, error) {
 	}
 	if cfg.ExemptNamespaces == nil {
 		cfg.ExemptNamespaces = []string{}
+	}
+	if cfg.BypassNamespaces == nil {
+		cfg.BypassNamespaces = []string{}
 	}
 	if cfg.GroupBindings == nil {
 		cfg.GroupBindings = []GroupBinding{}
@@ -176,7 +182,7 @@ func buildSnapshotOnce() (*Snapshot, error) {
 		return nil, err
 	}
 	snap := &Snapshot{Available: true, Groups: map[string]ResolvedBinding{}, Providers: map[int]ProviderConfig{}, NamespaceGroup: map[string]string{}}
-	snap.Scope = ExemptionScope{GroupNamespaces: map[string]string{}, Exempt: map[string]bool{}}
+	snap.Scope = ExemptionScope{GroupNamespaces: map[string]string{}, Exempt: map[string]bool{}, Bypass: map[string]bool{}}
 	if row == nil {
 		return snap, nil
 	}
@@ -206,6 +212,13 @@ func buildSnapshotOnce() (*Snapshot, error) {
 			continue
 		}
 		snap.Scope.Exempt[ns] = true
+	}
+	for _, ns := range cfg.BypassNamespaces {
+		if !active[ns] {
+			snap.InvalidRefs = append(snap.InvalidRefs, ns)
+			continue
+		}
+		snap.Scope.Bypass[ns] = true
 	}
 
 	providers, err := model.ListRiskProviders()
@@ -240,7 +253,7 @@ func buildSnapshotOnce() (*Snapshot, error) {
 			snap.InvalidRefs = append(snap.InvalidRefs, gb.Namespace)
 			continue
 		}
-		if snap.Scope.Exempt[gb.Namespace] {
+		if snap.Scope.Exempt[gb.Namespace] || snap.Scope.Bypass[gb.Namespace] {
 			continue
 		}
 		b, err := resolve(gb.PolicyKey, gb.PolicyRevision, gb.Mode, "group")
@@ -373,6 +386,20 @@ func ValidateConfigPayload(cfg ConfigPayload) []*common.Message {
 		}
 		seen[ns] = true
 	}
+	bypassed := map[string]bool{}
+	for _, ns := range cfg.BypassNamespaces {
+		switch {
+		case ns == ReservedAutoNamespace:
+			problems = append(problems, common.NewMessage("Auto cannot be bypassed; auto requests are always audited"))
+		case bypassed[ns]:
+			problems = append(problems, common.NewMessage("Bypassed group {{namespace}} is listed twice", map[string]any{"namespace": ns}))
+		case seen[ns]:
+			problems = append(problems, common.NewMessage("Group {{namespace}} cannot be both exempt and bypassed", map[string]any{"namespace": ns}))
+		case !active[ns]:
+			problems = append(problems, common.NewMessage("Group namespace {{namespace}} does not exist or was retired", map[string]any{"namespace": ns}))
+		}
+		bypassed[ns] = true
+	}
 	checkBinding := func(label, key string, revision int, mode string) {
 		if mode != ModeObserve && mode != ModeEnforce {
 			problems = append(problems, common.NewMessage("{{binding}}: mode must be observe or enforce", map[string]any{"binding": label}))
@@ -400,6 +427,8 @@ func ValidateConfigPayload(cfg ConfigPayload) []*common.Message {
 			problems = append(problems, common.NewMessage("Group {{namespace}} can have only one binding", map[string]any{"namespace": gb.Namespace}))
 		case slices.Contains(cfg.ExemptNamespaces, gb.Namespace):
 			problems = append(problems, common.NewMessage("Exempt group {{namespace}} cannot have a binding", map[string]any{"namespace": gb.Namespace}))
+		case bypassed[gb.Namespace]:
+			problems = append(problems, common.NewMessage("Bypassed group {{namespace}} cannot have a binding", map[string]any{"namespace": gb.Namespace}))
 		}
 		bound[gb.Namespace] = true
 		checkBinding(label, gb.PolicyKey, gb.PolicyRevision, gb.Mode)

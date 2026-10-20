@@ -33,6 +33,7 @@ export const configSchema = z
   .object({
     enabled: z.boolean(),
     exempt_namespaces: z.array(z.string()),
+    bypass_namespaces: z.array(z.string()),
     default_binding: bindingSchema,
     group_bindings: z.array(bindingSchema.extend({ namespace: z.string() })),
     retention: z.object({
@@ -41,15 +42,13 @@ export const configSchema = z
     }),
   })
   .superRefine((value, ctx) => {
+    const skipped = [...value.exempt_namespaces, ...value.bypass_namespaces]
     if (
-      value.exempt_namespaces.includes('auto') ||
-      new Set(value.exempt_namespaces).size !==
-        value.exempt_namespaces.length ||
+      skipped.includes('auto') ||
+      new Set(skipped).size !== skipped.length ||
       new Set(value.group_bindings.map((b) => b.namespace)).size !==
         value.group_bindings.length ||
-      value.group_bindings.some((b) =>
-        value.exempt_namespaces.includes(b.namespace)
-      )
+      value.group_bindings.some((b) => skipped.includes(b.namespace))
     ) {
       ctx.addIssue({ code: 'custom', message: 'Invalid risk audit settings' })
     }
@@ -102,6 +101,7 @@ export const policySchema = z
             category: z.string().min(1),
             source: unicodeText(400).min(1),
             enabled: z.boolean(),
+            action: z.enum(['block', 'review']).optional(),
           })
         )
         .max(60)
@@ -120,6 +120,8 @@ export const policySchema = z
       subject_block_enabled: z.boolean(),
       block_subject: z.enum(['user', 'user_device']),
       block_ttl_minutes: z.number().int().min(0).max(525600),
+      block_after_hits: z.number().int().min(1).max(20),
+      block_window_minutes: z.number().int().min(1).max(1440),
       memory_ttl_days: z.number().int().min(0).max(3650),
       max_similar_candidates: z.number().int().min(1).max(10000),
     }),

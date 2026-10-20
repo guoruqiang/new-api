@@ -104,6 +104,10 @@ export function ScopeCard(props: {
   const groups = props.directory.groups.filter(
     (g) => g.group_name !== 'auto' && g.namespace !== 'auto'
   )
+  const skipped = new Set([
+    ...value.exempt_namespaces,
+    ...value.bypass_namespaces,
+  ])
   return (
     <Accordion
       value={openSections}
@@ -207,9 +211,54 @@ export function ScopeCard(props: {
                     )
                     return
                   }
+                  if (value.bypass_namespaces.some((ns) => next.includes(ns))) {
+                    toast.error(
+                      t('A group cannot be both exempt and bypassed.')
+                    )
+                    return
+                  }
                   set('exempt_namespaces', next)
                 }}
               />
+              <label
+                className='block space-y-2 text-sm'
+                htmlFor='risk-bypass-groups'
+              >
+                {t('Bypassed groups')}
+              </label>
+              <MultiSelect
+                id='risk-bypass-groups'
+                options={groups.map((g) => ({
+                  value: g.namespace,
+                  label: g.group_name,
+                }))}
+                selected={value.bypass_namespaces}
+                disabled={!props.canWrite || save.isPending}
+                onChange={(next) => {
+                  if (
+                    value.group_bindings.some((b) => next.includes(b.namespace))
+                  ) {
+                    toast.error(
+                      t(
+                        'Remove the group override before bypassing this group.'
+                      )
+                    )
+                    return
+                  }
+                  if (value.exempt_namespaces.some((ns) => next.includes(ns))) {
+                    toast.error(
+                      t('A group cannot be both exempt and bypassed.')
+                    )
+                    return
+                  }
+                  set('bypass_namespaces', next)
+                }}
+              />
+              <FieldDescription>
+                {t(
+                  'Requests from these groups skip the risk audit entirely: no checks, counters or events. Auto requests are still audited.'
+                )}
+              </FieldDescription>
               {(props.directory.invalid_refs.length > 0 ||
                 props.directory.unmapped.length > 0) && (
                 <div role='alert' className='text-warning space-y-2 text-sm'>
@@ -232,6 +281,10 @@ export function ScopeCard(props: {
                       set(
                         'exempt_namespaces',
                         value.exempt_namespaces.filter((ns) => valid.has(ns))
+                      )
+                      set(
+                        'bypass_namespaces',
+                        value.bypass_namespaces.filter((ns) => valid.has(ns))
                       )
                       set(
                         'group_bindings',
@@ -258,12 +311,16 @@ export function ScopeCard(props: {
                   {
                     id: 'state',
                     header: t('Status'),
-                    cell: (g) =>
-                      t(
+                    cell: (g) => {
+                      if (value.bypass_namespaces.includes(g.namespace)) {
+                        return t('Bypassed group')
+                      }
+                      return t(
                         value.exempt_namespaces.includes(g.namespace)
                           ? 'Exempt group'
                           : 'Audited'
-                      ),
+                      )
+                    },
                   },
                   {
                     id: 'binding',
@@ -272,7 +329,7 @@ export function ScopeCard(props: {
                       const binding = value.group_bindings.find(
                         (b) => b.namespace === g.namespace
                       )
-                      if (value.exempt_namespaces.includes(g.namespace)) {
+                      if (skipped.has(g.namespace)) {
                         return '—'
                       }
                       return binding ? (
@@ -322,9 +379,7 @@ export function ScopeCard(props: {
                         <Button
                           type='button'
                           variant='outline'
-                          disabled={value.exempt_namespaces.includes(
-                            g.namespace
-                          )}
+                          disabled={skipped.has(g.namespace)}
                           onClick={() =>
                             set(
                               'group_bindings',

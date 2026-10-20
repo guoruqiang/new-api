@@ -87,6 +87,15 @@ func isHarvestStructure(in *Input, st DistillStructure) bool {
 	return wantsThinkingText(in.Thinking, st.MinMaxTokens)
 }
 
+// withFolded appends the confusable-folded form of text when it differs, so
+// needles and patterns also match obfuscated spellings.
+func withFolded(text string) string {
+	if folded := foldConfusables(text); folded != text {
+		return text + "\n" + folded
+	}
+	return text
+}
+
 // detectDistill follows vm2api detectDistill: harvest wrappers and extra
 // patterns always apply; the official-client exemption only relaxes the
 // ordinary needles, fingerprints and the contest structure check.
@@ -95,7 +104,7 @@ func detectDistill(in *Input, p *CompiledPolicy) []distillHit {
 	if !rules.Enabled || (rules.SkipGPTModels && IsGPTSeriesModel(in.Model)) {
 		return nil
 	}
-	joined := in.distillJoined()
+	joined := withFolded(in.distillJoined())
 	if needle := matchNeedles(joined, rules.HardNeedles); needle != "" {
 		return []distillHit{{Rule: "harvest_needle", Evidence: needle}}
 	}
@@ -106,9 +115,9 @@ func detectDistill(in *Input, p *CompiledPolicy) []distillHit {
 		return nil
 	}
 	hits := make([]distillHit, 0, 3)
-	fingerprintText := in.LatestUser
-	if fingerprintText == "" {
-		fingerprintText = joined
+	fingerprintText := joined
+	if in.LatestUser != "" {
+		fingerprintText = withFolded(in.LatestUser)
 	}
 	if fp := matchFingerprints(fingerprintText, rules.Fingerprints); fp != "" {
 		hits = append(hits, distillHit{Rule: "fingerprint", Evidence: fp})

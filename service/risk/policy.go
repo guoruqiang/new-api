@@ -44,6 +44,7 @@ type HardRule struct {
 	Category string `json:"category"`
 	Source   string `json:"source"`
 	Enabled  bool   `json:"enabled"`
+	Action   string `json:"action"`
 }
 
 // UnmarshalJSON makes an omitted enabled flag true without losing false.
@@ -73,14 +74,18 @@ const (
 )
 
 type RefusalConfig struct {
-	Enabled              bool   `json:"enabled"`
-	SimilarityEnabled    bool   `json:"similarity_enabled"`
-	Similarity           int    `json:"similarity"`
-	SubjectBlockEnabled  bool   `json:"subject_block_enabled"`
-	BlockSubject         string `json:"block_subject"`
-	BlockTTLMinutes      int    `json:"block_ttl_minutes"`
-	MemoryTTLDays        int    `json:"memory_ttl_days"`
-	MaxSimilarCandidates int    `json:"max_similar_candidates"`
+	Enabled             bool   `json:"enabled"`
+	SimilarityEnabled   bool   `json:"similarity_enabled"`
+	Similarity          int    `json:"similarity"`
+	SubjectBlockEnabled bool   `json:"subject_block_enabled"`
+	BlockSubject        string `json:"block_subject"`
+	BlockTTLMinutes     int    `json:"block_ttl_minutes"`
+	// A subject is blocked once a user reaches BlockAfterHits confirmed hits
+	// within BlockWindowMinutes; a single hit only stops its own request.
+	BlockAfterHits       int `json:"block_after_hits"`
+	BlockWindowMinutes   int `json:"block_window_minutes"`
+	MemoryTTLDays        int `json:"memory_ttl_days"`
+	MaxSimilarCandidates int `json:"max_similar_candidates"`
 }
 
 type ModelConfig struct {
@@ -139,6 +144,8 @@ func DefaultPolicyPayload() PolicyPayload {
 			SubjectBlockEnabled:  true,
 			BlockSubject:         BlockSubjectUser,
 			BlockTTLMinutes:      30,
+			BlockAfterHits:       3,
+			BlockWindowMinutes:   10,
 			MemoryTTLDays:        7,
 			MaxSimilarCandidates: 2000,
 		},
@@ -167,6 +174,20 @@ func ParsePolicyPayload(raw []byte) (PolicyPayload, error) {
 	}
 	NormalizePolicyPayload(&payload)
 	return payload, nil
+}
+
+// effectiveAction is a rule's action. Rules saved before actions existed keep
+// blocking unless they are a built-in rule, which follows its built-in action.
+func effectiveAction(rule HardRule) string {
+	if rule.Action != "" {
+		return rule.Action
+	}
+	for _, b := range BuiltinHardRules {
+		if b.Source == rule.Source && b.Category == rule.Category {
+			return b.Action
+		}
+	}
+	return RuleActionBlock
 }
 
 func cleanList(items []string) []string {
@@ -203,10 +224,21 @@ func NormalizePolicyPayload(p *PolicyPayload) {
 		seen := make(map[string]bool, len(p.HardRegex.Rules))
 		rules := make([]HardRule, 0, len(p.HardRegex.Rules))
 		for i := range p.HardRegex.Rules {
-			p.HardRegex.Rules[i].Source = strings.TrimSpace(p.HardRegex.Rules[i].Source)
-			rule := p.HardRegex.Rules[i]
+			rule := &p.HardRegex.Rules[i]
+			rule.Source = strings.TrimSpace(rule.Source)
+			// Upgrade only recognizable pre-action builtins. Explicit actions
+			// and customized categories keep the administrator's saved pattern.
+			if rule.Action == "" {
+				switch {
+				case rule.Category == "jailbreak" && rule.Source == `(?:解除|关闭|绕过|无视)(?:你的|所有|全部)?(?:安全|内容)?(?:限制|审查|过滤|策略)`:
+					rule.Source = jailbreakControlPattern
+				case rule.Category == "crack" && rule.Source == `(?:破解补丁|注册机|激活码生成器)`:
+					rule.Source = crackToolPattern
+				}
+			}
+			rule.Action = effectiveAction(*rule)
 			if !seen[rule.Source] {
-				rules = append(rules, rule)
+				rules = append(rules, *rule)
 				seen[rule.Source] = true
 			}
 		}
@@ -300,6 +332,9 @@ func ValidatePolicyPayload(p PolicyPayload) []*common.Message {
 		if !slices.Contains(HardRuleCategories, rule.Category) {
 			problems = append(problems, common.NewMessage("Unknown risk rule category {{category}}", map[string]any{"category": rule.Category}))
 		}
+		if rule.Action != "" && rule.Action != RuleActionBlock && rule.Action != RuleActionReview {
+			problems = append(problems, common.NewMessage("Risk rule action must be block or review"))
+		}
 		if rule.Source == "" {
 			problems = append(problems, common.NewMessage("Every risk rule needs a pattern"))
 			continue
@@ -321,6 +356,8 @@ func ValidatePolicyPayload(p PolicyPayload) []*common.Message {
 		problems = append(problems, common.NewMessage("Block subject must be user or user_device"))
 	}
 	checkRange(&problems, "refusal.block_ttl_minutes", r.BlockTTLMinutes, 0, 525600)
+	checkRange(&problems, "refusal.block_after_hits", r.BlockAfterHits, 1, 20)
+	checkRange(&problems, "refusal.block_window_minutes", r.BlockWindowMinutes, 1, 1440)
 	checkRange(&problems, "refusal.memory_ttl_days", r.MemoryTTLDays, 0, 3650)
 	checkRange(&problems, "refusal.max_similar_candidates", r.MaxSimilarCandidates, 1, 10000)
 
@@ -412,14 +449,14 @@ func CompilePolicy(key string, revision int, p PolicyPayload) (*CompiledPolicy, 
 		if err != nil {
 			return nil, err
 		}
-		cp.hardRules = append(cp.hardRules, compiledRule{category: rule.Category, source: rule.Source, re: re})
+		cp.hardRules = append(cp.hardRules, compiledRule{category: rule.Category, source: rule.Source, action: effectiveAction(rule), re: re})
 	}
 	for _, source := range p.HardRegex.Patterns {
 		re, err := compileCaseless(source)
 		if err != nil {
 			return nil, err
 		}
-		cp.hardRules = append(cp.hardRules, compiledRule{category: "custom", source: source, re: re})
+		cp.hardRules = append(cp.hardRules, compiledRule{category: "custom", source: source, action: RuleActionBlock, re: re})
 	}
 	return cp, nil
 }

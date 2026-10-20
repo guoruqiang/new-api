@@ -480,6 +480,71 @@ it('preserves commas in regex patterns entered with the keyboard', async () => {
   )
 })
 
+it('saves the chosen rule handling and adds new rules for model review', async () => {
+  const write = vi.spyOn(api, 'request').mockResolvedValue({
+    data: { success: true, data: { ...row, revision: 2, config_revision: 4 } },
+  })
+  const user = userEvent.setup()
+  renderRisk(
+    <PolicySettings
+      config={config}
+      row={row}
+      initial={policy}
+      defaults={defaults}
+      providers={[]}
+      view='hard_regex'
+      canWrite
+      onSaved={() => {}}
+    />
+  )
+  const handling = screen.getByRole('combobox', { name: 'Handling' })
+  expect(handling).toHaveValue('review')
+  await user.selectOptions(handling, 'block')
+  await user.click(screen.getByRole('button', { name: 'Add rule' }))
+  expect(screen.getAllByRole('combobox', { name: 'Handling' })[1]).toHaveValue(
+    'review'
+  )
+  await user.type(screen.getAllByRole('textbox', { name: 'Regex' })[1], 'new')
+  await user.click(screen.getByRole('button', { name: 'Save settings' }))
+  await waitFor(() =>
+    expect(write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            hard_regex: expect.objectContaining({
+              rules: [
+                { ...defaults.builtin_rules[0], action: 'block' },
+                {
+                  category: 'custom',
+                  source: 'new',
+                  enabled: true,
+                  action: 'review',
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+    )
+  )
+})
+
+it('rejects ban thresholds outside the server bounds', () => {
+  for (const patch of [
+    { block_after_hits: 0 },
+    { block_after_hits: 21 },
+    { block_window_minutes: 0 },
+    { block_window_minutes: 1441 },
+  ]) {
+    expect(
+      policySchema.safeParse({
+        ...policy,
+        refusal: { ...policy.refusal, ...patch },
+      }).success
+    ).toBe(false)
+  }
+})
+
 it('matches server numeric bounds and counts Unicode code points for question limits', () => {
   for (const patch of [
     { budget_ms: 199 },

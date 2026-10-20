@@ -54,6 +54,8 @@ export const policy: Policy = {
     subject_block_enabled: true,
     block_subject: 'user',
     block_ttl_minutes: 30,
+    block_after_hits: 3,
+    block_window_minutes: 10,
     memory_ttl_days: 7,
     max_similar_candidates: 2000,
   },
@@ -79,6 +81,7 @@ export const defaults: Defaults = {
   config: {
     enabled: false,
     exempt_namespaces: [],
+    bypass_namespaces: [],
     default_binding: {
       policy_key: 'baseline',
       policy_revision: 1,
@@ -97,7 +100,14 @@ export const defaults: Defaults = {
       builtin: true,
     },
   ],
-  builtin_rules: [{ category: 'custom', source: 'malicious', enabled: true }],
+  builtin_rules: [
+    {
+      category: 'custom',
+      source: 'malicious',
+      enabled: true,
+      action: 'review',
+    },
+  ],
   providers: [
     {
       id: 'jev',
@@ -117,6 +127,7 @@ export const directory: Directory = {
       namespace: 'ns-a',
       generation: 1,
       exempt: false,
+      bypassed: false,
       binding_source: 'default',
       ...defaults.config.default_binding,
     },

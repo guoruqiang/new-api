@@ -207,7 +207,7 @@ func evaluate(ctx context.Context, ev evaluation) Decision {
 	if payload.Evidence.StorePreview {
 		d.Preview = in.Preview()
 	}
-	if in.HasMedia || in.RefsHistory {
+	if in.HasMedia || in.RefsHistory || in.Truncated {
 		d.Coverage = CoverageIncomplete
 	}
 	gpt := IsGPTSeriesModel(ev.attempt.Model)
@@ -227,7 +227,9 @@ func evaluate(ctx context.Context, ev evaluation) Decision {
 		return blockDecision(d, LayerDistill, hits[0].Rule, "distill", strings.Join(evidence, ";"), strings.Join(rules, ","), true)
 	}
 
-	ruleDoc, ruleIncomplete := in.RuleDocument(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64)
+	ruleDoc, userIncomplete := in.RuleDocument(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64)
+	contextDoc, contextIncomplete := in.ContextDocument(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64)
+	ruleIncomplete := userIncomplete || contextIncomplete
 	allow := func(category string) bool {
 		if category == "distill" {
 			return payload.Distill.Enabled && !(payload.Distill.SkipGPTModels && gpt)
@@ -235,11 +237,23 @@ func evaluate(ctx context.Context, ev evaluation) Decision {
 		return payload.HardRegex.Enabled
 	}
 	scanned := slices.ContainsFunc(p.hardRules, func(r compiledRule) bool { return allow(r.category) })
+	// A block-tier hit in the user's own text stops the request. Review-tier
+	// hits, and every hit in system, assistant or tool text, go to the model.
+	var review *hardHit
 	if hit, ok := matchHardRules(ruleDoc, p.hardRules, allow); ok {
-		if hit.Category == "distill" {
+		switch {
+		case hit.Category == "distill":
 			return blockDecision(d, LayerDistill, "distill_regex", "distill", hit.Keyword, hit.Rule, true)
+		case hit.Action == RuleActionBlock:
+			return blockDecision(d, LayerHardRegex, hit.Category, hit.Category, hit.Keyword, hit.Rule, true)
 		}
-		return blockDecision(d, LayerHardRegex, hit.Category, hit.Category, hit.Keyword, hit.Rule, true)
+		review = &hit
+	}
+	if review == nil {
+		notDistill := func(category string) bool { return category != "distill" && allow(category) }
+		if hit, ok := matchHardRules(contextDoc, p.hardRules, notDistill); ok {
+			review = &hit
+		}
 	}
 
 	if cfg := payload.Refusal; cfg.Enabled {
@@ -290,10 +304,16 @@ func evaluate(ctx context.Context, ev evaluation) Decision {
 	}
 
 	m := payload.Model
+	if review != nil {
+		d.Layer, d.Category, d.Keyword, d.Rule, d.Reviewed = LayerHardRegex, review.Category, review.Keyword, review.Rule, true
+	}
 	if !m.Enabled || !ev.runModel {
-		if scanned {
+		switch {
+		case review != nil:
+			d.Reason = ReasonRuleUnconfirmed
+		case scanned:
 			d.Reason = ReasonRegexMiss
-		} else {
+		default:
 			d.Reason = ReasonUnchecked
 		}
 		return d
@@ -302,49 +322,112 @@ func evaluate(ctx context.Context, ev evaluation) Decision {
 	if !ok || provider.BaseURL == "" && len(endpointLines(provider)) == 0 {
 		return failureDecision(d, payload, LayerModel, ReasonUnavailable, "no provider")
 	}
-	document, docIncomplete := in.ModelDocument(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64)
-	if ruleIncomplete || docIncomplete || in.PromptTokenOnly || in.HasMedia || in.RefsHistory || len([]rune(document)) > m.MaxAuditChars {
-		return failureDecision(d, payload, LayerModel, ReasonCoverageIncomplete, "audit text not fully covered")
+	excerpt := ""
+	excerptIncomplete := false
+	if review != nil {
+		excerpt, excerptIncomplete = review.excerpt(m.MaxAuditChars)
 	}
-	if document == "" {
+	segments, dropped, docIncomplete := in.ModelSegments(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64, m.MaxAuditChars, excerpt)
+	if ruleIncomplete || docIncomplete || excerptIncomplete || dropped || in.PromptTokenOnly {
+		d.Coverage = CoverageIncomplete
+	}
+	if len(segments) == 0 {
 		d.Reason = ReasonUnchecked
+		if review != nil {
+			d.Reason = ReasonRuleUnconfirmed
+		}
 		return d
 	}
 	modelName := provider.ResolvedModel(m.Model)
 	d.ProviderModel = modelName
-	reason := ReasonModelSafe
-	var scores map[string]float64
-	key := ""
-	if ev.useCache && m.DedupSec > 0 {
-		key = verdictKey(ev, provider, modelName, document)
-		if cached, found, _ := verdictCache.Get(key); found {
-			scores = cached.scores
-			reason = ReasonModelReplay
-		}
-	}
-	if scores == nil {
-		callCtx, cancel := context.WithTimeout(ctx, time.Duration(m.BudgetMS)*time.Millisecond)
-		result, err := ev.classifier(provider).Classify(callCtx, ClassifyRequest{State: document, Questions: p.asked, Model: modelName, MaxAttempts: m.MaxAttempts})
-		cancel()
-		if err != nil {
-			detail := err.Error()
-			if unavail, ok := err.(*ErrModelUnavailable); ok {
-				detail = unavail.Detail
+	var failure error
+	var worst *modelHit
+	merged := map[string]float64{}
+	allCached := true
+	for _, v := range classifySegments(ctx, ev, provider, modelName, segments) {
+		if v.err != nil {
+			if failure == nil {
+				failure = v.err
 			}
-			return failureDecision(d, payload, LayerModel, ReasonUnavailable, detail)
+			allCached = false
+			continue
 		}
-		scores = result.Scores
-		if key != "" {
-			verdictCache.SetWithTTL(key, cachedVerdict{scores: scores, model: modelName}, time.Duration(m.DedupSec)*time.Second)
+		allCached = allCached && v.cached
+		for id, score := range v.scores {
+			if current, seen := merged[id]; !seen || score < current {
+				merged[id] = score
+			}
+		}
+		if hits := judgeScores(v.scores, p.asked, m.Threshold, m.NearMissBand); len(hits) > 0 && (worst == nil || hits[0].score < worst.score) {
+			worst = &hits[0]
+			d.Scores = v.scores
 		}
 	}
-	d.Scores = scores
-	if hits := judgeScores(scores, p.asked, m.Threshold, m.NearMissBand); len(hits) > 0 {
-		return blockDecision(d, LayerModel, "model", hits[0].category, hits[0].category, "", true)
+	if worst != nil {
+		return blockDecision(d, LayerModel, "model", worst.category, worst.category, d.Rule, true)
+	}
+	d.Scores = merged
+	if failure != nil {
+		detail := failure.Error()
+		if unavail, ok := failure.(*ErrModelUnavailable); ok {
+			detail = unavail.Detail
+		}
+		return failureDecision(d, payload, LayerModel, ReasonUnavailable, detail)
+	}
+	if dropped {
+		return failureDecision(d, payload, LayerModel, ReasonCoverageIncomplete, "audit text exceeds the segment limit")
 	}
 	d.Layer = LayerModel
-	d.Reason = reason
+	switch {
+	case review != nil:
+		d.Reason = ReasonRuleCleared
+	case allCached:
+		d.Reason = ReasonModelReplay
+	default:
+		d.Reason = ReasonModelSafe
+	}
 	return d
+}
+
+type segmentVerdict struct {
+	scores map[string]float64
+	cached bool
+	err    error
+}
+
+// classifySegments asks the decision model about every segment in parallel
+// within one budget. Each segment has its own cache entry, so a system prompt
+// repeated by the same user is judged once per cache window.
+func classifySegments(ctx context.Context, ev evaluation, provider ProviderConfig, modelName string, segments []string) []segmentVerdict {
+	m := ev.binding.Policy.Payload.Model
+	classifier := ev.classifier(provider)
+	verdicts := make([]segmentVerdict, len(segments))
+	callCtx, cancel := context.WithTimeout(ctx, time.Duration(m.BudgetMS)*time.Millisecond)
+	defer cancel()
+	var wg sync.WaitGroup
+	for i, segment := range segments {
+		wg.Go(func() {
+			key := ""
+			if ev.useCache && m.DedupSec > 0 {
+				key = verdictKey(ev, provider, modelName, segment)
+				if cached, found, _ := verdictCache.Get(key); found {
+					verdicts[i] = segmentVerdict{scores: cached.scores, cached: true}
+					return
+				}
+			}
+			result, err := classifier.Classify(callCtx, ClassifyRequest{State: segment, Questions: ev.binding.Policy.asked, Model: modelName, MaxAttempts: m.MaxAttempts})
+			if err != nil {
+				verdicts[i] = segmentVerdict{err: err}
+				return
+			}
+			if key != "" {
+				verdictCache.SetWithTTL(key, cachedVerdict{scores: result.Scores, model: modelName}, time.Duration(m.DedupSec)*time.Second)
+			}
+			verdicts[i] = segmentVerdict{scores: result.Scores}
+		})
+	}
+	wg.Wait()
+	return verdicts
 }
 
 // applyMode turns blocking outcomes into observations in observe mode.
@@ -379,9 +462,25 @@ func commit(ev evaluation, d Decision) {
 		}
 	}
 	cfg := ev.binding.Policy.Payload.Refusal
-	if d.BanSubject && cfg.Enabled && cfg.SubjectBlockEnabled {
+	if d.BanSubject && cfg.Enabled && cfg.SubjectBlockEnabled && strikeLimitReached(ev, cfg) {
 		blockSubjects(ev, cfg, d.Layer+":"+d.Category, d.Fingerprint)
 	}
+}
+
+// strikeLimitReached counts this confirmed hit together with the user's
+// earlier ones in the window. Events are written asynchronously, so a burst
+// within the same second may need a hit or two more before the block.
+func strikeLimitReached(ev evaluation, cfg RefusalConfig) bool {
+	if cfg.BlockAfterHits <= 1 {
+		return true
+	}
+	since := ev.now.Add(-time.Duration(cfg.BlockWindowMinutes) * time.Minute).Unix()
+	earlier, err := ev.store.RecentStrikes(ev.attempt.Namespace, ev.attempt.UserID, since)
+	if err != nil {
+		common.SysError(common.LogText("risk strike count failed: %s", err.Error()))
+		return false
+	}
+	return earlier+1 >= int64(cfg.BlockAfterHits)
 }
 
 func blockSubjects(ev evaluation, cfg RefusalConfig, reason, fingerprint string) {
@@ -469,10 +568,23 @@ var recorder = func() Recorder { return defaultRecorder }
 
 // CheckAttempt audits one upstream attempt. It returns a risk error only when
 // an enforce-mode decision blocks; everything else lets the request continue.
-// Disabled, exempt and uncovered traffic return before the body is parsed.
+// Disabled, bypassed, exempt and uncovered traffic return before the body is parsed.
 func CheckAttempt(c *gin.Context, info *relaycommon.RelayInfo, in AttemptInput) *types.NewAPIError {
 	snap := current.Load()
 	if snap == nil || !snap.Enabled {
+		return nil
+	}
+	group, source, viaAuto := ResolveAttemptGroup(c, groupInput(in, info))
+	// A bypassed group never enters the audit: no request state, counters,
+	// events or freshness check, so a stale snapshot cannot fail it either.
+	if IsBypassed(snap.Scope, group, viaAuto) {
+		// Configuration can change between attempts of an in-flight request.
+		// Do not learn an upstream refusal against its earlier audited attempt.
+		if st := existingRequestState(c); st != nil {
+			st.mu.Lock()
+			st.last = nil
+			st.mu.Unlock()
+		}
 		return nil
 	}
 	st := requestStateFor(c)
@@ -480,7 +592,6 @@ func CheckAttempt(c *gin.Context, info *relaycommon.RelayInfo, in AttemptInput) 
 	defer st.mu.Unlock()
 
 	if in.Phase == PhaseHTTPLoop && st.firstDone {
-		group, _, _ := ResolveAttemptGroup(c, groupInput(in, info))
 		if group == st.firstGroup {
 			return st.firstErr
 		}
@@ -504,7 +615,6 @@ func CheckAttempt(c *gin.Context, info *relaycommon.RelayInfo, in AttemptInput) 
 		return configUnavailableError(c)
 	}
 
-	group, source, viaAuto := ResolveAttemptGroup(c, groupInput(in, info))
 	attempt := AttemptContext{
 		RequestID: info.RequestId, Index: st.attempts, UserID: info.UserId, TokenID: info.TokenId,
 		UserGroup: info.UserGroup, TokenGroup: common.GetContextKeyString(c, constant.ContextKeyUsingGroup),
@@ -578,7 +688,7 @@ func CheckAttempt(c *gin.Context, info *relaycommon.RelayInfo, in AttemptInput) 
 		commit(ev, d)
 	}
 	rec := Record{Counter: counterKey(attempt, d, isFirst, now)}
-	if d.Outcome != OutcomePass {
+	if d.Outcome != OutcomePass || d.Reviewed {
 		deviceID := ""
 		if st.input != nil {
 			deviceID = st.input.DeviceID

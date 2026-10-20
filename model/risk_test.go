@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"net/url"
@@ -545,6 +546,26 @@ func TestRiskBlockReleaseRearmAndCleanup(t *testing.T) {
 	assert.NotEqual(t, stored.Id, recreated.Id, "a cleaned-up block creates a new record")
 	assert.Zero(t, recreated.HitCount)
 	assert.Zero(t, recreated.ReleasedAt)
+}
+
+func TestRiskStrikeCountWindowAndScope(t *testing.T) {
+	useRiskDB(t)
+	event := func(namespace string, user int, at int64, outcome, reason string) RiskEvent {
+		return RiskEvent{RequestId: fmt.Sprintf("%s-%d-%d-%s", namespace, user, at, reason), Namespace: namespace, UserId: user, CreatedAt: at, Outcome: outcome, Reason: reason, Layer: "hard_regex"}
+	}
+	require.NoError(t, InsertRiskEvents([]RiskEvent{
+		event("ns", 7, 1000, "block", "jailbreak"),
+		event("ns", 7, 1100, "upstream_refusal", "content_filter"),
+		event("ns", 7, 1200, "block", "subject"),
+		event("ns", 7, 1300, "would_block", "jailbreak"),
+		event("ns", 7, 1400, "error_block", "unavailable"),
+		event("ns", 7, 100, "block", "too old"),
+		event("ns", 8, 1000, "block", "other user"),
+		event("other", 7, 1000, "block", "other namespace"),
+	}))
+	count, err := CountRiskStrikes("ns", 7, 900)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), count)
 }
 
 func TestRiskCounterBatchRollbackAndAggregation(t *testing.T) {

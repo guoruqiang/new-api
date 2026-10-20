@@ -101,7 +101,10 @@ export function PreviewDialog(props: { directory: Directory }) {
           <div role='status' className='space-y-2 rounded-lg border p-3'>
             <p>
               {t(preview.data.audited ? 'Audited' : 'Not audited')} ·{' '}
-              {t(LABELS[preview.data.mode] ?? preview.data.mode)}
+              {t(
+                LABELS[preview.data.mode || preview.data.binding_source] ??
+                  preview.data.mode
+              )}
             </p>
             <p>
               {t(

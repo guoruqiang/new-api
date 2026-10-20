@@ -431,6 +431,11 @@ export function PolicySettings(props: {
                     'Custom expressions use RE2. Distillation rules follow the distillation switch.'
                   )}
                 </p>
+                <p className='text-muted-foreground text-sm'>
+                  {t(
+                    'Review rules, and any rule hit in system, assistant or tool text, are sent to the decision model, which makes the final call. Without the decision model they are only recorded.'
+                  )}
+                </p>
                 <StaticDataTable
                   data={rules}
                   className='min-w-0 [&_[data-slot=table-container]]:max-h-96 [&_[data-slot=table-container]]:overflow-auto'
@@ -483,6 +488,42 @@ export function PolicySettings(props: {
                       ),
                     },
                     {
+                      id: 'action',
+                      header: t('Handling'),
+                      cell: (rule, i) => {
+                        if (rule.category === 'distill') {
+                          return t('Block directly')
+                        }
+                        return (
+                          <Choice
+                            disabled={disabled}
+                            hideLabel
+                            label='Handling'
+                            value={rule.action ?? 'block'}
+                            options={[
+                              {
+                                value: 'review',
+                                label: 'Review by the decision model',
+                              },
+                              { value: 'block', label: 'Block directly' },
+                            ]}
+                            onChange={(action) =>
+                              update('hard_regex', {
+                                rules: rules.map((old, n) =>
+                                  n === i
+                                    ? {
+                                        ...old,
+                                        action: action as 'block' | 'review',
+                                      }
+                                    : old
+                                ),
+                              })
+                            }
+                          />
+                        )
+                      },
+                    },
+                    {
                       id: 'rule',
                       header: t('Regex'),
                       className: 'w-full min-w-64',
@@ -533,7 +574,12 @@ export function PolicySettings(props: {
                       update('hard_regex', {
                         rules: [
                           ...rules,
-                          { category: 'custom', source: '', enabled: true },
+                          {
+                            category: 'custom',
+                            source: '',
+                            enabled: true,
+                            action: 'review',
+                          },
                         ],
                       })
                     }
@@ -550,7 +596,10 @@ export function PolicySettings(props: {
                   </Button>
                 </div>
               </FieldSet>
-              <Field label='Additional regex patterns'>
+              <Field
+                label='Additional regex patterns'
+                hint='Additional patterns block directly.'
+              >
                 <TagInput
                   disabled={disabled}
                   submitOnComma={false}
@@ -628,6 +677,11 @@ export function PolicySettings(props: {
                     'Device identifiers are untrusted. Zero retention means permanent.'
                   )}
                 </p>
+                <p className='text-muted-foreground text-sm'>
+                  {t(
+                    'A subject is blocked only after this many confirmed hits within the window; a single hit only stops its own request.'
+                  )}
+                </p>
                 <FieldGroup className='grid gap-4 sm:grid-cols-3'>
                   <NumberField
                     disabled={disabled}
@@ -635,6 +689,26 @@ export function PolicySettings(props: {
                     value={r.block_ttl_minutes}
                     onChange={(block_ttl_minutes) =>
                       update('refusal', { block_ttl_minutes })
+                    }
+                  />
+                  <NumberField
+                    disabled={disabled}
+                    label='Hits before blocking'
+                    min={1}
+                    max={20}
+                    value={r.block_after_hits}
+                    onChange={(block_after_hits) =>
+                      update('refusal', { block_after_hits })
+                    }
+                  />
+                  <NumberField
+                    disabled={disabled}
+                    label='Hit window (minutes)'
+                    min={1}
+                    max={1440}
+                    value={r.block_window_minutes}
+                    onChange={(block_window_minutes) =>
+                      update('refusal', { block_window_minutes })
                     }
                   />
                   <NumberField
@@ -781,7 +855,7 @@ export function PolicySettings(props: {
                 </FieldGroup>
                 <p className='text-muted-foreground text-sm'>
                   {t(
-                    'Oversized or incomplete input follows the failure action; it is never truncated and marked safe.'
+                    'Longer input is split into up to four segments of this size and judged in parallel; text beyond four segments follows the failure action.'
                   )}
                 </p>
               </FieldSet>

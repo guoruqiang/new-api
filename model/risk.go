@@ -932,6 +932,19 @@ func TopRiskKeywords(start, end int64, groupName string, limit int) ([]RiskKeywo
 	return rows, err
 }
 
+// CountRiskStrikes counts a user's confirmed risk hits in a namespace since a
+// time: local blocks other than replays of an active subject block, and
+// learned upstream refusals.
+func CountRiskStrikes(namespace string, userID int, since int64) (int64, error) {
+	var count int64
+	err := DB.Model(&RiskEvent{}).
+		Where("namespace = ? AND user_id = ? AND created_at >= ?", namespace, userID, since).
+		Where("outcome IN ?", []string{"block", "upstream_refusal"}).
+		Where("reason <> ?", "subject").
+		Count(&count).Error
+	return count, err
+}
+
 func deleteRiskBatch(model any, where string, args ...any) (int64, error) {
 	var total int64
 	for {

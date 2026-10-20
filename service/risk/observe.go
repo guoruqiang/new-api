@@ -117,7 +117,9 @@ func learnRefusal(c *gin.Context, reason, message string) string {
 		}
 		if cfg.SubjectBlockEnabled {
 			ev := evaluation{binding: last.binding, attempt: last.attempt, input: last.input, store: defaultStore, now: now}
-			blockSubjects(ev, cfg, "refusal_guard", d.Fingerprint)
+			if strikeLimitReached(ev, cfg) {
+				blockSubjects(ev, cfg, "refusal_guard", d.Fingerprint)
+			}
 		}
 	}
 	rec := Record{Counter: counterKey(last.attempt, d, false, now), Event: buildEvent(last.attempt, d, mode, last.input.DeviceID, now)}
