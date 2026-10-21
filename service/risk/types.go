@@ -74,6 +74,7 @@ const (
 
 const (
 	CoverageComplete   = "complete"
+	CoverageTailWindow = "tail_window"
 	CoverageIncomplete = "incomplete"
 )
 
@@ -112,6 +113,10 @@ type Input struct {
 	DistillUsers []string
 	UserTurns    []string
 	UserAuthored []string
+	// Model-only tails preserve the latest text after extraction bounds apply,
+	// without changing the local-rule and refusal-fingerprint input above.
+	modelSystems []string
+	modelUsers   []string
 	// Assistants and RecentToolOutputs are client-supplied context that only
 	// the review tier of local rules scans; the latest tool results are the
 	// only ones not already audited with an earlier request of the session.
@@ -128,8 +133,8 @@ type Input struct {
 	HasMedia          bool
 	RefsHistory       bool
 	PromptTokenOnly   bool
-	// Truncated reports that older turns or the middle of a long text were
-	// left out to keep the audit bounded.
+	// Truncated reports that older text was left out to keep the audit bounded.
+	// This is a tail-window policy choice, not a decision service failure.
 	Truncated bool
 }
 

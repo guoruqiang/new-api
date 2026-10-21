@@ -328,13 +328,13 @@ func inboundDeviceID(body map[string]any, headers http.Header) string {
 
 // auditTextBudget bounds, in runes, each list of texts the audit reads, so a
 // padded request costs a bounded amount of CPU before billing. It exceeds
-// four model segments of the largest allowed size.
+// the largest allowed decision model tail window.
 const auditTextBudget = 256 * 1024
 
-// recentTexts keeps the newest texts that fit in budget runes; the oldest one
-// kept may be cut to its head and tail. Earlier turns of an agent session
-// were audited with the request that first carried them.
-func recentTexts(texts []string, budget int) ([]string, bool) {
+// recentTexts keeps the newest texts that fit in budget runes. Local rules and
+// refusal fingerprints retain their existing head-and-tail view; the model
+// uses a true tail, so an old head cannot be spliced into its newest window.
+func recentTexts(texts []string, budget int, tailOnly bool) ([]string, bool) {
 	room := budget
 	for i := len(texts) - 1; i >= 0; i-- {
 		n := utf8.RuneCountInString(texts[i])
@@ -344,12 +344,28 @@ func recentTexts(texts []string, budget int) ([]string, bool) {
 		}
 		kept := slices.Clone(texts[i+1:])
 		if room > 0 {
-			cut, _ := boundText(texts[i], room)
+			var cut string
+			if tailOnly {
+				cut, _ = tailRunes(texts[i], room)
+			} else {
+				cut, _ = boundText(texts[i], room)
+			}
 			kept = slices.Insert(kept, 0, cut)
 		}
 		return kept, true
 	}
 	return texts, false
+}
+
+// tailRunes keeps the last limit Unicode code points without splitting UTF-8.
+func tailRunes(text string, limit int) (string, bool) {
+	start := len(text)
+	for start > 0 && limit > 0 {
+		_, size := utf8.DecodeLastRuneInString(text[:start])
+		start -= size
+		limit--
+	}
+	return text[start:], start > 0
 }
 
 // boundText keeps the first and the last runes of a text longer than limit.
@@ -415,9 +431,15 @@ func ExtractInput(body []byte, headers http.Header) (*Input, error) {
 		MaxTokens:         intField(doc, "max_tokens", "max_output_tokens", "max_completion_tokens", "max_new_tokens"),
 	}
 	in.Model, _ = doc["model"].(string)
+	if tail, cut := recentTexts(in.Systems, auditTextBudget, true); cut {
+		in.modelSystems = tail
+	}
+	if tail, cut := recentTexts(in.UserAuthored, auditTextBudget, true); cut {
+		in.modelUsers = tail
+	}
 	for _, list := range []*[]string{&in.Systems, &in.DistillUsers, &in.UserTurns, &in.UserAuthored, &in.Assistants, &in.RecentToolOutputs} {
 		var cut bool
-		*list, cut = recentTexts(*list, auditTextBudget)
+		*list, cut = recentTexts(*list, auditTextBudget, false)
 		in.Truncated = in.Truncated || cut
 	}
 	if len(in.DistillUsers) > 0 {
@@ -538,76 +560,54 @@ func (in *Input) ContextDocument(stripReminders, expandBase64 bool) (string, boo
 	return preparedDocument(texts, false, expandBase64, &decodedTotal)
 }
 
-const (
-	maxModelSegments = 4
-	segmentOverlap   = 200
-)
-
-// ModelSegments is what the decision model reads: the system text and the
-// user-authored text, cut into at most four segments of size runes when they
-// do not fit in one. A rule excerpt goes first; then the newest conversation
-// and the start of the system text alternate, so padding a request cannot
-// push its latest turn out of review. dropped reports text left unjudged.
-func (in *Input) ModelSegments(stripReminders, expandBase64 bool, size int, excerpt string) (segments []string, dropped, incomplete bool) {
+// ModelDocuments returns the tail of the prepared system and user text. A
+// review-tier hit outside that window gets one extra bounded excerpt, only
+// when the whole match fits. Routine tail selection is not a service failure;
+// an oversized rule match remains unconfirmed instead of being cleared.
+func (in *Input) ModelDocuments(stripReminders, expandBase64 bool, size int, hit *hardHit) (documents []string, tailWindow, incomplete, reviewCovered bool) {
 	decodedTotal := 0
-	systems, systemsPartial := preparedDocument(in.Systems, stripReminders, expandBase64, &decodedTotal)
-	users, usersPartial := preparedDocument(in.UserAuthored, stripReminders, expandBase64, &decodedTotal)
+	systemTexts, userTexts := in.Systems, in.UserAuthored
+	if in.modelSystems != nil {
+		systemTexts = in.modelSystems
+	}
+	if in.modelUsers != nil {
+		userTexts = in.modelUsers
+	}
+	systems, systemsPartial := preparedDocument(systemTexts, stripReminders, expandBase64, &decodedTotal)
+	users, usersPartial := preparedDocument(userTexts, stripReminders, expandBase64, &decodedTotal)
 	incomplete = systemsPartial || usersPartial
-	if excerpt != "" {
-		segments = append(segments, excerpt)
+	doc := strings.Join(slices.DeleteFunc([]string{systems, users}, func(s string) bool { return s == "" }), "\n")
+	tail, cut := tailRunes(doc, size)
+	historyCut := in.modelSystems != nil || in.modelUsers != nil
+	tailWindow = cut || historyCut
+	if tail != "" {
+		documents = append(documents, tail)
+	} else if historyCut {
+		incomplete = true
 	}
-	whole := strings.Join(slices.DeleteFunc([]string{systems, users}, func(s string) bool { return s == "" }), "\n")
-	if utf8.RuneCountInString(whole) <= size {
-		if whole != "" {
-			segments = append(segments, whole)
-		}
-		return segments, false, incomplete
+	if hit == nil {
+		return documents, tailWindow, incomplete, true
 	}
-	conversation, conversationRest := splitRunes(users, size, maxModelSegments, true)
-	system, systemRest := splitRunes(systems, size, maxModelSegments, false)
-	for len(segments) < maxModelSegments && len(conversation)+len(system) > 0 {
-		if len(conversation) > 0 {
-			segments, conversation = append(segments, conversation[0]), conversation[1:]
-		}
-		if len(segments) < maxModelSegments && len(system) > 0 {
-			segments, system = append(segments, system[0]), system[1:]
-		}
+	// Compare source offsets, not just the matched phrase: an earlier copy
+	// can have different context from an identical phrase in the tail.
+	base := -1
+	switch {
+	case hit.Text == users:
+		base = len(doc) - len(users)
+	case systems != "" && hit.End <= len(systems) && strings.HasPrefix(hit.Text, systems):
+		base = 0
 	}
-	dropped = conversationRest || systemRest || len(conversation)+len(system) > 0
-	return segments, dropped, incomplete
-}
-
-// splitRunes cuts text into at most limit windows of size runes that overlap
-// slightly, so a phrase on a boundary stays whole in one window. fromEnd
-// yields the last window first. rest reports text beyond the last window.
-func splitRunes(text string, size, limit int, fromEnd bool) (windows []string, rest bool) {
-	runes := []rune(text)
-	if len(runes) == 0 {
-		return nil, false
+	if base >= 0 && base+hit.Start >= len(doc)-len(tail) {
+		return documents, tailWindow, incomplete, true
 	}
-	step := size - min(segmentOverlap, size/8)
-	if fromEnd {
-		end := len(runes)
-		for range limit {
-			start := max(end-size, 0)
-			windows = append(windows, string(runes[start:end]))
-			if start == 0 {
-				return windows, false
-			}
-			end -= step
-		}
-		return windows, true
+	excerpt, covered := hit.excerpt(size)
+	if !covered {
+		return documents, tailWindow, true, false
 	}
-	start := 0
-	for range limit {
-		end := min(start+size, len(runes))
-		windows = append(windows, string(runes[start:end]))
-		if end == len(runes) {
-			return windows, false
-		}
-		start += step
+	if !strings.Contains(tail, excerpt) {
+		documents = append(documents, excerpt)
 	}
-	return windows, true
+	return documents, tailWindow, incomplete, true
 }
 
 // SimilarityDocument is the user text, tool payloads included, that the

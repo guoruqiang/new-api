@@ -123,16 +123,16 @@ func matchHardRules(text string, rules []compiledRule, allow func(category strin
 	return best, found
 }
 
-// excerpt is the match with as much surrounding text as one model segment
-// holds, split evenly before and after it. An oversized match keeps its head
-// and tail and reports incomplete coverage.
+// excerpt includes the complete match and as much surrounding context as
+// size runes allow. A match longer than the window cannot be confirmed by a
+// partial excerpt, so it is left for the administrator to review.
 func (h hardHit) excerpt(size int) (string, bool) {
 	before, match, after := []rune(h.Text[:h.Start]), []rune(h.Text[h.Start:h.End]), []rune(h.Text[h.End:])
-	if len(match) > size {
-		return boundText(string(match), size)
+	if len(match) > size || size <= 0 {
+		return "", false
 	}
-	room := max(size-len(match), 0)
+	room := size - len(match)
 	trail := min(len(after), room-min(len(before), room/2))
 	lead := min(len(before), room-trail)
-	return string(before[len(before)-lead:]) + string(match) + string(after[:trail]), false
+	return string(before[len(before)-lead:]) + string(match) + string(after[:trail]), true
 }

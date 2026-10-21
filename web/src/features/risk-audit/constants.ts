@@ -55,6 +55,7 @@ export const LABELS: Record<string, string> = {
   unset: 'Provider not configured',
   incomplete: 'Incomplete coverage',
   complete: 'Complete coverage',
+  tail_window: 'Tail window reviewed',
   default: 'Inherited default',
   group: 'Group override',
   exempt: 'Exempt group',

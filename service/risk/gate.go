@@ -207,7 +207,7 @@ func evaluate(ctx context.Context, ev evaluation) Decision {
 	if payload.Evidence.StorePreview {
 		d.Preview = in.Preview()
 	}
-	if in.HasMedia || in.RefsHistory || in.Truncated {
+	if in.HasMedia || in.RefsHistory || in.PromptTokenOnly || in.Truncated {
 		d.Coverage = CoverageIncomplete
 	}
 	gpt := IsGPTSeriesModel(ev.attempt.Model)
@@ -230,6 +230,9 @@ func evaluate(ctx context.Context, ev evaluation) Decision {
 	ruleDoc, userIncomplete := in.RuleDocument(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64)
 	contextDoc, contextIncomplete := in.ContextDocument(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64)
 	ruleIncomplete := userIncomplete || contextIncomplete
+	if ruleIncomplete {
+		d.Coverage = CoverageIncomplete
+	}
 	allow := func(category string) bool {
 		if category == "distill" {
 			return payload.Distill.Enabled && !(payload.Distill.SkipGPTModels && gpt)
@@ -322,16 +325,13 @@ func evaluate(ctx context.Context, ev evaluation) Decision {
 	if !ok || provider.BaseURL == "" && len(endpointLines(provider)) == 0 {
 		return failureDecision(d, payload, LayerModel, ReasonUnavailable, "no provider")
 	}
-	excerpt := ""
-	excerptIncomplete := false
-	if review != nil {
-		excerpt, excerptIncomplete = review.excerpt(m.MaxAuditChars)
-	}
-	segments, dropped, docIncomplete := in.ModelSegments(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64, m.MaxAuditChars, excerpt)
-	if ruleIncomplete || docIncomplete || excerptIncomplete || dropped || in.PromptTokenOnly {
+	documents, tailWindow, docIncomplete, reviewCovered := in.ModelDocuments(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64, m.MaxAuditChars, review)
+	if ruleIncomplete || docIncomplete || in.HasMedia || in.RefsHistory || in.PromptTokenOnly {
 		d.Coverage = CoverageIncomplete
+	} else if tailWindow && len(documents) > 0 {
+		d.Coverage = CoverageTailWindow
 	}
-	if len(segments) == 0 {
+	if len(documents) == 0 {
 		d.Reason = ReasonUnchecked
 		if review != nil {
 			d.Reason = ReasonRuleUnconfirmed
@@ -344,7 +344,7 @@ func evaluate(ctx context.Context, ev evaluation) Decision {
 	var worst *modelHit
 	merged := map[string]float64{}
 	allCached := true
-	for _, v := range classifySegments(ctx, ev, provider, modelName, segments) {
+	for _, v := range classifyDocuments(ctx, ev, provider, modelName, documents) {
 		if v.err != nil {
 			if failure == nil {
 				failure = v.err
@@ -374,11 +374,10 @@ func evaluate(ctx context.Context, ev evaluation) Decision {
 		}
 		return failureDecision(d, payload, LayerModel, ReasonUnavailable, detail)
 	}
-	if dropped {
-		return failureDecision(d, payload, LayerModel, ReasonCoverageIncomplete, "audit text exceeds the segment limit")
-	}
 	d.Layer = LayerModel
 	switch {
+	case review != nil && !reviewCovered:
+		d.Reason = ReasonRuleUnconfirmed
 	case review != nil:
 		d.Reason = ReasonRuleCleared
 	case allCached:
@@ -389,41 +388,40 @@ func evaluate(ctx context.Context, ev evaluation) Decision {
 	return d
 }
 
-type segmentVerdict struct {
+type documentVerdict struct {
 	scores map[string]float64
 	cached bool
 	err    error
 }
 
-// classifySegments asks the decision model about every segment in parallel
-// within one budget. Each segment has its own cache entry, so a system prompt
-// repeated by the same user is judged once per cache window.
-func classifySegments(ctx context.Context, ev evaluation, provider ProviderConfig, modelName string, segments []string) []segmentVerdict {
+// classifyDocuments judges the tail window and optional review excerpt within
+// one deadline. Each document has its own verdict cache entry.
+func classifyDocuments(ctx context.Context, ev evaluation, provider ProviderConfig, modelName string, documents []string) []documentVerdict {
 	m := ev.binding.Policy.Payload.Model
 	classifier := ev.classifier(provider)
-	verdicts := make([]segmentVerdict, len(segments))
+	verdicts := make([]documentVerdict, len(documents))
 	callCtx, cancel := context.WithTimeout(ctx, time.Duration(m.BudgetMS)*time.Millisecond)
 	defer cancel()
 	var wg sync.WaitGroup
-	for i, segment := range segments {
+	for i, document := range documents {
 		wg.Go(func() {
 			key := ""
 			if ev.useCache && m.DedupSec > 0 {
-				key = verdictKey(ev, provider, modelName, segment)
+				key = verdictKey(ev, provider, modelName, document)
 				if cached, found, _ := verdictCache.Get(key); found {
-					verdicts[i] = segmentVerdict{scores: cached.scores, cached: true}
+					verdicts[i] = documentVerdict{scores: cached.scores, cached: true}
 					return
 				}
 			}
-			result, err := classifier.Classify(callCtx, ClassifyRequest{State: segment, Questions: ev.binding.Policy.asked, Model: modelName, MaxAttempts: m.MaxAttempts})
+			result, err := classifier.Classify(callCtx, ClassifyRequest{State: document, Questions: ev.binding.Policy.asked, Model: modelName, MaxAttempts: m.MaxAttempts})
 			if err != nil {
-				verdicts[i] = segmentVerdict{err: err}
+				verdicts[i] = documentVerdict{err: err}
 				return
 			}
 			if key != "" {
 				verdictCache.SetWithTTL(key, cachedVerdict{scores: result.Scores, model: modelName}, time.Duration(m.DedupSec)*time.Second)
 			}
-			verdicts[i] = segmentVerdict{scores: result.Scores}
+			verdicts[i] = documentVerdict{scores: result.Scores}
 		})
 	}
 	wg.Wait()

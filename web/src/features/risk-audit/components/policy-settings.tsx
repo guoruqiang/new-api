@@ -844,7 +844,7 @@ export function PolicySettings(props: {
                   />
                   <NumberField
                     disabled={disabled}
-                    label='Maximum audit characters (Unicode)'
+                    label='Audit window characters'
                     min={256}
                     max={64000}
                     value={m.max_audit_chars}
@@ -855,7 +855,7 @@ export function PolicySettings(props: {
                 </FieldGroup>
                 <p className='text-muted-foreground text-sm'>
                   {t(
-                    'Longer input is split into up to four segments of this size and judged in parallel; text beyond four segments follows the failure action.'
+                    'The decision model reviews the final characters of the combined system and user text. Trimming to this window is not a model failure. Rule matches outside the window are reviewed separately using bounded excerpts.'
                   )}
                 </p>
               </FieldSet>

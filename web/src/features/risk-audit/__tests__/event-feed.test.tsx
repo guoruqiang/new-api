@@ -24,8 +24,9 @@ import { api } from '@/lib/api'
 
 import { EventFeed } from '../components/event-feed'
 import { GateRail, RiskOverview } from '../components/overview'
+import { PreviewDialog } from '../components/preview-dialog'
 import type { Overview } from '../types'
-import { renderRisk } from './fixtures'
+import { directory, renderRisk } from './fixtures'
 
 const overview: Overview = {
   enabled: true,
@@ -87,26 +88,24 @@ it('shows actual blocks per stage and excludes uncovered requests from approved 
 })
 
 it('shows upstream refusal observations as well as enforced upstream refusals on the pass view', async () => {
-  const get = vi
-    .spyOn(api, 'get')
-    .mockResolvedValue({
+  const get = vi.spyOn(api, 'get').mockResolvedValue({
+    data: {
+      success: true,
       data: {
-        success: true,
-        data: {
-          items: [
-            {
-              id: 1,
-              created_at: 1760000000,
-              user_id: 7,
-              effective_group: 'standard',
-              layer: 'upstream',
-              outcome: 'would_stop',
-            },
-          ],
-          total: 1,
-        },
+        items: [
+          {
+            id: 1,
+            created_at: 1760000000,
+            user_id: 7,
+            effective_group: 'standard',
+            layer: 'upstream',
+            outcome: 'would_stop',
+          },
+        ],
+        total: 1,
       },
-    })
+    },
+  })
   renderRisk(
     <EventFeed group='standard' layer='upstream' compact upstreamOnly />
   )
@@ -213,4 +212,71 @@ it('renders an empty event range and supports recovery from a failed request', a
   expect(await screen.findByText('No risk events in this range.')).toBeVisible()
   expect(get).toHaveBeenCalledTimes(2)
   expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
+})
+
+it.each([
+  ['tail_window', 'Tail window reviewed'],
+  ['incomplete', 'Incomplete coverage'],
+])('shows %s coverage distinctly in event details', async (coverage, label) => {
+  const event = {
+    id: 1,
+    created_at: 1760000000,
+    request_id: 'request-risk-window',
+    user_id: 7,
+    effective_group: 'standard',
+    layer: 'model',
+    outcome: 'pass',
+    reason: 'model_safe',
+    coverage,
+  }
+  vi.spyOn(api, 'get').mockImplementation(async (url) => ({
+    data: {
+      success: true,
+      data: url === '/api/risk/events/1' ? event : { items: [event], total: 1 },
+    },
+  }))
+  const user = userEvent.setup()
+  renderRisk(<EventFeed group='standard' layer='model' />)
+  await user.click(await screen.findByRole('button', { name: 'View details' }))
+  expect(await screen.findByText(label)).toBeVisible()
+  expect(screen.queryByText(coverage)).not.toBeInTheDocument()
+})
+
+it('shows the reviewed tail window alongside a safe preview verdict', async () => {
+  const write = vi.spyOn(api, 'request').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        audited: true,
+        mode: 'observe',
+        model_run: true,
+        decision: {
+          outcome: 'pass',
+          reason: 'model_safe',
+          coverage: 'tail_window',
+          scores: { safety: 0.9 },
+        },
+      },
+    },
+  })
+  const user = userEvent.setup()
+  renderRisk(<PreviewDialog directory={directory} />)
+  await user.click(
+    screen.getByRole('button', { name: 'Preview effective policy' })
+  )
+  await user.click(screen.getByRole('switch', { name: 'Run decision model' }))
+  await user.click(screen.getByRole('button', { name: 'Evaluate preview' }))
+  expect(await screen.findByRole('status')).toHaveTextContent(
+    'Coverage: Tail window reviewed'
+  )
+  expect(screen.getByRole('status')).toHaveTextContent('Model judged safe')
+  expect(write).toHaveBeenCalledWith(
+    expect.objectContaining({
+      url: '/api/risk/preview',
+      data: expect.objectContaining({
+        group_name: 'standard',
+        run_model: true,
+      }),
+    })
+  )
 })

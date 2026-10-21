@@ -137,6 +137,47 @@ it('preserves the draft on a configuration conflict and only reloads on request'
   expect(input).toHaveValue('Keep this question')
 })
 
+it('loads the saved character window and submits edits using max_audit_chars', async () => {
+  const write = vi.spyOn(api, 'request').mockResolvedValue({
+    data: { success: true, data: { ...row, revision: 2, config_revision: 4 } },
+  })
+  const user = userEvent.setup()
+  renderRisk(
+    <PolicySettings
+      config={config}
+      row={row}
+      initial={policy}
+      defaults={defaults}
+      providers={[]}
+      view='model'
+      canWrite
+      onSaved={() => {}}
+    />
+  )
+  const window = screen.getByRole('spinbutton', {
+    name: 'Audit window characters',
+  })
+  expect(window).toHaveValue(16000)
+  expect(window).toHaveAttribute('min', '256')
+  expect(window).toHaveAttribute('max', '64000')
+  expect(window).toHaveAttribute('step', '1')
+  await user.clear(window)
+  await user.type(window, '32000')
+  await user.click(screen.getByRole('button', { name: 'Save settings' }))
+  await waitFor(() =>
+    expect(write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: '/api/risk/policies',
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            model: { ...policy.model, max_audit_chars: 32000 },
+          }),
+        }),
+      })
+    )
+  )
+})
+
 it.each(['button', 'form'])(
   'saves and enables with one atomic request from the %s',
   async (trigger) => {
@@ -552,6 +593,9 @@ it('matches server numeric bounds and counts Unicode code points for question li
     { max_attempts: 11 },
     { dedup_sec: 3601 },
     { max_audit_chars: 255 },
+    { max_audit_chars: 64001 },
+    { max_audit_chars: 256.5 },
+    { max_audit_chars: Number.NaN },
     { custom_instruction: 'a'.repeat(501) },
   ]) {
     expect(
@@ -567,6 +611,14 @@ it('matches server numeric bounds and counts Unicode code points for question li
       model: { ...policy.model, custom_instruction: '😀'.repeat(500) },
     }).success
   ).toBe(true)
+  for (const max_audit_chars of [256, 64000]) {
+    expect(
+      policySchema.safeParse({
+        ...policy,
+        model: { ...policy.model, max_audit_chars },
+      }).success
+    ).toBe(true)
+  }
 })
 
 it('keeps long distillation lists collapsed and preserves edits after closing and reopening', async () => {

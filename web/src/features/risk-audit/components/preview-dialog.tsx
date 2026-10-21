@@ -118,6 +118,13 @@ export function PreviewDialog(props: { directory: Directory }) {
               )}
             </p>
             <p>
+              {t('Coverage')}:{' '}
+              {t(
+                LABELS[preview.data.decision.coverage] ??
+                  preview.data.decision.coverage
+              )}
+            </p>
+            <p>
               {t(
                 preview.data.model_run
                   ? 'Decision model ran'
