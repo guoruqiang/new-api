@@ -41,6 +41,7 @@ import { RiskOverview } from './components/overview'
 import { PolicySettings } from './components/policy-settings'
 import { PreviewDialog } from './components/preview-dialog'
 import { ProviderCard } from './components/provider-card'
+import { ReviewRecords } from './components/review-records'
 import { ScopeCard } from './components/scope-card'
 import { ValidationErrors } from './components/validation-errors'
 import { DraftGuard } from './hooks/draft-guard'
@@ -248,6 +249,20 @@ function RiskAuditWorkspace(props: {
             view={search.view}
             onView={(view) => void navigate({ search: { ...search, view } })}
           />
+          <Accordion className='rounded-xl border px-4'>
+            <AccordionItem value='reviews'>
+              <AccordionTrigger>
+                {t('Review and behavior scoring')}
+              </AccordionTrigger>
+              <AccordionContent>
+                <ReviewRecords
+                  directory={props.directory}
+                  canWrite={canWrite}
+                  canUnblock={canUnblock}
+                />
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
           {search.view === 'model' && (
             <section className='space-y-4'>
               {props.providers.map((provider) => (

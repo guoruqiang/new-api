@@ -172,6 +172,48 @@ export type Page<T> = {
   page: number
   page_size: number
 }
+export type RiskReview = {
+  id: number
+  request_id: string
+  created_at: number
+  namespace: string
+  group_name: string
+  user_id: number
+  mode: Mode
+  layer: string
+  category: string
+  reason: string
+  model: string
+  provider_model: string
+  scores: string
+  policy_key: string
+  policy_revision: number
+  fingerprint: string
+  evidence: string
+  evidence_truncated: boolean
+  coverage: string
+  status: 'pending' | 'confirmed' | 'dismissed' | 'revoked'
+  points: number
+  revision: number
+  reviewed_at: number
+  reviewed_by: number
+  review_note: string
+  history: string
+}
+export type RiskReviewDetail = {
+  review: RiskReview
+  score: {
+    score: number
+    confirmed_events: number
+    window_minutes: number
+    threshold: number
+    block_ttl_minutes: number
+  }
+  block?: MemoryRow | null
+  behavior_enabled: boolean
+  auto_block_enabled: boolean
+  mode: Mode
+}
 export type PreviewResult = {
   enabled: boolean
   audited: boolean

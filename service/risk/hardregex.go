@@ -26,9 +26,8 @@ const (
 
 // BuiltinHardRules are vm2api's HARD_POLICY_RULES rewritten for RE2. Only
 // the keygen rule used look-around; it now captures the keyword in group 1.
-// Explicit requests for sexual content block directly; the broader jailbreak,
-// cracking and phishing phrases also occur in ordinary work and are reviewed.
-// Distill rules belong to the distill layer and always block.
+// Every builtin is reviewed in context: even an imperative can appear inside
+// a quote, a negation or a security exercise. Custom block rules remain direct.
 var BuiltinHardRules = []HardRule{
 	{Category: "jailbreak", Source: `\b(?:jailbreak|dan)\s+mode\b`, Enabled: true, Action: RuleActionReview},
 	{Category: "jailbreak", Source: `\bignore\s+(?:all\s+)?(?:previous|prior|above)\s+(?:instructions|rules|prompts)\b`, Enabled: true, Action: RuleActionReview},
@@ -38,15 +37,15 @@ var BuiltinHardRules = []HardRule{
 	{Category: "crack", Source: keygenPattern, Enabled: true, Action: RuleActionReview},
 	{Category: "crack", Source: crackToolPattern, Enabled: true, Action: RuleActionReview},
 	{Category: "crack", Source: `\bcrack(?:ing)?\s+(?:this\s+|the\s+)?(?:software|license|drm|activation)\b`, Enabled: true, Action: RuleActionReview},
-	{Category: "nsfw", Source: `\b(?:write|generate|describe)\s+(?:an?\s+)?(?:explicit|pornographic)\s+(?:sex|sexual)\b`, Enabled: true, Action: RuleActionBlock},
-	{Category: "nsfw", Source: `(?:生成|写一段|描述)(?:露骨|色情)(?:内容|小说|场景)`, Enabled: true, Action: RuleActionBlock},
-	{Category: "distill", Source: `\bdistill(?:ation|ing)?\s+(?:of\s+)?(?:(?:the|your|a|an|reusable|durable|rollout|hidden|internal|full|complete)\s+)?(?:reasoning(?:\s+traces?)?|chain[- ]of[- ]thoughts?|teacher(?:\s+model)?)\b`, Enabled: true, Action: RuleActionBlock},
-	{Category: "distill", Source: `\b(?:extract|export|dump|reveal|harvest|exfiltrate)(?:ing|ed|ion|s)?\s+(?:(?:the|your|a|an|full|hidden|internal|complete|raw|durable|entire)\s+){0,4}(?:chain[- ]of[- ]thoughts?|reasoning\s+traces?|hidden\s+reasoning|internal\s+reasoning|internal\s+monologues?)\b`, Enabled: true, Action: RuleActionBlock},
-	{Category: "distill", Source: `\b(?:chain[- ]of[- ]thought|reasoning\s+trace)\s+extraction\b`, Enabled: true, Action: RuleActionBlock},
-	{Category: "distill", Source: `(?:思维链蒸馏|推理蒸馏|思考链蒸馏)`, Enabled: true, Action: RuleActionBlock},
-	{Category: "distill", Source: `(?:提取|导出|抽取|蒸馏|收割|扒取)\s*(?:出|取)?\s*(?:你的|本人的|完整|全部|隐藏|内部)?\s*(?:的)?\s*(?:思维链|思考链|推理链)`, Enabled: true, Action: RuleActionBlock},
-	{Category: "distill", Source: `(?:思维链|思考链|推理链)\s*(?:的)?\s*(?:提取|导出|抽取|蒸馏|收割)`, Enabled: true, Action: RuleActionBlock},
-	{Category: "distill", Source: `(?:提取|导出|抽取)\s*(?:出)?\s*(?:隐藏|内部)\s*(?:的)?\s*(?:推理|思维|思考)`, Enabled: true, Action: RuleActionBlock},
+	{Category: "nsfw", Source: `\b(?:write|generate|describe)\s+(?:an?\s+)?(?:explicit|pornographic)\s+(?:sex|sexual)\b`, Enabled: true, Action: RuleActionReview},
+	{Category: "nsfw", Source: `(?:生成|写一段|描述)(?:露骨|色情)(?:内容|小说|场景)`, Enabled: true, Action: RuleActionReview},
+	{Category: "distill", Source: `\bdistill(?:ation|ing)?\s+(?:of\s+)?(?:(?:the|your|a|an|reusable|durable|rollout|hidden|internal|full|complete)\s+)?(?:reasoning(?:\s+traces?)?|chain[- ]of[- ]thoughts?|teacher(?:\s+model)?)\b`, Enabled: true, Action: RuleActionReview},
+	{Category: "distill", Source: `\b(?:extract|export|dump|reveal|harvest|exfiltrate)(?:ing|ed|ion|s)?\s+(?:(?:the|your|a|an|full|hidden|internal|complete|raw|durable|entire)\s+){0,4}(?:chain[- ]of[- ]thoughts?|reasoning\s+traces?|hidden\s+reasoning|internal\s+reasoning|internal\s+monologues?)\b`, Enabled: true, Action: RuleActionReview},
+	{Category: "distill", Source: `\b(?:chain[- ]of[- ]thought|reasoning\s+trace)\s+extraction\b`, Enabled: true, Action: RuleActionReview},
+	{Category: "distill", Source: `(?:思维链蒸馏|推理蒸馏|思考链蒸馏)`, Enabled: true, Action: RuleActionReview},
+	{Category: "distill", Source: `(?:提取|导出|抽取|蒸馏|收割|扒取)\s*(?:出|取)?\s*(?:你的|本人的|完整|全部|隐藏|内部)?\s*(?:的)?\s*(?:思维链|思考链|推理链)`, Enabled: true, Action: RuleActionReview},
+	{Category: "distill", Source: `(?:思维链|思考链|推理链)\s*(?:的)?\s*(?:提取|导出|抽取|蒸馏|收割)`, Enabled: true, Action: RuleActionReview},
+	{Category: "distill", Source: `(?:提取|导出|抽取)\s*(?:出)?\s*(?:隐藏|内部)\s*(?:的)?\s*(?:推理|思维|思考)`, Enabled: true, Action: RuleActionReview},
 	{Category: "custom", Source: `\bphishing\s+kit\b`, Enabled: true, Action: RuleActionReview},
 }
 
@@ -81,8 +80,8 @@ func truncateRunes(text string, n int) string {
 	return string(runes[:n])
 }
 
-// matchHardRules checks both text forms. Distill hits take precedence over
-// block hits, which take precedence over review hits; rule order breaks ties.
+// matchHardRules checks both text forms. Explicit block rules take precedence
+// over review signals; rule order breaks ties.
 func matchHardRules(text string, rules []compiledRule, allow func(category string) bool) (hardHit, bool) {
 	if text == "" {
 		return hardHit{}, false
@@ -112,9 +111,6 @@ func matchHardRules(text string, rules []compiledRule, allow func(category strin
 			}
 			hit := hardHit{Category: rule.category, Keyword: truncateRunes(keyword, 40), Rule: truncateRunes(rule.source, 120),
 				Action: rule.action, Text: candidate, Start: loc[0], End: loc[1]}
-			if rule.category == "distill" {
-				return hit, true
-			}
 			if !found || best.Action != RuleActionBlock && rule.action == RuleActionBlock {
 				best, found = hit, true
 			}

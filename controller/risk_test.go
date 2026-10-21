@@ -3,12 +3,18 @@ package controller
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service/risk"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -253,4 +259,149 @@ func TestRiskPreviewAndScopedRecordActions(t *testing.T) {
 	block, err := model.GetActiveRiskBlock(other, "user", "9", common.GetTimestamp())
 	require.NoError(t, err)
 	assert.NotNil(t, block)
+}
+
+// Exercise real HTTP requests through the production risk gate and then the
+// management handlers. No request is sent to a business upstream.
+func TestRiskReviewHTTPConfirmationAndRestrictions(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	db, namespace, other := setupRiskManagementTest(t)
+	payload := risk.DefaultPolicyPayload()
+	payload.Distill.Enabled, payload.Model.Enabled = false, false
+	payload.HardRegex.Rules = []risk.HardRule{
+		{Category: "nsfw", Source: "risk-nsfw", Enabled: true, Action: risk.RuleActionBlock},
+		{Category: "custom", Source: "risk-general", Enabled: true, Action: risk.RuleActionBlock},
+	}
+	policyRevision, configRevision := 0, int64(0)
+	publish := func(mode string) {
+		t.Helper()
+		policy, problems, err := risk.CreatePolicyRevision("review-http", "Review HTTP", policyRevision, payload, 1)
+		require.NoError(t, err)
+		require.Empty(t, problems)
+		policyRevision = policy.Revision
+		cfg := risk.DefaultConfigPayload()
+		cfg.Enabled = true
+		cfg.DefaultBinding = risk.Binding{PolicyKey: policy.PolicyKey, PolicyRevision: policy.Revision, Mode: mode}
+		configRevision, problems, err = risk.PublishConfig(configRevision, cfg, 1)
+		require.NoError(t, err)
+		require.Empty(t, problems)
+	}
+	publish(risk.ModeEnforce)
+	router := gin.New()
+	router.POST("/v1/responses", func(c *gin.Context) {
+		group := c.GetHeader("X-Test-Group")
+		common.SetContextKey(c, constant.ContextKeyUsingGroup, group)
+		body, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			c.Status(http.StatusBadRequest)
+			return
+		}
+		info := &relaycommon.RelayInfo{UserId: 77, TokenId: 9, UserGroup: group, OriginModelName: "test", RequestId: c.GetHeader("X-Test-Request"), RelayFormat: types.RelayFormatOpenAIResponses, RelayMode: relayconstant.RelayModeResponses}
+		decision := risk.CheckAttempt(c, info, risk.AttemptInput{Phase: risk.PhaseHTTPFirst, ChannelID: 1, ChannelType: constant.ChannelTypeOpenAI, Body: body})
+		if decision != nil {
+			c.JSON(decision.StatusCode, gin.H{"code": decision.GetErrorCode()})
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+	server := httptest.NewServer(router)
+	t.Cleanup(server.Close)
+	post := func(id, group, modelName, input string, status int) {
+		t.Helper()
+		body, err := common.Marshal(map[string]any{"model": modelName, "input": input})
+		require.NoError(t, err)
+		req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/responses", bytes.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Test-Request", id)
+		req.Header.Set("X-Test-Group", group)
+		res, err := server.Client().Do(req)
+		require.NoError(t, err)
+		response, err := io.ReadAll(res.Body)
+		require.NoError(t, err)
+		require.NoError(t, res.Body.Close())
+		require.Equal(t, status, res.StatusCode, string(response))
+	}
+	candidate := func(id string) model.RiskReview {
+		t.Helper()
+		rows, total, err := model.ListRiskReviews(model.RiskReviewFilter{RequestId: id}, 0, 10)
+		require.NoError(t, err)
+		require.EqualValues(t, 1, total)
+		return rows[0]
+	}
+	resolve := func(row model.RiskReview, action, category, note string, wantStatus int) model.RiskReviewResult {
+		t.Helper()
+		w := riskManagementRequest(t, ResolveRiskReview, http.MethodPost, "/api/risk/reviews/resolve", gin.Params{{Key: "id", Value: fmt.Sprint(row.Id)}}, map[string]any{"revision": row.Revision, "action": action, "category": category, "note": note})
+		require.Equal(t, wantStatus, w.Code, w.Body.String())
+		var result struct{ Data model.RiskReviewResult }
+		require.NoError(t, common.Unmarshal(w.Body.Bytes(), &result))
+		return result.Data
+	}
+	post("first", "default", "test", "risk-nsfw first", http.StatusForbidden)
+	first := candidate("first")
+	assert.Equal(t, model.RiskReviewPending, first.Status)
+	assert.Zero(t, first.Points)
+	post("first", "default", "test", "risk-nsfw first", http.StatusForbidden)
+	post("client-retry", "default", "other-model", "risk-nsfw first", http.StatusForbidden)
+	_, total, err := model.ListRiskReviews(model.RiskReviewFilter{}, 0, 10)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, total, "client and server retries must not create new punishable incidents")
+	post("benign-before", "default", "test", "hello", http.StatusNoContent)
+	list := riskManagementRequest(t, GetRiskReviews, http.MethodGet, "/api/risk/reviews?status=pending", nil, nil)
+	assert.NotContains(t, list.Body.String(), "risk-nsfw first", "lists must not include stored evidence")
+	detail := riskManagementRequest(t, GetRiskReview, http.MethodGet, "/api/risk/reviews/1", gin.Params{{Key: "id", Value: fmt.Sprint(first.Id)}}, nil)
+	assert.Contains(t, detail.Body.String(), "risk-nsfw first")
+	resolve(first, "confirm", "nsfw", "", http.StatusBadRequest)
+	confirmed := resolve(first, "confirm", "nsfw", "Verified the current user's intent", http.StatusOK)
+	assert.Equal(t, 3, confirmed.Score.Score)
+	assert.Nil(t, confirmed.Block)
+	repeated := resolve(first, "confirm", "nsfw", "Verified the current user's intent", http.StatusOK)
+	assert.Equal(t, 3, repeated.Score.Score)
+	post("second", "default", "test", "risk-nsfw second", http.StatusForbidden)
+	second := resolve(candidate("second"), "confirm", "nsfw", "Independent second incident", http.StatusOK)
+	assert.Equal(t, 6, second.Score.Score)
+	assert.Nil(t, second.Block, "automatic restrictions are off by default even at the threshold")
+	post("benign-at-threshold", "default", "test", "hello", http.StatusNoContent)
+	payload.Behavior.AutoBlockEnabled = true
+	payload.Refusal.Enabled, payload.Refusal.SubjectBlockEnabled = false, false
+	publish(risk.ModeEnforce)
+	post("third", "default", "test", "risk-general third", http.StatusForbidden)
+	third := resolve(candidate("third"), "confirm", "custom", "Verified a lower-weight incident", http.StatusOK)
+	assert.Equal(t, 7, third.Score.Score)
+	require.NotNil(t, third.Block)
+	assert.Equal(t, risk.SubjectUser, third.Block.SubjectType)
+	assert.EqualValues(t, 30*60, third.Block.ExpiresAt-third.Block.LastSeenAt)
+	post("restricted", "default", "test", "hello", http.StatusBadRequest)
+	post("other-group", "other", "test", "hello", http.StatusNoContent)
+	assert.NotEqual(t, namespace, other)
+	_, beforeRevoke, err := model.ListRiskReviews(model.RiskReviewFilter{}, 0, 10)
+	require.NoError(t, err)
+	assert.EqualValues(t, 3, beforeRevoke, "a block replay is not another violation")
+	revoked := resolve(*confirmed.Review, "revoke", "nsfw", "Context was misunderstood", http.StatusOK)
+	assert.Equal(t, 4, revoked.Score.Score)
+	post("after-revoke", "default", "test", "hello", http.StatusNoContent)
+	resolve(first, "confirm", "nsfw", "Stale confirmation", http.StatusConflict)
+	publish(risk.ModeObserve)
+	post("observation", "default", "test", "risk-nsfw observation", http.StatusNoContent)
+	observed := candidate("observation")
+	publish(risk.ModeEnforce)
+	observation := resolve(observed, "confirm", "nsfw", "Observation stays non-punitive", http.StatusOK)
+	assert.Zero(t, observation.Review.Points)
+	assert.Equal(t, 4, observation.Score.Score)
+	payload.Evidence.StoreReviewEvidence = false
+	publish(risk.ModeEnforce)
+	post("no-evidence", "default", "test", "risk-nsfw no evidence", http.StatusForbidden)
+	noEvidence := candidate("no-evidence")
+	resolve(noEvidence, "confirm", "nsfw", "Insufficient evidence", http.StatusBadRequest)
+	dismissed := resolve(noEvidence, "dismiss", "nsfw", "Cannot establish user intent", http.StatusOK)
+	assert.Equal(t, model.RiskReviewDismissed, dismissed.Review.Status)
+	truncated, _, err := model.CreateRiskReviewCandidate(&model.RiskReview{RequestId: "truncated", Namespace: namespace, UserId: 77, Mode: risk.ModeEnforce, Evidence: "Context only", EvidenceTruncated: true}, payload.Behavior.Policy(), common.GetTimestamp())
+	require.NoError(t, err)
+	resolve(*truncated, "confirm", "nsfw", "Missing the actual triggering evidence", http.StatusBadRequest)
+	payload.Behavior.Enabled = false
+	publish(risk.ModeEnforce)
+	post("scoring-disabled", "default", "test", "risk-nsfw disabled", http.StatusForbidden)
+	var count int64
+	require.NoError(t, db.Model(&model.RiskReview{}).Where("request_id = ?", "scoring-disabled").Count(&count).Error)
+	assert.Zero(t, count)
 }

@@ -139,8 +139,19 @@ export const policySchema = z
       dedup_sec: z.number().int().min(0).max(3600),
       max_audit_chars: z.number().int().min(256).max(64000),
     }),
-    evidence: z.object({ store_preview: z.boolean() }),
+    behavior: z.object({
+      enabled: z.boolean(),
+      auto_block_enabled: z.boolean(),
+      window_minutes: z.number().int().min(1).max(1440),
+      threshold: z.number().int().min(1).max(100),
+      block_ttl_minutes: z.number().int().min(1).max(1440),
+    }),
+    evidence: z.object({
+      store_preview: z.boolean(),
+      store_review_evidence: z.boolean(),
+    }),
   })
+
   .superRefine((value, ctx) => {
     const questions = value.model.questions ?? []
     if (
@@ -161,3 +172,23 @@ export const policySchema = z
       })
     }
   })
+
+export const reviewResolveSchema = z.object({
+  category: z.enum([
+    'nsfw',
+    'jailbreak',
+    'reverse',
+    'pentest',
+    'cyber',
+    'distill',
+    'custom',
+    'safety',
+    'crack',
+    'refusal',
+  ]),
+  note: z
+    .string()
+    .trim()
+    .min(1)
+    .refine((text) => [...text].length <= 500),
+})

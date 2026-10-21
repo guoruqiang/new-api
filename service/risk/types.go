@@ -115,8 +115,10 @@ type Input struct {
 	UserAuthored []string
 	// Model-only tails preserve the latest text after extraction bounds apply,
 	// without changing the local-rule and refusal-fingerprint input above.
-	modelSystems []string
-	modelUsers   []string
+	modelSystems    []string
+	modelUsers      []string
+	modelAssistants []string
+	modelTools      []string
 	// Assistants and RecentToolOutputs are client-supplied context that only
 	// the review tier of local rules scans; the latest tool results are the
 	// only ones not already audited with an earlier request of the session.
@@ -175,6 +177,9 @@ type Decision struct {
 	// Reviewed marks a decision that a review-tier rule hit sent to the
 	// decision model; such decisions are logged even when they pass.
 	Reviewed bool `json:"reviewed,omitempty"`
+	// ReviewEvidence contains the bounded, role-labelled text used by the
+	// detector. It is stored only when the policy explicitly allows it.
+	ReviewEvidence string `json:"-"`
 }
 
 // Blocks reports whether the decision stops the request in enforce mode.

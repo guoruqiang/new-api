@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 )
 
 //go:embed defaults/distill_rules.json
@@ -80,8 +81,8 @@ type RefusalConfig struct {
 	SubjectBlockEnabled bool   `json:"subject_block_enabled"`
 	BlockSubject        string `json:"block_subject"`
 	BlockTTLMinutes     int    `json:"block_ttl_minutes"`
-	// A subject is blocked once a user reaches BlockAfterHits confirmed hits
-	// within BlockWindowMinutes; a single hit only stops its own request.
+	// Legacy fields remain readable for stored policies. Only Behavior and
+	// independently confirmed reviews now control new subject restrictions.
 	BlockAfterHits       int `json:"block_after_hits"`
 	BlockWindowMinutes   int `json:"block_window_minutes"`
 	MemoryTTLDays        int `json:"memory_ttl_days"`
@@ -104,7 +105,22 @@ type ModelConfig struct {
 }
 
 type EvidenceConfig struct {
-	StorePreview bool `json:"store_preview"`
+	StorePreview        bool `json:"store_preview"`
+	StoreReviewEvidence bool `json:"store_review_evidence"`
+}
+
+// BehaviorConfig only counts independently confirmed incidents. Automatic
+// restrictions are opt-in and always expire; raw detections never add points.
+type BehaviorConfig struct {
+	Enabled          bool `json:"enabled"`
+	AutoBlockEnabled bool `json:"auto_block_enabled"`
+	WindowMinutes    int  `json:"window_minutes"`
+	Threshold        int  `json:"threshold"`
+	BlockTTLMinutes  int  `json:"block_ttl_minutes"`
+}
+
+func (b BehaviorConfig) Policy() model.RiskBehaviorPolicy {
+	return model.RiskBehaviorPolicy{WindowMinutes: b.WindowMinutes, Threshold: b.Threshold, BlockTTLMinutes: b.BlockTTLMinutes}
 }
 
 // PolicyPayload is one immutable policy revision as stored and edited.
@@ -115,6 +131,7 @@ type PolicyPayload struct {
 	Refusal       RefusalConfig   `json:"refusal"`
 	Model         ModelConfig     `json:"model"`
 	Evidence      EvidenceConfig  `json:"evidence"`
+	Behavior      BehaviorConfig  `json:"behavior"`
 }
 
 // DefaultDistillRules returns the shipped vm2api distill rule set.
@@ -158,7 +175,8 @@ func DefaultPolicyPayload() PolicyPayload {
 			DedupSec:      60,
 			MaxAuditChars: 16000,
 		},
-		Evidence: EvidenceConfig{StorePreview: true},
+		Evidence: EvidenceConfig{StorePreview: true, StoreReviewEvidence: true},
+		Behavior: BehaviorConfig{Enabled: true, WindowMinutes: 10, Threshold: 6, BlockTTLMinutes: 30},
 	}
 }
 
@@ -237,6 +255,15 @@ func NormalizePolicyPayload(p *PolicyPayload) {
 				}
 			}
 			rule.Action = effectiveAction(*rule)
+			// Published builtins used to block quoted or negated phrases.
+			// Upgrade only the exact builtin category and source; custom
+			// patterns and custom categories keep their explicit action.
+			for _, builtin := range BuiltinHardRules {
+				if rule.Category == builtin.Category && rule.Source == builtin.Source {
+					rule.Action = builtin.Action
+					break
+				}
+			}
 			if !seen[rule.Source] {
 				rules = append(rules, *rule)
 				seen[rule.Source] = true
@@ -362,6 +389,9 @@ func ValidatePolicyPayload(p PolicyPayload) []*common.Message {
 	checkRange(&problems, "refusal.max_similar_candidates", r.MaxSimilarCandidates, 1, 10000)
 
 	m := p.Model
+	checkRange(&problems, "behavior.window_minutes", p.Behavior.WindowMinutes, 1, 1440)
+	checkRange(&problems, "behavior.threshold", p.Behavior.Threshold, 1, 100)
+	checkRange(&problems, "behavior.block_ttl_minutes", p.Behavior.BlockTTLMinutes, 1, 1440)
 	if m.Enabled && m.ProviderID <= 0 {
 		problems = append(problems, common.NewMessage("A provider is required when the model layer is enabled"))
 	}

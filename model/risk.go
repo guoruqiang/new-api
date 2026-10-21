@@ -174,7 +174,7 @@ type RiskSubjectBlock struct {
 func RiskModels() []any {
 	return []any{
 		&RiskState{}, &RiskConfig{}, &RiskPolicy{}, &RiskProvider{}, &RiskGroupNamespace{},
-		&RiskEvent{}, &RiskCounter{}, &RiskRefusal{}, &RiskSubjectBlock{},
+		&RiskEvent{}, &RiskCounter{}, &RiskRefusal{}, &RiskSubjectBlock{}, &RiskReview{},
 	}
 }
 
@@ -651,8 +651,38 @@ func ListRiskRefusalCandidates(namespace string, userID int, model string, signa
 // permanent; non-empty new details replace old ones.
 func RememberRiskRefusal(rec *RiskRefusal) error {
 	return riskTransaction(func(tx *gorm.DB) error {
+		if _, err := lockRiskState(tx); err != nil {
+			return err
+		}
+		// A delayed upstream callback must not recreate a refusal removed by
+		// manual review. The request alias survives fingerprint deduplication.
+		var rejected RiskReview
+		query := tx.Where("namespace = ? AND user_id = ?", rec.Namespace, rec.UserId).
+			Where("status IN ?", []string{RiskReviewDismissed, RiskReviewRevoked}).
+			Where("request_id = ? OR (fingerprint = ? AND created_at <= ? AND reviewed_at >= ?)", rec.SourceRequestId, rec.Fingerprint, rec.LastSeenAt, rec.LastSeenAt)
+		err := query.First(&rejected).Error
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		var alias RiskReview
+		err = tx.Where("namespace = ? AND user_id = ? AND request_id = ? AND duplicate_of > 0", rec.Namespace, rec.UserId, rec.SourceRequestId).First(&alias).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		if err == nil {
+			var original RiskReview
+			if err := tx.First(&original, alias.DuplicateOf).Error; err != nil {
+				return err
+			}
+			if original.Status == RiskReviewDismissed || original.Status == RiskReviewRevoked {
+				return nil
+			}
+		}
 		var existing RiskRefusal
-		err := lockForUpdate(tx).Where("namespace = ? AND user_id = ? AND fingerprint = ?", rec.Namespace, rec.UserId, rec.Fingerprint).First(&existing).Error
+		err = lockForUpdate(tx).Where("namespace = ? AND user_id = ? AND fingerprint = ?", rec.Namespace, rec.UserId, rec.Fingerprint).First(&existing).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			row := *rec
 			row.FirstSeenAt, row.LastSeenAt = rec.LastSeenAt, rec.LastSeenAt
@@ -987,5 +1017,6 @@ func CleanupRiskRecords(now, eventsBefore, countersBefore int64) (int64, error) 
 			return total, err
 		}
 	}
-	return total, nil
+	removed, err := cleanupRiskReviews(now, eventsBefore)
+	return total + removed, err
 }

@@ -10,6 +10,7 @@ var negatedExtraction = regexp.MustCompile(`(?i)\b(?:do not|don't|never|must not
 type distillHit struct {
 	Rule     string
 	Evidence string
+	Review   *hardHit
 }
 
 func matchNeedles(text string, needles []string) string {
@@ -34,7 +35,7 @@ func matchFingerprints(text string, fingerprints []string) string {
 	for _, raw := range fingerprints {
 		needle := NormalizeText(raw)
 		if needle != "" && strings.Contains(hay, needle) {
-			return truncateRunes(raw, 80)
+			return raw
 		}
 	}
 	return ""
@@ -50,7 +51,7 @@ func matchDistillPatterns(text string, patterns []*regexp.Regexp) string {
 	for _, re := range patterns {
 		for _, loc := range re.FindAllStringIndex(hay, -1) {
 			if !negatedExtraction.MatchString(hay[:loc[0]]) {
-				return truncateRunes(hay[loc[0]:loc[1]], 80)
+				return hay[loc[0]:loc[1]]
 			}
 		}
 	}
@@ -96,9 +97,25 @@ func withFolded(text string) string {
 	return text
 }
 
-// detectDistill follows vm2api detectDistill: harvest wrappers and extra
-// patterns always apply; the official-client exemption only relaxes the
-// ordinary needles, fingerprints and the contest structure check.
+// distillReview preserves the whole match and its context for semantic
+// review. Templates, benchmark questions and reasoning knobs are signals,
+// not proof that the current user wants protected internal reasoning.
+func distillReview(text, match, rule string) distillHit {
+	text, match = NormalizeText(text), NormalizeText(match)
+	start := strings.Index(text, match)
+	if start < 0 {
+		start, match = 0, text
+	}
+	return distillHit{
+		Rule: rule, Evidence: truncateRunes(match, 80),
+		Review: &hardHit{Category: "distill", Action: RuleActionReview, Rule: rule,
+			Keyword: truncateRunes(match, 40), Text: text, Start: start, End: start + len(match)},
+	}
+}
+
+// detectDistill keeps the existing exemptions and matching rules, but every
+// signal must be confirmed in context instead of blocking ordinary formats,
+// quoted examples or requests to summarize the user's own notes.
 func detectDistill(in *Input, p *CompiledPolicy) []distillHit {
 	rules := p.Payload.Distill
 	if !rules.Enabled || (rules.SkipGPTModels && IsGPTSeriesModel(in.Model)) {
@@ -106,10 +123,10 @@ func detectDistill(in *Input, p *CompiledPolicy) []distillHit {
 	}
 	joined := withFolded(in.distillJoined())
 	if needle := matchNeedles(joined, rules.HardNeedles); needle != "" {
-		return []distillHit{{Rule: "harvest_needle", Evidence: needle}}
+		return []distillHit{distillReview(joined, needle, "harvest_needle")}
 	}
 	if hit := matchDistillPatterns(joined, p.distillPatterns); hit != "" {
-		return []distillHit{{Rule: "distill_regex", Evidence: hit}}
+		return []distillHit{distillReview(joined, hit, "distill_regex")}
 	}
 	if rules.SkipOfficial && in.Official {
 		return nil
@@ -120,14 +137,14 @@ func detectDistill(in *Input, p *CompiledPolicy) []distillHit {
 		fingerprintText = withFolded(in.LatestUser)
 	}
 	if fp := matchFingerprints(fingerprintText, rules.Fingerprints); fp != "" {
-		hits = append(hits, distillHit{Rule: "fingerprint", Evidence: fp})
+		hits = append(hits, distillReview(fingerprintText, fp, "fingerprint"))
 	}
 	if needle := matchNeedles(joined, rules.Needles); needle != "" {
-		hits = append(hits, distillHit{Rule: "needle", Evidence: needle})
+		hits = append(hits, distillReview(joined, needle, "needle"))
 	}
 	if p.contest != nil && len([]rune(p.Payload.Distill.Structure.ContestPattern)) <= patternMaxLen &&
 		p.contest.MatchString(joined) && isHarvestStructure(in, rules.Structure) {
-		hits = append(hits, distillHit{Rule: "harvest", Evidence: "contest+harvest"})
+		hits = append(hits, distillReview(joined, p.contest.FindString(joined), "harvest"))
 	}
 	return hits
 }

@@ -147,7 +147,7 @@ var contentPolicyCodes = map[string]bool{
 	"content_policy_violation": true,
 }
 
-var usagePolicyMessage = regexp.MustCompile(`(?i)usage policy|legal/aup|unable to respond to this request|violate our usage|content_filter_refusal`)
+var usagePolicyMessage = regexp.MustCompile(`(?i)(?:violat(?:e|es|ed|ion of)|blocked (?:by|for)|rejected (?:by|for)|due to) (?:our |the )?(?:usage|content|safety) polic(?:y|ies)|content_filter_refusal`)
 
 // IsContentPolicyCode reports whether an upstream error code names a content
 // policy refusal.

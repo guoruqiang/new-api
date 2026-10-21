@@ -325,6 +325,9 @@ func TestRiskAutoGroupRetryRejectsBeforeNextUpstreamAndRefunds(t *testing.T) {
 			payload.Distill.Enabled = true
 			payload.Distill.SkipGPTModels = false
 			payload.Distill.HardNeedles = []string{"riskblock"}
+			// A deliberately configured hard rule tests the relay rejection
+			// contract; built-in distill hints now require contextual review.
+			payload.HardRegex.Rules = []risk.HardRule{{Category: "distill", Source: "riskblock", Enabled: true, Action: risk.RuleActionBlock}}
 			// Custom local rejection wording must never trigger the upstream violation fee.
 			payload.Distill.Error = risk.DistillError{Status: http.StatusForbidden, Message: service.CSAMViolationMarker}
 			policy, problems, err := risk.CreatePolicyRevision("retry-block", "Retry block", 0, payload, 1)

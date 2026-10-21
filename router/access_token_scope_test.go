@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
+	"github.com/QuantumNous/new-api/service/risk"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -101,6 +102,9 @@ var accessTokenHelperRoutes = map[string]authz.Permission{
 	"PUT /api/risk/providers/:id":                     authz.RiskWrite,
 	"GET /api/risk/events":                            authz.RiskRead,
 	"GET /api/risk/events/:id":                        authz.RiskRead,
+	"GET /api/risk/reviews":                           authz.RiskRead,
+	"GET /api/risk/reviews/:id":                       authz.RiskRead,
+	"POST /api/risk/reviews/:id/resolve":              authz.RiskWrite,
 	"GET /api/risk/refusals":                          authz.RiskRead,
 	"DELETE /api/risk/refusals/:id":                   authz.RiskWrite,
 	"POST /api/risk/refusals/clear":                   authz.RiskWrite,
@@ -121,18 +125,22 @@ func TestRiskRoutesRequireAccountPermissionAndScopedLiveToken(t *testing.T) {
 	previousMainType, previousLogType := common.MainDatabaseType(), common.LogDatabaseType()
 	previousRedis, previousMaster := common.RedisEnabled, common.IsMasterNode
 	previousRateLimit, previousCritical := common.GlobalApiRateLimitEnable, common.CriticalRateLimitEnable
+	previousSecret, previousSnapshot := common.SessionSecret, risk.CurrentSnapshot()
 	model.DB, model.LOG_DB = db, db
 	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
 	common.RedisEnabled, common.IsMasterNode = false, true
 	common.GlobalApiRateLimitEnable, common.CriticalRateLimitEnable = false, false
+	common.SessionSecret = "risk-review-route-session-test"
 	t.Cleanup(func() {
 		model.DB, model.LOG_DB = previousDB, previousLog
 		common.SetDatabaseTypes(previousMainType, previousLogType)
 		common.RedisEnabled, common.IsMasterNode = previousRedis, previousMaster
 		common.GlobalApiRateLimitEnable, common.CriticalRateLimitEnable = previousRateLimit, previousCritical
+		common.SessionSecret = previousSecret
+		risk.InstallSnapshot(previousSnapshot)
 		require.NoError(t, sqlDB.Close())
 	})
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserAccessToken{}, &model.Option{}, &model.AuditLog{}, &model.CasbinRule{}, &model.AuthzRole{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserAccessToken{}, &model.UserSession{}, &model.Option{}, &model.AuditLog{}, &model.CasbinRule{}, &model.AuthzRole{}))
 	require.NoError(t, db.AutoMigrate(model.RiskModels()...))
 	require.NoError(t, authz.Init(db))
 	admin := &model.User{Username: "risk-route-admin", Role: common.RoleAdminUser, Status: common.UserStatusEnabled, Group: "default", AffCode: "risk-route-admin", AuthVersion: 1}
@@ -152,6 +160,8 @@ func TestRiskRoutesRequireAccountPermissionAndScopedLiveToken(t *testing.T) {
 	rootRead, _ := newToken(root.Id, 0, "risk:read")
 	rootWrite, _ := newToken(root.Id, 0, "risk:write")
 	rootUnblock, _ := newToken(root.Id, 0, "risk:unblock")
+	rootWriteUnblock, _ := newToken(root.Id, 0, "risk:write", "risk:unblock")
+	adminWriteUnblock, _ := newToken(admin.Id, 0, "risk:write", "risk:unblock")
 	wrongScope, _ := newToken(root.Id, 0, "profile:read")
 	expired, _ := newToken(root.Id, time.Now().Unix()-1, "risk:read")
 	revoked, revokedRow := newToken(root.Id, 0, "risk:read")
@@ -202,6 +212,59 @@ func TestRiskRoutesRequireAccountPermissionAndScopedLiveToken(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, request(http.MethodGet, "/api/risk/defaults", adminRead, "").Code, "token scope cannot retain revoked account permission")
 	assert.Equal(t, http.StatusForbidden, request(http.MethodPost, "/api/risk/blocks/clear", rootWrite, "{}").Code, "configuration permission does not release blocks")
 	assert.Equal(t, http.StatusForbidden, request(http.MethodPut, "/api/risk/config", rootUnblock, "{}").Code, "unblock permission does not publish configuration")
+	now := time.Now().Unix()
+	session := &model.UserSession{
+		SID: "risk-review-browser-session", UserID: admin.Id, Version: 1, UserAuthVersion: admin.AuthVersion,
+		Status: model.UserSessionStatusActive, RefreshHash: "risk-session-refresh-hash", LoginMethod: "password", LastActiveAt: now, ExpiresAt: now + 3600,
+	}
+	require.NoError(t, model.CreateUserSession(session))
+	sessionToken, _, err := service.IssueAccessToken(service.AuthIdentity{UserID: admin.Id, SessionID: session.SID, UserAuthVersion: session.UserAuthVersion, SessionVersion: session.Version})
+	require.NoError(t, err)
+	for i, tc := range []struct {
+		name, token string
+		unblock     bool
+		status      int
+	}{
+		{"root PAT needs unblock scope", rootWrite, false, http.StatusForbidden},
+		{"unblock scope alone cannot write review", rootUnblock, false, http.StatusForbidden},
+		{"root PAT with both scopes", rootWriteUnblock, false, http.StatusOK},
+		{"admin PAT also needs account unblock", adminWriteUnblock, false, http.StatusForbidden},
+		{"admin PAT with both grants", adminWriteUnblock, true, http.StatusOK},
+		{"admin PAT loses revoked account permission", adminWriteUnblock, false, http.StatusForbidden},
+		{"browser session needs account unblock", sessionToken, false, http.StatusForbidden},
+		{"browser session with both grants", sessionToken, true, http.StatusOK},
+		{"browser session loses revoked account permission", sessionToken, false, http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.NoError(t, authz.SetUserPermissions(admin.Id, authz.PermissionsMap{authz.ResourceRisk: {authz.ActionWrite: true, authz.ActionUnblock: tc.unblock}}))
+			row := &model.RiskReview{
+				RequestKey: "revoke-permission-" + strconv.Itoa(i), RequestId: "revoke-permission-" + strconv.Itoa(i),
+				Namespace: "scope-review", UserId: 100 + i, CreatedAt: now, Mode: risk.ModeEnforce,
+				Status: model.RiskReviewConfirmed, Revision: 2, Category: "nsfw", Points: 3, History: "[]", Evidence: "review evidence",
+			}
+			require.NoError(t, db.Create(row).Error)
+			require.NoError(t, db.Model(row).Update("block_review_ids", "["+strconv.Itoa(row.Id)+"]").Error)
+			block := &model.RiskSubjectBlock{
+				Namespace: row.Namespace, SubjectType: risk.SubjectUser, SubjectValue: strconv.Itoa(row.UserId),
+				Reason: "behavior_score", SourceRequestId: "risk-review:" + strconv.Itoa(row.Id), ExpiresAt: now + 3600,
+			}
+			require.NoError(t, db.Create(block).Error)
+			response := request(http.MethodPost, "/api/risk/reviews/"+strconv.Itoa(row.Id)+"/resolve", tc.token, `{"revision":2,"action":"revoke","note":"false positive"}`)
+			require.Equal(t, tc.status, response.Code, response.Body.String())
+			require.NoError(t, db.First(row, row.Id).Error)
+			require.NoError(t, db.First(block, block.Id).Error)
+			if tc.status == http.StatusOK {
+				assert.Contains(t, response.Body.String(), `"success":true`)
+				assert.Equal(t, model.RiskReviewRevoked, row.Status)
+				assert.Equal(t, 3, row.Revision)
+				assert.Positive(t, block.ReleasedAt)
+			} else {
+				assert.Equal(t, model.RiskReviewConfirmed, row.Status)
+				assert.Equal(t, 2, row.Revision)
+				assert.Zero(t, block.ReleasedAt, "denied revocation must not release the restriction")
+			}
+		})
+	}
 	created := request(http.MethodPost, "/api/risk/providers", rootWrite, `{"name":"audit-provider","provider_type":"jev","base_url":"https://example.test","api_keys":["provider-secret"]}`)
 	require.Equal(t, http.StatusOK, created.Code, created.Body.String())
 	require.Contains(t, created.Body.String(), `"success":true`)
@@ -215,7 +278,7 @@ func TestRiskRoutesRequireAccountPermissionAndScopedLiveToken(t *testing.T) {
 	require.NotEmpty(t, logs)
 	encoded, err := common.Marshal(logs)
 	require.NoError(t, err)
-	for _, secret := range []string{adminRead, rootRead, rootWrite, rootUnblock, wrongScope, expired, revoked, "provider-secret", "private-risk-input"} {
+	for _, secret := range []string{adminRead, rootRead, rootWrite, rootUnblock, rootWriteUnblock, adminWriteUnblock, sessionToken, wrongScope, expired, revoked, "provider-secret", "private-risk-input"} {
 		assert.NotContains(t, string(encoded), secret)
 	}
 }

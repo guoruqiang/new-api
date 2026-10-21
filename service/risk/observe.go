@@ -57,8 +57,8 @@ func ObserveResponsesEvent(c *gin.Context, body []byte) bool {
 }
 
 // learnRefusal records an upstream refusal against the last audited attempt
-// and returns that attempt's mode. Enforce mode remembers the prompt and
-// blocks the subject when configured; observe mode only logs the event.
+// and returns that attempt's mode. Enforce mode remembers the prompt. Both
+// modes can create pending review evidence; neither automatically adds points.
 func learnRefusal(c *gin.Context, reason, message string) string {
 	if snap := current.Load(); snap == nil || !snap.Enabled {
 		return ""
@@ -93,6 +93,8 @@ func learnRefusal(c *gin.Context, reason, message string) string {
 	if mode == ModeObserve {
 		d.Outcome = OutcomeWouldStop
 	}
+	ev := evaluation{binding: last.binding, attempt: last.attempt, input: last.input, store: defaultStore, now: now}
+	recordReviewCandidate(ev, d)
 	if mode == ModeEnforce && cfg.Enabled {
 		expires := int64(0)
 		if cfg.MemoryTTLDays > 0 {
@@ -114,12 +116,6 @@ func learnRefusal(c *gin.Context, reason, message string) string {
 		}
 		if err := defaultStore.Remember(rec); err != nil {
 			common.SysError(common.LogText("risk refusal memory write failed: %s", err.Error()))
-		}
-		if cfg.SubjectBlockEnabled {
-			ev := evaluation{binding: last.binding, attempt: last.attempt, input: last.input, store: defaultStore, now: now}
-			if strikeLimitReached(ev, cfg) {
-				blockSubjects(ev, cfg, "refusal_guard", d.Fingerprint)
-			}
 		}
 	}
 	rec := Record{Counter: counterKey(last.attempt, d, false, now), Event: buildEvent(last.attempt, d, mode, last.input.DeviceID, now)}

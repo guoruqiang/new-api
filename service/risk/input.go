@@ -437,6 +437,12 @@ func ExtractInput(body []byte, headers http.Header) (*Input, error) {
 	if tail, cut := recentTexts(in.UserAuthored, auditTextBudget, true); cut {
 		in.modelUsers = tail
 	}
+	if tail, cut := recentTexts(in.Assistants, auditTextBudget, true); cut {
+		in.modelAssistants = tail
+	}
+	if tail, cut := recentTexts(in.RecentToolOutputs, auditTextBudget, true); cut {
+		in.modelTools = tail
+	}
 	for _, list := range []*[]string{&in.Systems, &in.DistillUsers, &in.UserTurns, &in.UserAuthored, &in.Assistants, &in.RecentToolOutputs} {
 		var cut bool
 		*list, cut = recentTexts(*list, auditTextBudget, false)
@@ -560,53 +566,129 @@ func (in *Input) ContextDocument(stripReminders, expandBase64 bool) (string, boo
 	return preparedDocument(texts, false, expandBase64, &decodedTotal)
 }
 
-// ModelDocuments returns the tail of the prepared system and user text. A
-// review-tier hit outside that window gets one extra bounded excerpt, only
-// when the whole match fits. Routine tail selection is not a service failure;
-// an oversized rule match remains unconfirmed instead of being cleared.
+// ModelDocuments prioritizes the current user's text, then recent tool and
+// conversation context, within one Unicode window. Explicit role labels keep
+// a quoted assistant/tool instruction distinct from the current user intent.
+// A review hit outside the window gets at most one complete bounded excerpt.
 func (in *Input) ModelDocuments(stripReminders, expandBase64 bool, size int, hit *hardHit) (documents []string, tailWindow, incomplete, reviewCovered bool) {
 	decodedTotal := 0
 	systemTexts, userTexts := in.Systems, in.UserAuthored
+	assistantTexts, toolTexts := in.Assistants, in.RecentToolOutputs
 	if in.modelSystems != nil {
 		systemTexts = in.modelSystems
 	}
 	if in.modelUsers != nil {
 		userTexts = in.modelUsers
 	}
-	systems, systemsPartial := preparedDocument(systemTexts, stripReminders, expandBase64, &decodedTotal)
-	users, usersPartial := preparedDocument(userTexts, stripReminders, expandBase64, &decodedTotal)
-	incomplete = systemsPartial || usersPartial
-	doc := strings.Join(slices.DeleteFunc([]string{systems, users}, func(s string) bool { return s == "" }), "\n")
-	tail, cut := tailRunes(doc, size)
-	historyCut := in.modelSystems != nil || in.modelUsers != nil
-	tailWindow = cut || historyCut
-	if tail != "" {
-		documents = append(documents, tail)
+	if in.modelAssistants != nil {
+		assistantTexts = in.modelAssistants
+	}
+	if in.modelTools != nil {
+		toolTexts = in.modelTools
+	}
+	historyCut := in.modelSystems != nil || in.modelUsers != nil || in.modelAssistants != nil || in.modelTools != nil
+	tailWindow = historyCut
+	var currentTexts, previousTexts []string
+	if len(userTexts) > 0 {
+		currentTexts, previousTexts = userTexts[len(userTexts)-1:], userTexts[:len(userTexts)-1]
+	}
+	// The current user gets both the decoding budget and text budget first.
+	current, partial := preparedDocument(currentTexts, stripReminders, expandBase64, &decodedTotal)
+	incomplete = partial
+	type contextPart struct {
+		role     string
+		texts    []string
+		text     string
+		selected string
+	}
+	parts := []contextPart{
+		{role: "current_user", texts: []string{current}},
+		{role: "tool_context", texts: toolTexts},
+		{role: "assistant_context", texts: assistantTexts},
+		{role: "previous_user_context", texts: previousTexts},
+		{role: "system_context", texts: systemTexts},
+	}
+	room := size
+	var sections []string
+	for i, part := range parts {
+		text := current
+		if i > 0 {
+			text, partial = preparedDocument(part.texts, stripReminders, expandBase64, &decodedTotal)
+			incomplete = incomplete || partial
+		}
+		if text == "" {
+			continue
+		}
+		open, close := "["+part.role+"]\n", "\n[/"+part.role+"]"
+		overhead := len(open) + len(close)
+		if len(sections) > 0 {
+			overhead++
+		}
+		selected, cut := tailRunes(text, max(0, room-overhead))
+		tailWindow = tailWindow || cut
+		parts[i].text, parts[i].selected = text, selected
+		if selected != "" {
+			sections = append(sections, open+selected+close)
+			room -= overhead + utf8.RuneCountInString(selected)
+		}
+	}
+	// Context precedes the current user so the final task stays the most recent.
+	slices.Reverse(sections)
+	if len(sections) > 0 {
+		documents = append(documents, strings.Join(sections, "\n"))
 	} else if historyCut {
 		incomplete = true
 	}
 	if hit == nil {
 		return documents, tailWindow, incomplete, true
 	}
-	// Compare source offsets, not just the matched phrase: an earlier copy
-	// can have different context from an identical phrase in the tail.
-	base := -1
-	switch {
-	case hit.Text == users:
-		base = len(doc) - len(users)
-	case systems != "" && hit.End <= len(systems) && strings.HasPrefix(hit.Text, systems):
-		base = 0
+	// Reconstruct the known rule sources before mapping byte offsets: user
+	// turns, other context, and the distill system/current-user source. An
+	// identical short phrase elsewhere cannot stand in for the matched source.
+	reviewRole := "review_context"
+	for _, sourceParts := range [][]int{{3, 0}, {4, 2, 1}, {4, 0}, {0}, {1}, {2}, {3}, {4}} {
+		var source strings.Builder
+		for _, i := range sourceParts {
+			if parts[i].text != "" {
+				if source.Len() > 0 {
+					source.WriteByte('\n')
+				}
+				source.WriteString(parts[i].text)
+			}
+		}
+		if source.String() != hit.Text {
+			continue
+		}
+		base := 0
+		for _, i := range sourceParts {
+			part := parts[i]
+			if part.text == "" {
+				continue
+			}
+			if hit.Start >= base && hit.End <= base+len(part.text) {
+				reviewRole = "review_" + part.role
+				if hit.Start >= base+len(part.text)-len(part.selected) {
+					return documents, tailWindow, incomplete, true
+				}
+			}
+			base += len(part.text) + 1
+		}
 	}
-	if base >= 0 && base+hit.Start >= len(doc)-len(tail) {
-		return documents, tailWindow, incomplete, true
+	reviewOpen, reviewClose := "["+reviewRole+"]\n", "\n[/"+reviewRole+"]"
+	const currentOpen, currentClose = "[current_user]\n", "\n[/current_user]"
+	excerptBudget := size - len(reviewOpen) - len(reviewClose)
+	currentRoom := min(size/4, excerptBudget-utf8.RuneCountInString(hit.Text[hit.Start:hit.End])-len(currentOpen)-len(currentClose)-1)
+	currentTail, _ := tailRunes(current, max(0, currentRoom))
+	currentSection := ""
+	if currentTail != "" {
+		currentSection = "\n" + currentOpen + currentTail + currentClose
+		excerptBudget -= utf8.RuneCountInString(currentSection)
 	}
-	excerpt, covered := hit.excerpt(size)
+	excerpt, covered := hit.excerpt(excerptBudget)
 	if !covered {
 		return documents, tailWindow, true, false
 	}
-	if !strings.Contains(tail, excerpt) {
-		documents = append(documents, excerpt)
-	}
+	documents = append(documents, reviewOpen+excerpt+reviewClose+currentSection)
 	return documents, tailWindow, incomplete, true
 }
 

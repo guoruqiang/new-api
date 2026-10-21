@@ -19,11 +19,20 @@ type Store interface {
 	HitBlock(id int, now int64) error
 	HitRefusal(id int, now int64) error
 	Remember(rec *model.RiskRefusal) error
-	// RecentStrikes counts a user's confirmed hits in a namespace since a time.
-	RecentStrikes(namespace string, userID int, since int64) (int64, error)
 }
 
 type dbStore struct{}
+
+// ReviewStore persists pending evidence separately from raw events. A preview
+// uses readOnlyStore and never reaches this capability.
+type ReviewStore interface {
+	CreateReview(*model.RiskReview, model.RiskBehaviorPolicy, int64) error
+}
+
+func (dbStore) CreateReview(rec *model.RiskReview, policy model.RiskBehaviorPolicy, now int64) error {
+	_, _, err := model.CreateRiskReviewCandidate(rec, policy, now)
+	return err
+}
 
 func (dbStore) ActiveBlock(namespace, subjectType, value string, now int64) (*model.RiskSubjectBlock, error) {
 	return model.GetActiveRiskBlock(namespace, subjectType, value, now)
@@ -41,9 +50,6 @@ func (dbStore) Block(rec *model.RiskSubjectBlock) error { return model.BlockRisk
 func (dbStore) HitBlock(id int, now int64) error        { return model.HitRiskBlock(id, now) }
 func (dbStore) HitRefusal(id int, now int64) error      { return model.HitRiskRefusal(id, now) }
 func (dbStore) Remember(rec *model.RiskRefusal) error   { return model.RememberRiskRefusal(rec) }
-func (dbStore) RecentStrikes(namespace string, userID int, since int64) (int64, error) {
-	return model.CountRiskStrikes(namespace, userID, since)
-}
 
 // readOnlyStore lets previews read records without writing any.
 type readOnlyStore struct{ Store }

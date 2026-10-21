@@ -74,7 +74,17 @@ export function PolicySettings(props: {
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const queryClient = useQueryClient()
   const form = useForm<Policy>({
-    defaultValues: props.initial,
+    defaultValues: {
+      ...props.initial,
+      behavior: {
+        ...props.defaults.policy.behavior,
+        ...props.initial.behavior,
+      },
+      evidence: {
+        ...props.defaults.policy.evidence,
+        ...props.initial.evidence,
+      },
+    },
     resolver: zodResolver(policySchema),
   })
   const value = form.watch()
@@ -157,6 +167,7 @@ export function PolicySettings(props: {
   const h = value.hard_regex
   const r = value.refusal
   const m = value.model
+  const b = value.behavior
   const disabled = !props.canWrite || save.isPending || props.loadingLatest
   const bindingsMatch = [
     props.config.payload.default_binding,
@@ -239,6 +250,79 @@ export function PolicySettings(props: {
                 checked={value.evidence.store_preview}
                 onChange={(v) => update('evidence', { store_preview: v })}
               />
+              <Toggle
+                disabled={disabled}
+                label='Store review evidence'
+                checked={value.evidence.store_review_evidence}
+                onChange={(store_review_evidence) =>
+                  update('evidence', { store_review_evidence })
+                }
+              />
+            </FieldGroup>
+            <p className='text-muted-foreground text-sm'>
+              {t(
+                'Save bounded text submitted for review, up to 32,768 characters. When disabled, a short preview alone cannot confirm a violation.'
+              )}
+            </p>
+          </FieldSet>
+          <Separator />
+          <FieldSet className='min-w-0 gap-3'>
+            <FieldLegend variant='label'>{t('Behavior scoring')}</FieldLegend>
+            <p className='text-muted-foreground text-sm'>
+              {t(
+                'Confirmed explicit content and jailbreak violations add 3 points; other categories add 1. Only enforced requests count. Repeated evidence is deduplicated within the score window.'
+              )}
+            </p>
+            <FieldGroup className='grid gap-4 sm:grid-cols-2'>
+              <Toggle
+                disabled={disabled}
+                label='Enable behavior scoring'
+                checked={b.enabled}
+                onChange={(enabled) => update('behavior', { enabled })}
+              />
+              <Toggle
+                disabled={disabled}
+                label='Automatically block at the score threshold'
+                checked={b.auto_block_enabled}
+                onChange={(auto_block_enabled) =>
+                  update('behavior', { auto_block_enabled })
+                }
+              />
+            </FieldGroup>
+            <p className='text-muted-foreground text-sm'>
+              {t(
+                'Automatic blocking is off by default. Review and record scores first; observation candidates never cause a block.'
+              )}
+            </p>
+            <FieldGroup className='grid gap-4 sm:grid-cols-3'>
+              <NumberField
+                disabled={disabled}
+                label='Score window (minutes)'
+                value={b.window_minutes}
+                min={1}
+                max={1440}
+                onChange={(window_minutes) =>
+                  update('behavior', { window_minutes })
+                }
+              />
+              <NumberField
+                disabled={disabled}
+                label='Block score threshold'
+                value={b.threshold}
+                min={1}
+                max={100}
+                onChange={(threshold) => update('behavior', { threshold })}
+              />
+              <NumberField
+                disabled={disabled}
+                label='Block duration (minutes)'
+                value={b.block_ttl_minutes}
+                min={1}
+                max={1440}
+                onChange={(block_ttl_minutes) =>
+                  update('behavior', { block_ttl_minutes })
+                }
+              />
             </FieldGroup>
           </FieldSet>
           <Separator />
@@ -246,6 +330,11 @@ export function PolicySettings(props: {
             <>
               <FieldSet className='min-w-0 gap-3'>
                 <FieldLegend variant='label'>{t('When to block')}</FieldLegend>
+                <p className='text-muted-foreground text-sm'>
+                  {t(
+                    'Ordinary distillation keywords, formatting signals and fingerprints require contextual review by the decision model before blocking.'
+                  )}
+                </p>
                 <FieldGroup className='grid gap-3 sm:grid-cols-2'>
                   <Toggle
                     disabled={disabled}
@@ -436,6 +525,11 @@ export function PolicySettings(props: {
                     'Review rules, and any rule hit in system, assistant or tool text, are sent to the decision model, which makes the final call. Without the decision model they are only recorded.'
                   )}
                 </p>
+                <p className='text-muted-foreground text-sm'>
+                  {t(
+                    'Built-in rules keep their default handling. Change the pattern or category to customize handling.'
+                  )}
+                </p>
                 <StaticDataTable
                   data={rules}
                   className='min-w-0 [&_[data-slot=table-container]]:max-h-96 [&_[data-slot=table-container]]:overflow-auto'
@@ -491,15 +585,17 @@ export function PolicySettings(props: {
                       id: 'action',
                       header: t('Handling'),
                       cell: (rule, i) => {
-                        if (rule.category === 'distill') {
-                          return t('Block directly')
-                        }
+                        const builtin = props.defaults.builtin_rules.find(
+                          (defaultRule) =>
+                            defaultRule.category === rule.category &&
+                            defaultRule.source === rule.source.trim()
+                        )
                         return (
                           <Choice
-                            disabled={disabled}
+                            disabled={disabled || !!builtin}
                             hideLabel
                             label='Handling'
-                            value={rule.action ?? 'block'}
+                            value={builtin?.action ?? rule.action ?? 'block'}
                             options={[
                               {
                                 value: 'review',
@@ -614,6 +710,11 @@ export function PolicySettings(props: {
             <>
               <FieldSet className='min-w-0 gap-3'>
                 <FieldLegend variant='label'>{t('When to block')}</FieldLegend>
+                <p className='text-muted-foreground text-sm'>
+                  {t(
+                    'Similar refusal matches are signals for contextual review by the decision model; similarity alone does not block a request.'
+                  )}
+                </p>
                 <FieldGroup className='grid gap-4 sm:grid-cols-2'>
                   <Toggle
                     disabled={disabled}
@@ -650,67 +751,12 @@ export function PolicySettings(props: {
                 <FieldLegend variant='label'>
                   {t('Retention and limits')}
                 </FieldLegend>
-                <Toggle
-                  disabled={disabled}
-                  label='Enable subject blocks'
-                  checked={r.subject_block_enabled}
-                  onChange={(subject_block_enabled) =>
-                    update('refusal', { subject_block_enabled })
-                  }
-                />
-                <Choice
-                  disabled={disabled}
-                  label='Block subject'
-                  value={r.block_subject}
-                  options={[
-                    { value: 'user', label: 'User' },
-                    { value: 'user_device', label: 'User and device' },
-                  ]}
-                  onChange={(block_subject) =>
-                    update('refusal', {
-                      block_subject: block_subject as 'user' | 'user_device',
-                    })
-                  }
-                />
                 <p className='text-muted-foreground text-sm'>
                   {t(
-                    'Device identifiers are untrusted. Zero retention means permanent.'
+                    'Existing subject blocks remain available below. New user restrictions use confirmed behavior scores, not hit counts.'
                   )}
                 </p>
-                <p className='text-muted-foreground text-sm'>
-                  {t(
-                    'A subject is blocked only after this many confirmed hits within the window; a single hit only stops its own request.'
-                  )}
-                </p>
-                <FieldGroup className='grid gap-4 sm:grid-cols-3'>
-                  <NumberField
-                    disabled={disabled}
-                    label='Block duration (minutes)'
-                    value={r.block_ttl_minutes}
-                    onChange={(block_ttl_minutes) =>
-                      update('refusal', { block_ttl_minutes })
-                    }
-                  />
-                  <NumberField
-                    disabled={disabled}
-                    label='Hits before blocking'
-                    min={1}
-                    max={20}
-                    value={r.block_after_hits}
-                    onChange={(block_after_hits) =>
-                      update('refusal', { block_after_hits })
-                    }
-                  />
-                  <NumberField
-                    disabled={disabled}
-                    label='Hit window (minutes)'
-                    min={1}
-                    max={1440}
-                    value={r.block_window_minutes}
-                    onChange={(block_window_minutes) =>
-                      update('refusal', { block_window_minutes })
-                    }
-                  />
+                <FieldGroup className='grid gap-4 sm:grid-cols-2'>
                   <NumberField
                     disabled={disabled}
                     label='Memory retention (days)'

@@ -25,6 +25,7 @@ import { api } from '@/lib/api'
 import { PolicySettings } from '../components/policy-settings'
 import { ProviderCard } from '../components/provider-card'
 import { policySchema } from '../lib/schema'
+import type { Policy } from '../types'
 import { config, defaults, policy, row, renderRisk } from './fixtures'
 
 it('requires a configured provider before an enabled model can be saved', async () => {
@@ -530,7 +531,13 @@ it('saves the chosen rule handling and adds new rules for model review', async (
     <PolicySettings
       config={config}
       row={row}
-      initial={policy}
+      initial={{
+        ...policy,
+        hard_regex: {
+          ...policy.hard_regex,
+          rules: [{ ...defaults.builtin_rules[0], source: 'custom-pattern' }],
+        },
+      }}
       defaults={defaults}
       providers={[]}
       view='hard_regex'
@@ -554,7 +561,11 @@ it('saves the chosen rule handling and adds new rules for model review', async (
           payload: expect.objectContaining({
             hard_regex: expect.objectContaining({
               rules: [
-                { ...defaults.builtin_rules[0], action: 'block' },
+                {
+                  ...defaults.builtin_rules[0],
+                  source: 'custom-pattern',
+                  action: 'block',
+                },
                 {
                   category: 'custom',
                   source: 'new',
@@ -570,20 +581,134 @@ it('saves the chosen rule handling and adds new rules for model review', async (
   )
 })
 
-it('rejects ban thresholds outside the server bounds', () => {
+it('locks exact built-in rule handling to its default while custom patterns and categories stay editable', () => {
+  const distillRule = {
+    category: 'distill',
+    source: 'distill-pattern',
+    enabled: true,
+    action: 'review' as const,
+  }
+  renderRisk(
+    <PolicySettings
+      config={config}
+      row={row}
+      initial={{
+        ...policy,
+        hard_regex: {
+          ...policy.hard_regex,
+          rules: [
+            { ...distillRule, source: ' distill-pattern ', action: 'block' },
+            { ...distillRule, category: 'custom', action: 'block' },
+            { ...distillRule, source: 'custom-pattern', action: 'block' },
+            { ...defaults.builtin_rules[0], action: 'block' },
+          ],
+        },
+      }}
+      defaults={{
+        ...defaults,
+        builtin_rules: [...defaults.builtin_rules, distillRule],
+      }}
+      providers={[]}
+      view='hard_regex'
+      canWrite
+      onSaved={() => {}}
+    />
+  )
+  const handling = screen.getAllByRole('combobox', { name: 'Handling' })
+  expect(handling).toHaveLength(4)
+  expect(handling[0]).toHaveValue('review')
+  expect(handling[0]).toBeDisabled()
+  expect(handling[1]).toHaveValue('block')
+  expect(handling[1]).toBeEnabled()
+  expect(handling[2]).toHaveValue('block')
+  expect(handling[2]).toBeEnabled()
+  expect(handling[3]).toHaveValue('review')
+  expect(handling[3]).toBeDisabled()
+})
+
+it('rejects behavior score values outside the server bounds and non-integer values', () => {
   for (const patch of [
-    { block_after_hits: 0 },
-    { block_after_hits: 21 },
-    { block_window_minutes: 0 },
-    { block_window_minutes: 1441 },
+    { threshold: 0 },
+    { threshold: 101 },
+    { threshold: 2.5 },
+    { window_minutes: 0 },
+    { window_minutes: 1441 },
+    { block_ttl_minutes: 0 },
+    { block_ttl_minutes: 1441 },
+    { block_ttl_minutes: Number.NaN },
   ]) {
     expect(
       policySchema.safeParse({
         ...policy,
-        refusal: { ...policy.refusal, ...patch },
+        behavior: { ...policy.behavior, ...patch },
       }).success
     ).toBe(false)
   }
+})
+
+it('loads old policies with recording defaults and saves behavior settings independently of legacy hit thresholds', async () => {
+  const write = vi.spyOn(api, 'request').mockResolvedValue({
+    data: {
+      success: true,
+      data: { ...row, revision: 2, config_revision: 4 },
+    },
+  })
+  const legacy = structuredClone(policy)
+  delete (legacy as Partial<Policy>).behavior
+  delete (legacy.evidence as Partial<Policy['evidence']>).store_review_evidence
+  const user = userEvent.setup()
+  renderRisk(
+    <PolicySettings
+      config={config}
+      row={row}
+      initial={legacy}
+      defaults={defaults}
+      providers={[]}
+      view='refusal'
+      canWrite
+      onSaved={() => {}}
+    />
+  )
+  expect(
+    screen.queryByRole('spinbutton', { name: 'Hits before blocking' })
+  ).not.toBeInTheDocument()
+  expect(
+    screen.getByRole('switch', {
+      name: 'Automatically block at the score threshold',
+    })
+  ).not.toBeChecked()
+  expect(
+    screen.getByRole('switch', { name: 'Store review evidence' })
+  ).toBeChecked()
+  expect(
+    screen.getByRole('spinbutton', { name: 'Score window (minutes)' })
+  ).toHaveValue(10)
+  const threshold = screen.getByRole('spinbutton', {
+    name: 'Block score threshold',
+  })
+  expect(threshold).toHaveValue(6)
+  expect(threshold).toHaveAttribute('min', '1')
+  expect(threshold).toHaveAttribute('max', '100')
+  expect(threshold).toHaveAttribute('step', '1')
+  await user.clear(threshold)
+  await user.type(threshold, '8')
+  await user.click(
+    screen.getByRole('switch', { name: 'Store review evidence' })
+  )
+  await user.click(screen.getByRole('button', { name: 'Save settings' }))
+  await waitFor(() =>
+    expect(write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            behavior: { ...policy.behavior, threshold: 8 },
+            evidence: { store_preview: true, store_review_evidence: false },
+            refusal: policy.refusal,
+          }),
+        }),
+      })
+    )
+  )
 })
 
 it('matches server numeric bounds and counts Unicode code points for question limits', () => {

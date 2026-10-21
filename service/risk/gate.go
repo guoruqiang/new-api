@@ -113,7 +113,7 @@ func subjectsFor(cfg RefusalConfig, attempt AttemptContext, in *Input) []subject
 	return subjects
 }
 
-func blockDecision(base Decision, layer, reason, category, keyword, rule string, ban bool) Decision {
+func blockDecision(base Decision, layer, reason, category, keyword, rule string) Decision {
 	d := base
 	d.Outcome = OutcomeBlock
 	d.Layer = layer
@@ -121,7 +121,7 @@ func blockDecision(base Decision, layer, reason, category, keyword, rule string,
 	d.Category = category
 	d.Keyword = truncateRunes(keyword, 40)
 	d.Rule = truncateRunes(rule, 120)
-	d.BanSubject = ban
+	d.BanSubject = false
 	return d
 }
 
@@ -161,6 +161,7 @@ func verdictKey(ev evaluation, provider ProviderConfig, modelName, document stri
 		asked = append(asked, q.id+"="+q.instructions)
 	}
 	encoded, _ := common.Marshal(struct {
+		Revision   int64    `json:"revision"`
 		Namespace  string   `json:"ns"`
 		User       int      `json:"u"`
 		Provider   string   `json:"p"`
@@ -171,6 +172,7 @@ func verdictKey(ev evaluation, provider ProviderConfig, modelName, document stri
 		Preprocess string   `json:"pp"`
 		Document   string   `json:"d"`
 	}{
+		ev.snapshot.ChangeRevision,
 		ev.attempt.Namespace, ev.attempt.UserID,
 		providerFingerprint(ProviderConfig{Type: provider.Type, BaseURL: provider.BaseURL, KeyLines: endpointLines(provider)}),
 		modelName, asked, p.Threshold, p.NearMissBand,
@@ -217,14 +219,29 @@ func evaluate(ctx context.Context, ev evaluation) Decision {
 	}
 	d.Fingerprint = Fingerprint(in)
 
-	if hits := detectDistill(in, p); len(hits) > 0 {
-		evidence := make([]string, 0, len(hits))
-		rules := make([]string, 0, len(hits))
-		for _, h := range hits {
-			evidence = append(evidence, h.Evidence)
-			rules = append(rules, h.Rule)
+	if cfg := payload.Refusal; cfg.Enabled && cfg.SubjectBlockEnabled || payload.Behavior.Enabled && payload.Behavior.AutoBlockEnabled {
+		for _, s := range subjectsFor(cfg, ev.attempt, in) {
+			blk, err := ev.store.ActiveBlock(ev.attempt.Namespace, s.kind, s.value, now)
+			if err != nil {
+				return storeFailure(d, err)
+			}
+			if blk != nil {
+				hit := blockDecision(d, LayerRefusal, ReasonSubject, "subject", blk.Reason, "")
+				hit.BlockID = blk.Id
+				return hit
+			}
 		}
-		return blockDecision(d, LayerDistill, hits[0].Rule, "distill", strings.Join(evidence, ";"), strings.Join(rules, ","), true)
+	}
+
+	var review *hardHit
+	for _, hit := range detectDistill(in, p) {
+		if hit.Review != nil {
+			if review == nil {
+				review = hit.Review
+			}
+			continue
+		}
+		return blockDecision(d, LayerDistill, hit.Rule, "distill", hit.Evidence, hit.Rule)
 	}
 
 	ruleDoc, userIncomplete := in.RuleDocument(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64)
@@ -242,44 +259,34 @@ func evaluate(ctx context.Context, ev evaluation) Decision {
 	scanned := slices.ContainsFunc(p.hardRules, func(r compiledRule) bool { return allow(r.category) })
 	// A block-tier hit in the user's own text stops the request. Review-tier
 	// hits, and every hit in system, assistant or tool text, go to the model.
-	var review *hardHit
 	if hit, ok := matchHardRules(ruleDoc, p.hardRules, allow); ok {
-		switch {
-		case hit.Category == "distill":
-			return blockDecision(d, LayerDistill, "distill_regex", "distill", hit.Keyword, hit.Rule, true)
-		case hit.Action == RuleActionBlock:
-			return blockDecision(d, LayerHardRegex, hit.Category, hit.Category, hit.Keyword, hit.Rule, true)
+		if hit.Action == RuleActionBlock {
+			if payload.Evidence.StoreReviewEvidence {
+				documents, _, _, _ := in.ModelDocuments(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64, payload.Model.MaxAuditChars, &hit)
+				d.ReviewEvidence = strings.Join(documents, "\n\n--- audit document ---\n\n")
+			}
+			if hit.Category == "distill" {
+				return blockDecision(d, LayerDistill, "distill_regex", "distill", hit.Keyword, hit.Rule)
+			}
+			return blockDecision(d, LayerHardRegex, hit.Category, hit.Category, hit.Keyword, hit.Rule)
 		}
 		review = &hit
 	}
 	if review == nil {
-		notDistill := func(category string) bool { return category != "distill" && allow(category) }
-		if hit, ok := matchHardRules(contextDoc, p.hardRules, notDistill); ok {
+		if hit, ok := matchHardRules(contextDoc, p.hardRules, allow); ok {
 			review = &hit
 		}
 	}
 
 	if cfg := payload.Refusal; cfg.Enabled {
 		ns := ev.attempt.Namespace
-		if cfg.SubjectBlockEnabled {
-			for _, s := range subjectsFor(cfg, ev.attempt, in) {
-				blk, err := ev.store.ActiveBlock(ns, s.kind, s.value, now)
-				if err != nil {
-					return storeFailure(d, err)
-				}
-				if blk != nil {
-					hit := blockDecision(d, LayerRefusal, ReasonSubject, "subject", blk.Reason, "", false)
-					hit.BlockID = blk.Id
-					return hit
-				}
-			}
-		}
+
 		rec, err := ev.store.ExactRefusal(ns, ev.attempt.UserID, d.Fingerprint, now)
 		if err != nil {
 			return storeFailure(d, err)
 		}
 		if rec != nil {
-			hit := blockDecision(d, LayerRefusal, ReasonExact, "refusal", ReasonExact, "", true)
+			hit := blockDecision(d, LayerRefusal, ReasonExact, "refusal", ReasonExact, "")
 			hit.RefusalID = rec.Id
 			return hit
 		}
@@ -297,10 +304,10 @@ func evaluate(ctx context.Context, ev evaluation) Decision {
 					}
 				}
 				if bestID > 0 && best >= float64(cfg.Similarity)/100 {
-					hit := blockDecision(d, LayerRefusal, ReasonSimilar, "refusal", fmt.Sprintf("similar %.0f%%", best*100), "", true)
-					hit.RefusalID = bestID
-					hit.Similarity = best
-					return hit
+					// Similarity is a review signal, not evidence that the new
+					// request shares the earlier refusal's intent.
+					d.Similarity = best
+					d.Reviewed = true
 				}
 			}
 		}
@@ -309,10 +316,13 @@ func evaluate(ctx context.Context, ev evaluation) Decision {
 	m := payload.Model
 	if review != nil {
 		d.Layer, d.Category, d.Keyword, d.Rule, d.Reviewed = LayerHardRegex, review.Category, review.Keyword, review.Rule, true
+		if review.Category == "distill" {
+			d.Layer = LayerDistill
+		}
 	}
 	if !m.Enabled || !ev.runModel {
 		switch {
-		case review != nil:
+		case d.Reviewed:
 			d.Reason = ReasonRuleUnconfirmed
 		case scanned:
 			d.Reason = ReasonRegexMiss
@@ -326,6 +336,9 @@ func evaluate(ctx context.Context, ev evaluation) Decision {
 		return failureDecision(d, payload, LayerModel, ReasonUnavailable, "no provider")
 	}
 	documents, tailWindow, docIncomplete, reviewCovered := in.ModelDocuments(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64, m.MaxAuditChars, review)
+	if payload.Evidence.StoreReviewEvidence {
+		d.ReviewEvidence = strings.Join(documents, "\n\n--- audit document ---\n\n")
+	}
 	if ruleIncomplete || docIncomplete || in.HasMedia || in.RefsHistory || in.PromptTokenOnly {
 		d.Coverage = CoverageIncomplete
 	} else if tailWindow && len(documents) > 0 {
@@ -364,7 +377,7 @@ func evaluate(ctx context.Context, ev evaluation) Decision {
 		}
 	}
 	if worst != nil {
-		return blockDecision(d, LayerModel, "model", worst.category, worst.category, d.Rule, true)
+		return blockDecision(d, LayerModel, "model", worst.category, worst.category, d.Rule)
 	}
 	d.Scores = merged
 	if failure != nil {
@@ -378,7 +391,7 @@ func evaluate(ctx context.Context, ev evaluation) Decision {
 	switch {
 	case review != nil && !reviewCovered:
 		d.Reason = ReasonRuleUnconfirmed
-	case review != nil:
+	case d.Reviewed:
 		d.Reason = ReasonRuleCleared
 	case allCached:
 		d.Reason = ReasonModelReplay
@@ -442,9 +455,14 @@ func applyMode(d Decision, mode string) Decision {
 	return d
 }
 
-// commit applies the enforce-mode side effects of a blocking decision:
-// hit counters and subject blocks. Observe mode writes nothing.
+// commit records pending evidence. Only an independent administrator review
+// may add behavior points or create a temporary subject restriction.
 func commit(ev evaluation, d Decision) {
+	if d.Outcome == OutcomeBlock || d.Outcome == OutcomeWouldBlock {
+		if d.Layer == LayerDistill || d.Layer == LayerHardRegex || d.Layer == LayerModel {
+			recordReviewCandidate(ev, d)
+		}
+	}
 	if ev.binding.Mode != ModeEnforce || d.Outcome != OutcomeBlock {
 		return
 	}
@@ -459,43 +477,40 @@ func commit(ev evaluation, d Decision) {
 			common.SysError(common.LogText("risk refusal hit update failed: %s", err.Error()))
 		}
 	}
-	cfg := ev.binding.Policy.Payload.Refusal
-	if d.BanSubject && cfg.Enabled && cfg.SubjectBlockEnabled && strikeLimitReached(ev, cfg) {
-		blockSubjects(ev, cfg, d.Layer+":"+d.Category, d.Fingerprint)
-	}
 }
 
-// strikeLimitReached counts this confirmed hit together with the user's
-// earlier ones in the window. Events are written asynchronously, so a burst
-// within the same second may need a hit or two more before the block.
-func strikeLimitReached(ev evaluation, cfg RefusalConfig) bool {
-	if cfg.BlockAfterHits <= 1 {
-		return true
+func recordReviewCandidate(ev evaluation, d Decision) {
+	payload := ev.binding.Policy.Payload
+	store, ok := ev.store.(ReviewStore)
+	if !ok || !payload.Behavior.Enabled || ev.attempt.UserID <= 0 || ev.attempt.RequestID == "" {
+		return
 	}
-	since := ev.now.Add(-time.Duration(cfg.BlockWindowMinutes) * time.Minute).Unix()
-	earlier, err := ev.store.RecentStrikes(ev.attempt.Namespace, ev.attempt.UserID, since)
-	if err != nil {
-		common.SysError(common.LogText("risk strike count failed: %s", err.Error()))
-		return false
-	}
-	return earlier+1 >= int64(cfg.BlockAfterHits)
-}
-
-func blockSubjects(ev evaluation, cfg RefusalConfig, reason, fingerprint string) {
-	now := ev.now.Unix()
-	expires := int64(0)
-	if cfg.BlockTTLMinutes > 0 {
-		expires = now + int64(cfg.BlockTTLMinutes)*60
-	}
-	for _, s := range subjectsFor(cfg, ev.attempt, ev.input) {
-		err := ev.store.Block(&model.RiskSubjectBlock{
-			Namespace: ev.attempt.Namespace, SubjectType: s.kind, SubjectValue: s.value,
-			Reason: truncateRunes(reason, 80), Fingerprint: fingerprint, SourceRequestId: ev.attempt.RequestID,
-			LastSeenAt: now, ExpiresAt: expires,
-		})
-		if err != nil {
-			common.SysError(common.LogText("risk subject block failed: %s", err.Error()))
+	evidence := ""
+	if payload.Evidence.StoreReviewEvidence {
+		evidence = d.ReviewEvidence
+		if evidence == "" {
+			documents, _, _, _ := ev.input.ModelDocuments(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64, payload.Model.MaxAuditChars, nil)
+			evidence = strings.Join(documents, "\n\n--- audit document ---\n\n")
 		}
+	}
+	scores := ""
+	if len(d.Scores) > 0 {
+		encoded, _ := common.Marshal(d.Scores)
+		scores = string(encoded)
+	}
+	// A model switch is still the same incident for behavior scoring. The
+	// original fingerprint is retained to clear the corresponding refusal.
+	incidentInput := *ev.input
+	incidentInput.Model = ""
+	rec := &model.RiskReview{
+		RequestId: ev.attempt.RequestID, Namespace: ev.attempt.Namespace,
+		GroupName: ev.attempt.EffectiveGroup, UserId: ev.attempt.UserID, Mode: ev.binding.Mode,
+		Layer: d.Layer, Category: d.Category, Reason: d.Reason, Model: truncateRunes(ev.attempt.Model, 128),
+		ProviderModel: d.ProviderModel, Scores: scores, PolicyKey: d.PolicyKey, PolicyRevision: d.PolicyRevision,
+		Fingerprint: d.Fingerprint, IncidentKey: Fingerprint(&incidentInput), Evidence: evidence, Coverage: d.Coverage,
+	}
+	if err := store.CreateReview(rec, payload.Behavior.Policy(), ev.now.Unix()); err != nil {
+		common.SysError(common.LogText("risk review write failed: %s", err.Error()))
 	}
 }
 
