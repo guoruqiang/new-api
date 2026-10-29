@@ -254,6 +254,9 @@ it('shows the reviewed tail window alongside a safe preview verdict', async () =
           outcome: 'pass',
           reason: 'model_safe',
           coverage: 'tail_window',
+          screening_score: 3,
+          screening_reason: 'user_rule',
+          model_triggered: true,
           scores: { safety: 0.9 },
         },
       },
@@ -270,6 +273,9 @@ it('shows the reviewed tail window alongside a safe preview verdict', async () =
     'Coverage: Tail window reviewed'
   )
   expect(screen.getByRole('status')).toHaveTextContent('Model judged safe')
+  expect(screen.getByRole('status')).toHaveTextContent(
+    'Screening score: 3 · User rule match'
+  )
   expect(write).toHaveBeenCalledWith(
     expect.objectContaining({
       url: '/api/risk/preview',

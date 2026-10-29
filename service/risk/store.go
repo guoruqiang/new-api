@@ -12,6 +12,7 @@ import (
 
 // Store is the refusal memory and subject block storage.
 type Store interface {
+	ActiveTokenBlock(userID, tokenID int, now int64) (*model.RiskSubjectBlock, error)
 	ActiveBlock(namespace, subjectType, value string, now int64) (*model.RiskSubjectBlock, error)
 	ExactRefusal(namespace string, userID int, fingerprint string, now int64) (*model.RiskRefusal, error)
 	RefusalCandidates(namespace string, userID int, modelName string, limit int, now int64) ([]model.RiskRefusal, error)
@@ -26,12 +27,27 @@ type dbStore struct{}
 // ReviewStore persists pending evidence separately from raw events. A preview
 // uses readOnlyStore and never reaches this capability.
 type ReviewStore interface {
-	CreateReview(*model.RiskReview, model.RiskBehaviorPolicy, int64) error
+	CreateModelReview(*model.RiskReview, model.RiskBehaviorPolicy, bool, bool, int64) (*model.RiskReviewResult, error)
 }
 
-func (dbStore) CreateReview(rec *model.RiskReview, policy model.RiskBehaviorPolicy, now int64) error {
-	_, _, err := model.CreateRiskReviewCandidate(rec, policy, now)
-	return err
+func (dbStore) CreateModelReview(rec *model.RiskReview, policy model.RiskBehaviorPolicy, autoConfirm, allowAutoBlock bool, now int64) (*model.RiskReviewResult, error) {
+	if rec.Layer != LayerModel {
+		row, _, err := model.CreateRiskReviewCandidate(rec, policy, now)
+		return &model.RiskReviewResult{Review: row}, err
+	}
+	return model.CreateRiskModelReview(rec, policy, autoConfirm, allowAutoBlock, now)
+}
+
+type ScreeningStore interface {
+	ScreenSignal(*model.RiskSignal, model.RiskScreeningPolicy, int64) (model.RiskScreeningResult, error)
+}
+
+func (dbStore) ScreenSignal(rec *model.RiskSignal, policy model.RiskScreeningPolicy, now int64) (model.RiskScreeningResult, error) {
+	return model.RecordRiskSignal(rec, policy, now)
+}
+
+func (dbStore) ActiveTokenBlock(userID, tokenID int, now int64) (*model.RiskSubjectBlock, error) {
+	return model.GetActiveRiskTokenBlock(userID, tokenID, now)
 }
 
 func (dbStore) ActiveBlock(namespace, subjectType, value string, now int64) (*model.RiskSubjectBlock, error) {
@@ -53,6 +69,13 @@ func (dbStore) Remember(rec *model.RiskRefusal) error   { return model.RememberR
 
 // readOnlyStore lets previews read records without writing any.
 type readOnlyStore struct{ Store }
+
+func (readOnlyStore) ScreenSignal(rec *model.RiskSignal, policy model.RiskScreeningPolicy, now int64) (model.RiskScreeningResult, error) {
+	if rec.UserId <= 0 || rec.TokenId <= 0 {
+		return model.RiskScreeningResult{Score: rec.Points, DistinctSignals: 1, ShouldAudit: rec.Points >= policy.Threshold}, nil
+	}
+	return model.PreviewRiskSignal(rec, policy, now)
+}
 
 func (readOnlyStore) Block(*model.RiskSubjectBlock) error { return nil }
 func (readOnlyStore) HitBlock(int, int64) error           { return nil }

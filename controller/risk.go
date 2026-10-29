@@ -299,8 +299,8 @@ func GetRiskReviews(c *gin.Context) {
 	common.ApiSuccess(c, page)
 }
 
-// Risk review actions use the same administrator permission as other risk
-// policy writes. Their only restrictions are namespace-scoped and temporary.
+// Review evidence is administrator-only. Restrictions affect the recorded
+// API token; a permanent restriction always requires an administrator.
 func GetRiskReview(c *gin.Context) {
 	row, ok := readRiskReview(c)
 	if !ok {
@@ -316,17 +316,18 @@ func GetRiskReview(c *gin.Context) {
 	if binding.Policy != nil {
 		payload = binding.Policy.Payload
 	}
-	score, err := model.GetRiskBehaviorScore(row.Namespace, row.UserId, payload.Behavior.Policy(), common.GetTimestamp())
+	score, err := model.GetRiskTokenBehaviorScore(row.Namespace, row.UserId, row.TokenId, payload.Behavior.Policy(), common.GetTimestamp())
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	block, err := model.GetActiveRiskBlock(row.Namespace, risk.SubjectUser, strconv.Itoa(row.UserId), common.GetTimestamp())
+	block, err := model.GetActiveRiskTokenBlock(row.UserId, row.TokenId, common.GetTimestamp())
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"review": row, "score": score, "block": block, "behavior_enabled": payload.Behavior.Enabled, "auto_block_enabled": payload.Behavior.AutoBlockEnabled, "mode": binding.Mode})
+	c.Header("Cache-Control", "no-store")
+	common.ApiSuccess(c, gin.H{"review": row, "score": score, "block": block, "behavior_enabled": payload.Behavior.Enabled, "auto_block_enabled": payload.Behavior.AutoBlockEnabled, "auto_confirm_enabled": payload.Behavior.AutoConfirmEnabled, "mode": binding.Mode})
 }
 
 func readRiskReview(c *gin.Context) (*model.RiskReview, bool) {
@@ -353,21 +354,22 @@ func ResolveRiskReview(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Revision int    `json:"revision"`
-		Action   string `json:"action"`
-		Category string `json:"category"`
-		Note     string `json:"note"`
+		Revision   int    `json:"revision"`
+		Action     string `json:"action"`
+		Category   string `json:"category"`
+		Note       string `json:"note"`
+		TTLMinutes *int   `json:"ttl_minutes"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid request body"))
 		return
 	}
 	body.Note, body.Category = strings.TrimSpace(body.Note), strings.TrimSpace(body.Category)
-	if body.Revision <= 0 || body.Note == "" || len([]rune(body.Note)) > 500 || !slices.Contains([]string{"confirm", "dismiss", "revoke"}, body.Action) {
+	if body.Revision <= 0 || body.Note == "" || len([]rune(body.Note)) > 500 || !slices.Contains([]string{"confirm", "dismiss", "revoke", "ban"}, body.Action) {
 		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("A review action, revision and note of at most 500 characters are required"))
 		return
 	}
-	if body.Action == "revoke" {
+	if body.Action == "revoke" || body.Action == "ban" {
 		// Revocation can release a derived restriction, so configuration
 		// permission alone is insufficient. PAT scopes also constrain root.
 		scope := service.AccessTokenScopeOf(authz.RiskUnblock)
@@ -383,7 +385,11 @@ func ResolveRiskReview(c *gin.Context) {
 			return
 		}
 	}
-	if body.Action == "confirm" {
+	if body.Action == "confirm" || body.Action == "ban" {
+		if row.Revision != body.Revision && (row.Status == model.RiskReviewDismissed || row.Status == model.RiskReviewRevoked) {
+			riskWriteError(c, model.ErrRiskRevisionConflict)
+			return
+		}
 		if !slices.Contains([]string{"nsfw", "jailbreak", "reverse", "pentest", "cyber", "distill", "custom", "safety", "crack", "refusal"}, body.Category) {
 			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid risk review category"))
 			return
@@ -394,6 +400,24 @@ func ResolveRiskReview(c *gin.Context) {
 		}
 		if row.EvidenceTruncated {
 			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Stored review evidence is truncated; this incident cannot be confirmed"))
+			return
+		}
+		if body.Action == "confirm" && row.TokenId > 0 && (strings.TrimSpace(row.OriginalRequest) == "" || row.OriginalRequestTruncated) {
+			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Complete request evidence is required to confirm this violation"))
+			return
+		}
+	}
+	if body.Action == "ban" {
+		if row.TokenId <= 0 || row.Mode != risk.ModeEnforce {
+			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Only an enforcement-mode violation with an API token can be restricted"))
+			return
+		}
+		if strings.TrimSpace(row.OriginalRequest) == "" || row.OriginalRequestTruncated {
+			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Complete request evidence is required to restrict an API token"))
+			return
+		}
+		if body.TTLMinutes == nil || *body.TTLMinutes < 0 || *body.TTLMinutes > 1440 {
+			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Token restriction duration must be 0 for permanent or 1 to 1440 minutes"))
 			return
 		}
 	}
@@ -413,10 +437,16 @@ func ResolveRiskReview(c *gin.Context) {
 	}
 	policy := payload.Behavior.Policy()
 	policy.ExpectedChangeRevision = snap.ChangeRevision
+	policy.ExpectedConfigRevision = snap.ConfigRevision
 	group, active := snap.NamespaceGroup[row.Namespace]
 	active = active && snap.Scope.GroupNamespaces[group] == row.Namespace
 	allowBlock := active && snap.Enabled && binding.Mode == risk.ModeEnforce && !snap.Scope.Exempt[row.Namespace] && !snap.Scope.Bypass[row.Namespace] && payload.Behavior.Enabled && payload.Behavior.AutoBlockEnabled
-	result, err := model.ResolveRiskReview(row.Id, body.Revision, c.GetInt("id"), body.Action, body.Category, body.Note, policy, allowBlock, common.GetTimestamp())
+	var result *model.RiskReviewResult
+	if body.Action == "ban" {
+		result, err = model.BanRiskReviewToken(row.Id, body.Revision, c.GetInt("id"), body.Category, body.Note, *body.TTLMinutes, policy, common.GetTimestamp())
+	} else {
+		result, err = model.ResolveRiskReview(row.Id, body.Revision, c.GetInt("id"), body.Action, body.Category, body.Note, policy, allowBlock, common.GetTimestamp())
+	}
 	if errors.Is(err, model.ErrRiskReviewTransition) {
 		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("This risk review action is no longer available"))
 		return
@@ -431,12 +461,13 @@ func ResolveRiskReview(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	result.Block, err = model.GetActiveRiskBlock(row.Namespace, risk.SubjectUser, strconv.Itoa(row.UserId), common.GetTimestamp())
+	result.Block, err = model.GetActiveRiskTokenBlock(row.UserId, row.TokenId, common.GetTimestamp())
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"review": result.Review, "score": result.Score, "block": result.Block, "behavior_enabled": payload.Behavior.Enabled, "auto_block_enabled": payload.Behavior.AutoBlockEnabled, "mode": binding.Mode})
+	c.Header("Cache-Control", "no-store")
+	common.ApiSuccess(c, gin.H{"review": result.Review, "score": result.Score, "block": result.Block, "behavior_enabled": payload.Behavior.Enabled, "auto_block_enabled": payload.Behavior.AutoBlockEnabled, "auto_confirm_enabled": payload.Behavior.AutoConfirmEnabled, "mode": binding.Mode})
 }
 
 func GetRiskEvent(c *gin.Context) {

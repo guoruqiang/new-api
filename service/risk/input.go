@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"maps"
 	"math"
 	"net/http"
 	"regexp"
@@ -430,6 +431,20 @@ func ExtractInput(body []byte, headers http.Header) (*Input, error) {
 		Official:          isOfficialClaudeCodeTraffic(doc, headers),
 		MaxTokens:         intField(doc, "max_tokens", "max_output_tokens", "max_completion_tokens", "max_new_tokens"),
 	}
+	contextHash := sha256.Sum256(body)
+	in.ContextDigest = hex.EncodeToString(contextHash[:])
+	// Punishment identity retains the complete submitted context but not
+	// the routed business model. Switching models is a retry of the same
+	// incident, while changed assistant/tool content remains a new context.
+	incidentContext := maps.Clone(doc)
+	delete(incidentContext, "model")
+	canonicalContext, err := common.Marshal(incidentContext)
+	if err != nil {
+		return nil, err
+	}
+	incidentHash := sha256.Sum256(canonicalContext)
+	in.IncidentContextDigest = hex.EncodeToString(incidentHash[:])
+	in.OriginalRequest, in.OriginalRequestHash, in.OriginalRequestTruncated = originalRoleText(doc)
 	in.Model, _ = doc["model"].(string)
 	if tail, cut := recentTexts(in.Systems, auditTextBudget, true); cut {
 		in.modelSystems = tail
@@ -494,6 +509,71 @@ func ExtractInput(body []byte, headers http.Header) (*Input, error) {
 	return in, nil
 }
 
+// originalRoleText preserves only submitted textual role content, not HTTP
+// headers, metadata, credentials, tool definitions or transport settings.
+// It remains request-local unless a rule or model actually blocks the text.
+func originalRoleText(doc map[string]any) (string, string, bool) {
+	var out strings.Builder
+	appendText := func(role, text string) {
+		if text == "" {
+			return
+		}
+		out.WriteString("[" + role + "]\n")
+		out.WriteString(text)
+		out.WriteString("\n[/" + role + "]\n")
+	}
+	for _, field := range []string{"system", "instructions"} {
+		for _, text := range systemFieldTexts(doc[field]) {
+			appendText("system", text)
+		}
+	}
+	for _, field := range []string{"messages", "input"} {
+		if text, ok := doc[field].(string); ok {
+			appendText("user", text)
+			continue
+		}
+		items, _ := doc[field].([]any)
+		for _, item := range items {
+			if text, ok := item.(string); ok {
+				appendText("user", text)
+				continue
+			}
+			obj, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			role, _ := obj["role"].(string)
+			if isToolPayload(obj) {
+				appendText("tool", contentText(obj, textAll))
+				continue
+			}
+			if role == "" && field == "input" {
+				role = "user"
+			}
+			if !slices.Contains([]string{"system", "developer", "user", "assistant", "tool"}, role) {
+				continue
+			}
+			content := obj["content"]
+			appendText(role, contentText(content, textAuthored))
+			if parts, ok := content.([]any); ok {
+				for _, part := range parts {
+					if payload, ok := part.(map[string]any); ok && isToolPayload(payload) {
+						appendText("tool", contentText(payload, textAll))
+					}
+				}
+			}
+		}
+	}
+	texts, _ := legacyPrompt(doc["prompt"])
+	for _, text := range texts {
+		appendText("user", text)
+	}
+	text := out.String()
+	hash := sha256.Sum256([]byte(text))
+	kept, cut := tailRunes(text, 32768)
+	return kept, hex.EncodeToString(hash[:]), cut
+}
+
 // distillJoined is the system text plus the latest user text.
 func (in *Input) distillJoined() string {
 	parts := slices.Clone(in.Systems)
@@ -547,6 +627,21 @@ func preparedDocument(texts []string, stripReminders, expand bool, decodedTotal 
 func (in *Input) RuleDocument(stripReminders, expandBase64 bool) (string, bool) {
 	decodedTotal := 0
 	return preparedDocument(in.UserAuthored, stripReminders, expandBase64, &decodedTotal)
+}
+
+// CurrentUserDocument excludes earlier turns and tool payloads. Repeated
+// agent tool calls therefore cannot turn a historical keyword into a new
+// current-user signal.
+func (in *Input) CurrentUserDocument(stripReminders, expand bool) (string, bool) {
+	users := in.UserAuthored
+	if in.modelUsers != nil {
+		users = in.modelUsers
+	}
+	if len(users) == 0 {
+		return "", false
+	}
+	decodedTotal := 0
+	return preparedDocument(users[len(users)-1:], stripReminders, expand, &decodedTotal)
 }
 
 // ContextDocument is the other client-controlled text: system and developer

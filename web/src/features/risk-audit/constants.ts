@@ -47,6 +47,18 @@ export const LABELS: Record<string, string> = {
   coverage_incomplete_pass: 'Incomplete coverage allowed',
   rule_cleared: 'Rule hit cleared by the decision model',
   rule_unconfirmed: 'Rule hit recorded for review',
+  model_not_triggered: 'Decision model not triggered',
+  screening_below_threshold: 'Screening score below threshold',
+  screening_repeated: 'Repeated screening signal',
+  screening_unavailable: 'Screening unavailable',
+  previously_audited: 'This request already reached the model review threshold',
+  signal: 'Weak signal',
+  user_rule: 'User rule match',
+  context_rule: 'Context rule match',
+  distill_signal: 'Distillation signal',
+  similar_refusal: 'Similar refusal signal',
+  keyword: 'Keyword match',
+  token: 'API token',
   pending: 'Pending review',
   confirmed: 'Confirmed',
   dismissed: 'Dismissed',
@@ -107,6 +119,30 @@ export const LABELS: Record<string, string> = {
   'openai_finish_reason=content_filter': 'Upstream content filter',
   'claude_stop_reason=refusal': 'Upstream refusal',
 }
+export const JUDGMENT_SOURCE_LABELS: Record<string, string> = {
+  manual: 'Administrator confirmation',
+  model: 'Model confirmation',
+  auto: 'Automatic confirmation',
+  rule: 'Rule detection',
+}
+export const NOTIFICATION_LABELS: Record<string, string> = {
+  pending: 'Notification pending',
+  sending: 'Notification sending',
+  sent: 'Notification sent',
+  failed: 'Notification failed',
+  skipped: 'Notification skipped',
+}
+export const NOTIFICATION_ERROR_LABELS: Record<string, string> = {
+  claim_expired: 'Email notification processing timed out',
+  recipient_lookup_failed: 'Unable to load the notification recipient',
+  no_bound_email: 'No bound email address',
+  invalid_bound_email: 'The bound email address is invalid',
+  review_lookup_failed: 'Unable to load the confirmed violation',
+  review_no_longer_confirmed: 'The violation is no longer confirmed',
+  restriction_lookup_failed: 'Unable to load the token restriction',
+  email_delivery_failed: 'Email delivery failed',
+  review_withdrawn: 'The violation confirmation was withdrawn',
+}
 export const EVENT_LABELS: Record<string, string> = {
   id: 'ID',
   created_at: 'Time',
@@ -138,4 +174,7 @@ export const EVENT_LABELS: Record<string, string> = {
   fingerprint: 'Fingerprint',
   device_hash: 'Device hash',
   similarity: 'Similarity',
+  screening_score: 'Screening score',
+  screening_reason: 'Screening reason',
+  judgment_source: 'Judgment source',
 }

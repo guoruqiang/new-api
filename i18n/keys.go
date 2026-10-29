@@ -116,12 +116,19 @@ const (
 
 // Risk audit rejections returned to API clients
 const (
-	MsgRiskPolicyBlocked        = "risk.policy_blocked"
-	MsgRiskDistillBlocked       = "risk.distill_blocked"
-	MsgRiskRefusalExact         = "risk.refusal_guard_exact"
-	MsgRiskRefusalSimilar       = "risk.refusal_guard_similar"
-	MsgRiskRefusalSubject       = "risk.refusal_guard_subject"
-	MsgRiskServiceUnavailable   = "risk.service_unavailable"
-	MsgRiskConfigUnavailable    = "risk.config_unavailable"
-	MsgRiskUpstreamRefusalStops = "risk.upstream_refusal_stops"
+	MsgRiskPolicyBlocked             = "risk.policy_blocked"
+	MsgRiskDistillBlocked            = "risk.distill_blocked"
+	MsgRiskRefusalExact              = "risk.refusal_guard_exact"
+	MsgRiskRefusalSimilar            = "risk.refusal_guard_similar"
+	MsgRiskRefusalSubject            = "risk.refusal_guard_subject"
+	MsgRiskServiceUnavailable        = "risk.service_unavailable"
+	MsgRiskConfigUnavailable         = "risk.config_unavailable"
+	MsgRiskUpstreamRefusalStops      = "risk.upstream_refusal_stops"
+	MsgRiskTokenRestricted           = "risk.token_restricted"
+	MsgRiskEmailSubject              = "risk.email.subject"
+	MsgRiskEmailViolation            = "risk.email.violation"
+	MsgRiskEmailNoRestriction        = "risk.email.no_restriction"
+	MsgRiskEmailTemporaryRestriction = "risk.email.temporary_restriction"
+	MsgRiskEmailPermanentRestriction = "risk.email.permanent_restriction"
+	MsgRiskEmailAppeal               = "risk.email.appeal"
 )

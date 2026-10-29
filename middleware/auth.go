@@ -588,6 +588,17 @@ func TokenAuth() func(c *gin.Context) {
 			return
 		}
 
+		block, blockErr := model.GetActiveRiskTokenBlock(token.UserId, token.Id, common.GetTimestamp())
+		if blockErr != nil {
+			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, i18n.T(c, i18n.MsgRiskServiceUnavailable), types.ErrorCode("risk_service_unavailable"))
+			return
+		}
+		if block != nil {
+			abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgRiskTokenRestricted), types.ErrorCode("risk_refusal_guard"))
+			return
+		}
+		c.Set("risk_token_block_checked", true)
+
 		allowIps := token.GetIpLimits()
 		if len(allowIps) > 0 {
 			clientIp := c.ClientIP()

@@ -58,7 +58,8 @@ func ObserveResponsesEvent(c *gin.Context, body []byte) bool {
 
 // learnRefusal records an upstream refusal against the last audited attempt
 // and returns that attempt's mode. Enforce mode remembers the prompt. Both
-// modes can create pending review evidence; neither automatically adds points.
+// modes keep metadata only; an upstream refusal never confirms a violation
+// or automatically adds punishment points.
 func learnRefusal(c *gin.Context, reason, message string) string {
 	if snap := current.Load(); snap == nil || !snap.Enabled {
 		return ""
@@ -87,14 +88,9 @@ func learnRefusal(c *gin.Context, reason, message string) string {
 		Keyword: truncateRunes(message, 40), Coverage: CoverageComplete, PolicyKey: policy.Key, PolicyRevision: policy.Revision,
 		Fingerprint: Fingerprint(last.input), ConfigRevision: last.configRevision,
 	}
-	if policy.Payload.Evidence.StorePreview {
-		d.Preview = last.input.Preview()
-	}
 	if mode == ModeObserve {
 		d.Outcome = OutcomeWouldStop
 	}
-	ev := evaluation{binding: last.binding, attempt: last.attempt, input: last.input, store: defaultStore, now: now}
-	recordReviewCandidate(ev, d)
 	if mode == ModeEnforce && cfg.Enabled {
 		expires := int64(0)
 		if cfg.MemoryTTLDays > 0 {
@@ -104,11 +100,8 @@ func learnRefusal(c *gin.Context, reason, message string) string {
 			Namespace: last.attempt.Namespace, UserId: last.attempt.UserID,
 			Model:       truncateRunes(strings.ToLower(strings.TrimSpace(last.input.Model)), 128),
 			Fingerprint: d.Fingerprint, FingerprintVersion: FingerprintVersion,
-			ErrorMessage: truncateRunes(message, 500), SourceRequestId: last.attempt.RequestID,
+			ErrorMessage: truncateRunes(reason, 64), SourceRequestId: last.attempt.RequestID,
 			PolicyKey: policy.Key, PolicyRevision: policy.Revision, LastSeenAt: now.Unix(), ExpiresAt: expires,
-		}
-		if policy.Payload.Evidence.StorePreview {
-			rec.Preview = d.Preview
 		}
 		if sig := Signature(last.input.SimilarityDocument()); sig != nil {
 			rec.Signature = EncodeSignature(sig)

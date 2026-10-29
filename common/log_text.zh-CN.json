@@ -852,5 +852,7 @@
   "zhipu_image_get_b64_failed: %s": "智谱图片转 b64 失败: %s",
   "zhipu_image_missing_url": "智谱图片接口没有返回 URL",
   "¥%.6f quota": "¥%.6f 额度",
-  "＄%.6f quota": "＄%.6f 额度"
+  "＄%.6f quota": "＄%.6f 额度",
+  "risk review email notification processing failed": "风险审核邮件通知处理失败",
+  "risk review email notification shutdown failed": "风险审核邮件通知服务停止超时"
 }

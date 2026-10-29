@@ -131,6 +131,7 @@ func main() {
 	}
 	risk.StartSnapshotSync()
 	risk.StartRecorder()
+	risk.StartReviewNotifications()
 	go controller.SyncTaskPlugins()
 
 	// 周期性重载授权策略，保证多节点/多 master 部署下权限变更能传播到每个实例
@@ -260,6 +261,13 @@ func main() {
 	defer recorderCancel()
 	if err := risk.StopRecorder(recorderCtx); err != nil {
 		common.SysError(common.LogText("risk recorder shutdown failed: %v", err))
+	}
+	// Allow the bounded 20-second email transport to finish independently of
+	// recorder flushing, so a shutdown does not abandon its delivery status.
+	notificationCtx, notificationCancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer notificationCancel()
+	if err := risk.StopReviewNotifications(notificationCtx); err != nil {
+		common.SysError(common.LogText("risk review email notification shutdown failed"))
 	}
 	// 内存中的看板数据保存入库，避免重启丢失未落库数据 (issue #5679)
 	if common.DataExportEnabled {

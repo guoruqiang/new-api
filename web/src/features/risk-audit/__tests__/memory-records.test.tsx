@@ -37,6 +37,16 @@ const candidate: RiskReviewDetail = {
     namespace: 'ns-a',
     group_name: 'standard',
     user_id: 42,
+    token_id: 104,
+    judgment_source: '',
+    screening_score: 3,
+    screening_reason: 'signal',
+    config_revision: 2,
+    original_request: '[{"role":"user","content":"Original request text"}]',
+    original_request_truncated: false,
+    original_request_hash: 'request-hash',
+    notification_status: 'pending',
+    notification_error: '',
     mode: 'enforce',
     layer: 'model',
     category: 'nsfw',
@@ -67,8 +77,258 @@ const candidate: RiskReviewDetail = {
   },
   behavior_enabled: true,
   auto_block_enabled: false,
+  auto_confirm_enabled: false,
   mode: 'enforce',
 }
+
+it.each([
+  { minutes: 30, status: 'pending' as const },
+  { minutes: 0, status: 'confirmed' as const },
+])(
+  'bans the $status incident token for $minutes minutes even when current scoring is disabled',
+  async ({ minutes, status }) => {
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: {
+        success: true,
+        data: {
+          ...candidate,
+          mode: 'observe',
+          behavior_enabled: false,
+          review: { ...candidate.review, status },
+        },
+      },
+    })
+    const write = vi.spyOn(api, 'request').mockResolvedValue({
+      data: {
+        success: true,
+        data: {
+          ...candidate,
+          review: { ...candidate.review, status: 'confirmed', revision: 2 },
+        },
+      },
+    })
+    const user = userEvent.setup()
+    renderRisk(<ReviewDetail id={7} canWrite canUnblock onClose={() => {}} />)
+    expect(
+      await screen.findByText(candidate.review.original_request)
+    ).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Ban this API token' }))
+    const dialog = screen.getByRole('alertdialog')
+    expect(
+      within(dialog).getByRole('button', { name: 'Ban this API token' })
+    ).toBeDisabled()
+    const duration = within(dialog).getByRole('spinbutton', {
+      name: 'Token ban duration (minutes, 0 = permanent)',
+    })
+    expect(duration).toHaveValue(30)
+    await user.clear(duration)
+    await user.type(duration, String(minutes))
+    await user.type(
+      within(dialog).getByLabelText('Review note'),
+      'Verified the original role content'
+    )
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Ban this API token' })
+    )
+    await waitFor(() =>
+      expect(write).toHaveBeenCalledWith({
+        method: 'post',
+        url: '/api/risk/reviews/7/resolve',
+        data: {
+          revision: 1,
+          action: 'ban',
+          category: 'nsfw',
+          note: 'Verified the original role content',
+          ttl_minutes: minutes,
+        },
+      })
+    )
+  }
+)
+
+it.each([
+  { mode: 'observe' as const },
+  { token_id: 0 },
+  { evidence: '' },
+  { evidence_truncated: true },
+  { original_request: '' },
+  { original_request_truncated: true },
+])(
+  'disables token banning without an enforcement token and complete evidence: %j',
+  async (patch) => {
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: {
+        success: true,
+        data: { ...candidate, review: { ...candidate.review, ...patch } },
+      },
+    })
+    renderRisk(<ReviewDetail id={7} canWrite canUnblock onClose={() => {}} />)
+    expect(
+      await screen.findByRole('button', { name: 'Ban this API token' })
+    ).toBeDisabled()
+    expect(
+      screen.getByText(
+        'Token banning requires an enforced request, a token ID, and complete saved audit and original request evidence.'
+      )
+    ).toBeVisible()
+  }
+)
+
+it('hides token banning without the unblock permission', async () => {
+  vi.spyOn(api, 'get').mockResolvedValue({
+    data: { success: true, data: candidate },
+  })
+  renderRisk(
+    <ReviewDetail id={7} canWrite canUnblock={false} onClose={() => {}} />
+  )
+  expect(
+    await screen.findByText(candidate.review.original_request)
+  ).toBeVisible()
+  expect(
+    screen.queryByRole('button', { name: 'Ban this API token' })
+  ).not.toBeInTheDocument()
+})
+
+it.each(['pending', 'confirmed'] as const)(
+  'keeps a legacy %s review inspectable without allowing new token penalties',
+  async (status) => {
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: {
+        success: true,
+        data: {
+          ...candidate,
+          review: { ...candidate.review, status, token_id: 0 },
+        },
+      },
+    })
+    renderRisk(<ReviewDetail id={7} canWrite canUnblock onClose={() => {}} />)
+    expect(
+      await screen.findByText(
+        'Reviews without an API token cannot be confirmed or used to restrict tokens. Existing confirmations can still be revoked.'
+      )
+    ).toBeVisible()
+    expect(screen.getByText(candidate.review.evidence)).toBeVisible()
+    expect(
+      screen.getByRole('button', { name: 'Ban this API token' })
+    ).toBeDisabled()
+    if (status === 'pending') {
+      expect(
+        screen.getByRole('button', { name: 'Confirm violation' })
+      ).toBeDisabled()
+    } else {
+      expect(
+        screen.getByRole('button', { name: 'Revoke confirmation' })
+      ).toBeEnabled()
+    }
+  }
+)
+
+it.each([{ original_request: '' }, { original_request_truncated: true }])(
+  'prevents indirect token penalties when original evidence is incomplete: %j',
+  async (patch) => {
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: {
+        success: true,
+        data: { ...candidate, review: { ...candidate.review, ...patch } },
+      },
+    })
+    renderRisk(<ReviewDetail id={7} canWrite canUnblock onClose={() => {}} />)
+    expect(
+      await screen.findByRole('button', { name: 'Confirm violation' })
+    ).toBeDisabled()
+    expect(
+      screen.getByRole('button', { name: 'Ban this API token' })
+    ).toBeDisabled()
+    expect(
+      screen.getByRole('button', { name: 'Dismiss candidate' })
+    ).toBeEnabled()
+    expect(
+      screen.getByText(
+        'Complete request evidence is required to confirm this violation'
+      )
+    ).toBeVisible()
+  }
+)
+
+it('does not let an invalid cancelled ban duration block a later review action', async () => {
+  vi.spyOn(api, 'get').mockResolvedValue({
+    data: { success: true, data: candidate },
+  })
+  const write = vi.spyOn(api, 'request').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        ...candidate,
+        review: { ...candidate.review, status: 'dismissed', revision: 2 },
+      },
+    },
+  })
+  const user = userEvent.setup()
+  renderRisk(<ReviewDetail id={7} canWrite canUnblock onClose={() => {}} />)
+  await user.click(
+    await screen.findByRole('button', { name: 'Ban this API token' })
+  )
+  const banDialog = screen.getByRole('alertdialog')
+  const duration = within(banDialog).getByRole('spinbutton', {
+    name: 'Token ban duration (minutes, 0 = permanent)',
+  })
+  await user.clear(duration)
+  await user.type(duration, '1441')
+  await user.click(within(banDialog).getByRole('button', { name: 'Cancel' }))
+  await user.click(screen.getByRole('button', { name: 'Dismiss candidate' }))
+  const reviewDialog = screen.getByRole('alertdialog')
+  await user.type(
+    within(reviewDialog).getByLabelText('Review note'),
+    'False positive'
+  )
+  await user.click(
+    within(reviewDialog).getByRole('button', { name: 'Dismiss candidate' })
+  )
+  await waitFor(() =>
+    expect(write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: {
+          revision: 1,
+          action: 'dismiss',
+          category: 'nsfw',
+          note: 'False positive',
+        },
+      })
+    )
+  )
+})
+
+it('shows model confirmation and notification status without inventing an administrator ID', async () => {
+  vi.spyOn(api, 'get').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        ...candidate,
+        review: {
+          ...candidate.review,
+          judgment_source: 'model',
+          status: 'confirmed',
+          review_note: 'High confidence',
+          reviewed_by: 0,
+          reviewed_at: 1760000001,
+          notification_status: 'skipped',
+          notification_error: 'no_bound_email',
+        },
+      },
+    },
+  })
+  renderRisk(<ReviewDetail id={7} canWrite canUnblock onClose={() => {}} />)
+  expect((await screen.findAllByText('Model confirmation'))[0]).toBeVisible()
+  expect(screen.getByText('Notification skipped')).toBeVisible()
+  expect(screen.getByText('No bound email address')).toBeVisible()
+  expect(screen.queryByText(/Reviewer ID: 0/)).not.toBeInTheDocument()
+  expect(
+    screen.getByRole('region', { name: 'Submitted review evidence' })
+  ).toBeVisible()
+  expect(
+    screen.getByRole('region', { name: 'Original role content' })
+  ).toBeVisible()
+})
 
 it('shows an empty candidate list after retrying a failed load', async () => {
   vi.spyOn(api, 'get')
@@ -83,7 +343,7 @@ it('shows an empty candidate list after retrying a failed load', async () => {
   expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
 })
 
-it('validates review notes as nonempty Unicode text capped at 500 characters', () => {
+it('validates review notes and optional integer token restriction duration', () => {
   for (const note of ['', '   ', '😀'.repeat(501)]) {
     expect(
       reviewResolveSchema.safeParse({ category: 'nsfw', note }).success
@@ -99,6 +359,24 @@ it('validates review notes as nonempty Unicode text capped at 500 characters', (
       note: 'Checked',
     }).success
   ).toBe(false)
+  for (const ttl_minutes of [0, 30, 1440]) {
+    expect(
+      reviewResolveSchema.safeParse({
+        category: 'nsfw',
+        note: 'Checked',
+        ttl_minutes,
+      }).success
+    ).toBe(true)
+  }
+  for (const ttl_minutes of [-1, 1.5, 1441]) {
+    expect(
+      reviewResolveSchema.safeParse({
+        category: 'nsfw',
+        note: 'Checked',
+        ttl_minutes,
+      }).success
+    ).toBe(false)
+  }
 })
 
 it('filters pending candidates by namespace and loads evidence only when details are opened', async () => {

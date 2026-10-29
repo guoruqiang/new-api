@@ -76,6 +76,20 @@ export function PolicySettings(props: {
   const form = useForm<Policy>({
     defaultValues: {
       ...props.initial,
+      screening: {
+        ...props.defaults.policy.screening,
+        ...props.initial.screening,
+      },
+      model: {
+        ...props.defaults.policy.model,
+        ...props.initial.model,
+        auto_confirm_threshold:
+          props.initial.model.auto_confirm_threshold ??
+          Math.min(
+            props.defaults.policy.model.auto_confirm_threshold,
+            props.initial.model.threshold
+          ),
+      },
       behavior: {
         ...props.defaults.policy.behavior,
         ...props.initial.behavior,
@@ -261,9 +275,38 @@ export function PolicySettings(props: {
             </FieldGroup>
             <p className='text-muted-foreground text-sm'>
               {t(
-                'Save bounded text submitted for review, up to 32,768 characters. When disabled, a short preview alone cannot confirm a violation.'
+                'Only violation records retain request text. Original role content and submitted audit windows are separate evidence; missing or truncated evidence cannot support a token ban.'
               )}
             </p>
+          </FieldSet>
+          <Separator />
+          <FieldSet className='min-w-0 gap-3'>
+            <FieldLegend variant='label'>{t('Model screening')}</FieldLegend>
+            <p className='text-muted-foreground text-sm'>
+              {t(
+                'Keywords and short-term signals accumulate screening points. The decision model runs only when the screening threshold is reached; these points are not confirmed violations.'
+              )}
+            </p>
+            <FieldGroup className='grid gap-4 sm:grid-cols-2'>
+              <NumberField
+                disabled={disabled}
+                label='Screening points required for model review'
+                value={value.screening.threshold}
+                min={1}
+                max={100}
+                onChange={(threshold) => update('screening', { threshold })}
+              />
+              <NumberField
+                disabled={disabled}
+                label='Screening window (minutes)'
+                value={value.screening.window_minutes}
+                min={1}
+                max={1440}
+                onChange={(window_minutes) =>
+                  update('screening', { window_minutes })
+                }
+              />
+            </FieldGroup>
           </FieldSet>
           <Separator />
           <FieldSet className='min-w-0 gap-3'>
@@ -282,16 +325,24 @@ export function PolicySettings(props: {
               />
               <Toggle
                 disabled={disabled}
-                label='Automatically block at the score threshold'
+                label='Automatically suspend the offending API token'
                 checked={b.auto_block_enabled}
                 onChange={(auto_block_enabled) =>
                   update('behavior', { auto_block_enabled })
                 }
               />
+              <Toggle
+                disabled={disabled}
+                label='Automatically confirm high-confidence model violations'
+                checked={b.auto_confirm_enabled}
+                onChange={(auto_confirm_enabled) =>
+                  update('behavior', { auto_confirm_enabled })
+                }
+              />
             </FieldGroup>
             <p className='text-muted-foreground text-sm'>
               {t(
-                'Automatic blocking is off by default. Review and record scores first; observation candidates never cause a block.'
+                'Automatic confirmation adds violation points. Automatic suspension affects only the offending API token, across groups, for the configured duration (30 minutes by default). Permanent bans require an administrator; observation mode never penalizes tokens.'
               )}
             </p>
             <FieldGroup className='grid gap-4 sm:grid-cols-3'>
@@ -307,7 +358,7 @@ export function PolicySettings(props: {
               />
               <NumberField
                 disabled={disabled}
-                label='Block score threshold'
+                label='Confirmed violation points for suspension'
                 value={b.threshold}
                 min={1}
                 max={100}
@@ -602,6 +653,10 @@ export function PolicySettings(props: {
                                 label: 'Review by the decision model',
                               },
                               { value: 'block', label: 'Block directly' },
+                              {
+                                value: 'signal',
+                                label: 'Screen current user text only',
+                              },
                             ]}
                             onChange={(action) =>
                               update('hard_regex', {
@@ -609,7 +664,10 @@ export function PolicySettings(props: {
                                   n === i
                                     ? {
                                         ...old,
-                                        action: action as 'block' | 'review',
+                                        action: action as
+                                          | 'block'
+                                          | 'review'
+                                          | 'signal',
                                       }
                                     : old
                                 ),
@@ -753,7 +811,7 @@ export function PolicySettings(props: {
                 </FieldLegend>
                 <p className='text-muted-foreground text-sm'>
                   {t(
-                    'Existing subject blocks remain available below. New user restrictions use confirmed behavior scores, not hit counts.'
+                    'Existing subject blocks remain available below. New API token restrictions use confirmed behavior scores, not hit counts.'
                   )}
                 </p>
                 <FieldGroup className='grid gap-4 sm:grid-cols-2'>
@@ -855,6 +913,17 @@ export function PolicySettings(props: {
                   />
                   <NumberField
                     disabled={disabled}
+                    label='Automatic confirmation safety threshold'
+                    value={m.auto_confirm_threshold}
+                    min={0}
+                    max={m.threshold}
+                    step={0.01}
+                    onChange={(auto_confirm_threshold) =>
+                      update('model', { auto_confirm_threshold })
+                    }
+                  />
+                  <NumberField
+                    disabled={disabled}
                     label='Near-miss tolerance'
                     value={m.near_miss_band}
                     step={0.01}
@@ -899,6 +968,11 @@ export function PolicySettings(props: {
                     }
                   />
                 </FieldGroup>
+                <p className='text-muted-foreground text-sm'>
+                  {t(
+                    'Lower model safety scores mean higher risk. Automatic confirmation requires a score below its threshold and complete violation evidence.'
+                  )}
+                </p>
                 <p className='text-muted-foreground text-sm'>
                   {t(
                     'The decision model reviews the final characters of the combined system and user text. Trimming to this window is not a model failure. Rule matches outside the window are reviewed separately using bounded excerpts.'

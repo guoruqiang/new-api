@@ -23,6 +23,8 @@ import { useTranslation } from 'react-i18next'
 import { Dialog } from '@/components/dialog'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
+import { toIntlLocale } from '@/i18n/languages'
+import { formatNumber } from '@/lib/format'
 
 import { riskWrite } from '../api'
 import { LABELS } from '../constants'
@@ -30,7 +32,8 @@ import type { Directory, PreviewResult } from '../types'
 import { Choice, NumberField, Toggle } from './fields'
 
 export function PreviewDialog(props: { directory: Directory }) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const [open, setOpen] = useState(false)
   const [group, setGroup] = useState(
     props.directory.groups[0]?.group_name ?? ''
@@ -124,6 +127,17 @@ export function PreviewDialog(props: { directory: Directory }) {
                   preview.data.decision.coverage
               )}
             </p>
+            {preview.data.decision.screening_score !== undefined && (
+              <p>
+                {t('Screening score')}:{' '}
+                {formatNumber(preview.data.decision.screening_score, locale)} ·{' '}
+                {t(
+                  LABELS[preview.data.decision.screening_reason ?? ''] ??
+                    preview.data.decision.screening_reason ??
+                    ''
+                )}
+              </p>
+            )}
             <p>
               {t(
                 preview.data.model_run

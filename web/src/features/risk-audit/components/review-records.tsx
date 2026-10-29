@@ -30,7 +30,7 @@ import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
 
 import { riskGet } from '../api'
-import { LABELS } from '../constants'
+import { JUDGMENT_SOURCE_LABELS, LABELS } from '../constants'
 import type { Directory, Page, RiskReview } from '../types'
 import { Choice, Field } from './fields'
 import { ReviewDetail } from './review-detail'
@@ -146,6 +146,10 @@ export function ReviewRecords(props: {
                     {row.namespace}
                   </p>
                   <p className='text-muted-foreground text-xs'>
+                    {t('Token ID')}:{' '}
+                    {row.token_id ? formatNumber(row.token_id, locale) : '—'}
+                  </p>
+                  <p className='text-muted-foreground text-xs'>
                     {new Date(row.created_at * 1000).toLocaleString(locale)}
                   </p>
                 </div>
@@ -172,6 +176,14 @@ export function ReviewRecords(props: {
                   <p className='text-muted-foreground text-xs'>
                     {t(LABELS[row.mode])}
                   </p>
+                  {row.judgment_source && (
+                    <p className='text-muted-foreground text-xs'>
+                      {t(
+                        JUDGMENT_SOURCE_LABELS[row.judgment_source] ??
+                          row.judgment_source
+                      )}
+                    </p>
+                  )}
                 </div>
               ),
             },

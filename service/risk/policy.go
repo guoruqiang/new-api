@@ -90,18 +90,19 @@ type RefusalConfig struct {
 }
 
 type ModelConfig struct {
-	Enabled           bool       `json:"enabled"`
-	ProviderID        int        `json:"provider_id"`
-	Model             string     `json:"model"`
-	Questions         []Question `json:"questions"`
-	CustomInstruction string     `json:"custom_instruction"`
-	Threshold         float64    `json:"threshold"`
-	NearMissBand      float64    `json:"near_miss_band"`
-	FailAction        string     `json:"fail_action"`
-	BudgetMS          int        `json:"budget_ms"`
-	MaxAttempts       int        `json:"max_attempts"`
-	DedupSec          int        `json:"dedup_sec"`
-	MaxAuditChars     int        `json:"max_audit_chars"`
+	Enabled              bool       `json:"enabled"`
+	ProviderID           int        `json:"provider_id"`
+	Model                string     `json:"model"`
+	Questions            []Question `json:"questions"`
+	CustomInstruction    string     `json:"custom_instruction"`
+	Threshold            float64    `json:"threshold"`
+	NearMissBand         float64    `json:"near_miss_band"`
+	FailAction           string     `json:"fail_action"`
+	BudgetMS             int        `json:"budget_ms"`
+	MaxAttempts          int        `json:"max_attempts"`
+	DedupSec             int        `json:"dedup_sec"`
+	MaxAuditChars        int        `json:"max_audit_chars"`
+	AutoConfirmThreshold float64    `json:"auto_confirm_threshold"`
 }
 
 type EvidenceConfig struct {
@@ -112,11 +113,21 @@ type EvidenceConfig struct {
 // BehaviorConfig only counts independently confirmed incidents. Automatic
 // restrictions are opt-in and always expire; raw detections never add points.
 type BehaviorConfig struct {
-	Enabled          bool `json:"enabled"`
-	AutoBlockEnabled bool `json:"auto_block_enabled"`
-	WindowMinutes    int  `json:"window_minutes"`
-	Threshold        int  `json:"threshold"`
-	BlockTTLMinutes  int  `json:"block_ttl_minutes"`
+	Enabled            bool `json:"enabled"`
+	AutoConfirmEnabled bool `json:"auto_confirm_enabled"`
+	AutoBlockEnabled   bool `json:"auto_block_enabled"`
+	WindowMinutes      int  `json:"window_minutes"`
+	Threshold          int  `json:"threshold"`
+	BlockTTLMinutes    int  `json:"block_ttl_minutes"`
+}
+
+type ScreeningConfig struct {
+	Threshold     int `json:"threshold"`
+	WindowMinutes int `json:"window_minutes"`
+}
+
+func (s ScreeningConfig) Policy() model.RiskScreeningPolicy {
+	return model.RiskScreeningPolicy{Threshold: s.Threshold, WindowMinutes: s.WindowMinutes}
 }
 
 func (b BehaviorConfig) Policy() model.RiskBehaviorPolicy {
@@ -132,6 +143,7 @@ type PolicyPayload struct {
 	Model         ModelConfig     `json:"model"`
 	Evidence      EvidenceConfig  `json:"evidence"`
 	Behavior      BehaviorConfig  `json:"behavior"`
+	Screening     ScreeningConfig `json:"screening"`
 }
 
 // DefaultDistillRules returns the shipped vm2api distill rule set.
@@ -167,16 +179,18 @@ func DefaultPolicyPayload() PolicyPayload {
 			MaxSimilarCandidates: 2000,
 		},
 		Model: ModelConfig{
-			Threshold:     0.5,
-			NearMissBand:  0.08,
-			FailAction:    FailActionPass,
-			BudgetMS:      2000,
-			MaxAttempts:   2,
-			DedupSec:      60,
-			MaxAuditChars: 16000,
+			Threshold:            0.5,
+			NearMissBand:         0.08,
+			FailAction:           FailActionPass,
+			BudgetMS:             2000,
+			MaxAttempts:          2,
+			DedupSec:             60,
+			MaxAuditChars:        16000,
+			AutoConfirmThreshold: 0.15,
 		},
-		Evidence: EvidenceConfig{StorePreview: true, StoreReviewEvidence: true},
-		Behavior: BehaviorConfig{Enabled: true, WindowMinutes: 10, Threshold: 6, BlockTTLMinutes: 30},
+		Evidence:  EvidenceConfig{StorePreview: true, StoreReviewEvidence: true},
+		Behavior:  BehaviorConfig{Enabled: true, WindowMinutes: 10, Threshold: 6, BlockTTLMinutes: 30},
+		Screening: ScreeningConfig{Threshold: 3, WindowMinutes: 10},
 	}
 }
 
@@ -189,6 +203,15 @@ func ParsePolicyPayload(raw []byte) (PolicyPayload, error) {
 	}
 	if err := common.Unmarshal(raw, &payload); err != nil {
 		return PolicyPayload{}, err
+	}
+	var fields struct {
+		Model map[string]any `json:"model"`
+	}
+	if err := common.Unmarshal(raw, &fields); err != nil {
+		return PolicyPayload{}, err
+	}
+	if _, supplied := fields.Model["auto_confirm_threshold"]; !supplied {
+		payload.Model.AutoConfirmThreshold = min(payload.Model.AutoConfirmThreshold, payload.Model.Threshold)
 	}
 	NormalizePolicyPayload(&payload)
 	return payload, nil
@@ -270,6 +293,25 @@ func NormalizePolicyPayload(p *PolicyPayload) {
 			}
 		}
 		p.HardRegex.Rules = rules
+		// An untouched pre-screening builtin list receives the new weak
+		// signals. A customized list stays exactly the administrator's list.
+		legacySources := make(map[string]bool)
+		for _, rule := range BuiltinHardRules {
+			if rule.Action != RuleActionSignal {
+				legacySources[rule.Category+"\x00"+rule.Source] = true
+			}
+		}
+		legacyOnly := len(rules) == len(legacySources)
+		for _, rule := range rules {
+			legacyOnly = legacyOnly && legacySources[rule.Category+"\x00"+rule.Source]
+		}
+		if legacyOnly {
+			for _, rule := range BuiltinHardRules {
+				if rule.Action == RuleActionSignal {
+					p.HardRegex.Rules = append(p.HardRegex.Rules, rule)
+				}
+			}
+		}
 		if len(p.HardRegex.Rules) == 0 {
 			p.HardRegex.Rules = nil
 		}
@@ -359,8 +401,8 @@ func ValidatePolicyPayload(p PolicyPayload) []*common.Message {
 		if !slices.Contains(HardRuleCategories, rule.Category) {
 			problems = append(problems, common.NewMessage("Unknown risk rule category {{category}}", map[string]any{"category": rule.Category}))
 		}
-		if rule.Action != "" && rule.Action != RuleActionBlock && rule.Action != RuleActionReview {
-			problems = append(problems, common.NewMessage("Risk rule action must be block or review"))
+		if rule.Action != "" && rule.Action != RuleActionBlock && rule.Action != RuleActionReview && rule.Action != RuleActionSignal {
+			problems = append(problems, common.NewMessage("Risk rule action must be block, review or signal"))
 		}
 		if rule.Source == "" {
 			problems = append(problems, common.NewMessage("Every risk rule needs a pattern"))
@@ -389,6 +431,8 @@ func ValidatePolicyPayload(p PolicyPayload) []*common.Message {
 	checkRange(&problems, "refusal.max_similar_candidates", r.MaxSimilarCandidates, 1, 10000)
 
 	m := p.Model
+	checkRange(&problems, "screening.threshold", p.Screening.Threshold, 1, 100)
+	checkRange(&problems, "screening.window_minutes", p.Screening.WindowMinutes, 1, 1440)
 	checkRange(&problems, "behavior.window_minutes", p.Behavior.WindowMinutes, 1, 1440)
 	checkRange(&problems, "behavior.threshold", p.Behavior.Threshold, 1, 100)
 	checkRange(&problems, "behavior.block_ttl_minutes", p.Behavior.BlockTTLMinutes, 1, 1440)
@@ -397,6 +441,9 @@ func ValidatePolicyPayload(p PolicyPayload) []*common.Message {
 	}
 	if math.IsNaN(m.Threshold) || m.Threshold < 0 || m.Threshold > 1 {
 		problems = append(problems, common.NewMessage("{{field}} must be between {{min}} and {{max}}", map[string]any{"field": "model.threshold", "min": 0, "max": 1}))
+	}
+	if math.IsNaN(m.AutoConfirmThreshold) || m.AutoConfirmThreshold < 0 || m.AutoConfirmThreshold > m.Threshold {
+		problems = append(problems, common.NewMessage("{{field}} must be between {{min}} and {{max}}", map[string]any{"field": "model.auto_confirm_threshold", "min": 0, "max": m.Threshold}))
 	}
 	if math.IsNaN(m.NearMissBand) || m.NearMissBand < 0 || m.NearMissBand > 1 {
 		problems = append(problems, common.NewMessage("{{field}} must be between {{min}} and {{max}}", map[string]any{"field": "model.near_miss_band", "min": 0, "max": 1}))
@@ -437,6 +484,7 @@ type CompiledPolicy struct {
 	distillPatterns []*regexp.Regexp
 	contest         *regexp.Regexp
 	hardRules       []compiledRule
+	signalRules     []compiledRule
 	asked           []askedQuestion
 }
 
@@ -479,7 +527,12 @@ func CompilePolicy(key string, revision int, p PolicyPayload) (*CompiledPolicy, 
 		if err != nil {
 			return nil, err
 		}
-		cp.hardRules = append(cp.hardRules, compiledRule{category: rule.Category, source: rule.Source, action: effectiveAction(rule), re: re})
+		compiled := compiledRule{category: rule.Category, source: rule.Source, action: effectiveAction(rule), re: re}
+		if compiled.action == RuleActionSignal {
+			cp.signalRules = append(cp.signalRules, compiled)
+		} else {
+			cp.hardRules = append(cp.hardRules, compiled)
+		}
 	}
 	for _, source := range p.HardRegex.Patterns {
 		re, err := compileCaseless(source)

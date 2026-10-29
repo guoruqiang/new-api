@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
+	"net"
 	"net/smtp"
 	"slices"
 	"strings"
@@ -42,25 +43,31 @@ func smtpTLSConfig() *tls.Config {
 }
 
 func newSMTPClient(addr string) (*smtp.Client, error) {
-	if SMTPSSLEnabled || (SMTPPort == 465 && !SMTPStartTLSEnabled) {
-		conn, err := tls.Dial("tcp", addr, smtpTLSConfig())
-		if err != nil {
-			return nil, err
-		}
-		client, err := smtp.NewClient(conn, SMTPServer)
-		if err != nil {
-			_ = conn.Close()
-			return nil, err
-		}
-		return client, nil
-	}
+	return newSMTPClientWithDeadline(addr, time.Now().Add(20*time.Second))
+}
 
-	client, err := smtp.Dial(addr)
+// One deadline bounds connection setup, the greeting, TLS, and every SMTP
+// command. A stalled mail server must not hold a notification worker forever.
+func newSMTPClientWithDeadline(addr string, deadline time.Time) (*smtp.Client, error) {
+	dialer := &net.Dialer{Deadline: deadline}
+	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	if SMTPSSLEnabled || (SMTPPort == 465 && !SMTPStartTLSEnabled) {
+		conn = tls.Client(conn, smtpTLSConfig())
+	}
+	client, err := smtp.NewClient(conn, SMTPServer)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 
-	if SMTPStartTLSEnabled {
+	if SMTPStartTLSEnabled && !SMTPSSLEnabled {
 		startTLSSupported, _ := client.Extension("STARTTLS")
 		if !startTLSSupported {
 			_ = client.Close()
@@ -142,9 +149,7 @@ func SendEmail(subject string, receiver string, content string) error {
 	if err != nil {
 		return err
 	}
-	err = client.Quit()
-	if err != nil {
-		SysError(LogText("failed to send email to %s: %v", receiver, err))
-	}
-	return err
+	// Delivery callers decide how to report failures. Do not put recipients or
+	// untrusted server responses into shared logs.
+	return client.Quit()
 }

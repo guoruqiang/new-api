@@ -56,7 +56,7 @@ export type HardRule = {
   category: string
   source: string
   enabled: boolean
-  action?: 'block' | 'review'
+  action?: 'block' | 'review' | 'signal'
 }
 export type Policy = import('zod').infer<
   typeof import('./lib/schema').policySchema
@@ -179,6 +179,16 @@ export type RiskReview = {
   namespace: string
   group_name: string
   user_id: number
+  token_id: number
+  judgment_source: string
+  screening_score: number
+  screening_reason: string
+  config_revision: number
+  original_request: string
+  original_request_truncated: boolean
+  original_request_hash: string
+  notification_status: string
+  notification_error: string
   mode: Mode
   layer: string
   category: string
@@ -212,6 +222,7 @@ export type RiskReviewDetail = {
   block?: MemoryRow | null
   behavior_enabled: boolean
   auto_block_enabled: boolean
+  auto_confirm_enabled: boolean
   mode: Mode
 }
 export type PreviewResult = {
@@ -226,6 +237,10 @@ export type PreviewResult = {
   mode: string
   model_run: boolean
   decision: {
+    screening_score?: number
+    screening_reason?: string
+    model_triggered?: boolean
+    judgment_source?: string
     outcome: string
     layer: string
     reason: string

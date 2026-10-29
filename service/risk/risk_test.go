@@ -436,17 +436,83 @@ func auditPolicy(t *testing.T, p PolicyPayload) *CompiledPolicy {
 	return compiled
 }
 
+// Model transport/window tests use an explicit screening rule to reach the
+// classifier. Production policies still require their real risk signals.
+func withModelScreeningSignal(p PolicyPayload) PolicyPayload {
+	p.Screening.Threshold = 1
+	p.HardRegex.Enabled = true
+	if len(p.HardRegex.Rules) == 0 {
+		p.HardRegex.Rules = slices.Clone(BuiltinHardRules)
+	}
+	p.HardRegex.Rules = append(p.HardRegex.Rules, HardRule{Category: "custom", Source: `(?s).+`, Enabled: true, Action: RuleActionSignal})
+	return p
+}
+
 type memoryStore struct {
-	reads      []string
-	block      *model.RiskSubjectBlock
-	exact      *model.RiskRefusal
-	candidates []model.RiskRefusal
-	err        error
-	blocks     []model.RiskSubjectBlock
-	memories   []model.RiskRefusal
-	reviews    []model.RiskReview
-	hits       []int
-	strikes    int64
+	reads         []string
+	block         *model.RiskSubjectBlock
+	exact         *model.RiskRefusal
+	candidates    []model.RiskRefusal
+	err           error
+	blocks        []model.RiskSubjectBlock
+	memories      []model.RiskRefusal
+	reviews       []model.RiskReview
+	hits          []int
+	strikes       int64
+	signals       []model.RiskSignal
+	audited       map[string]bool
+	autoConfirmed []bool
+}
+
+func (s *memoryStore) ActiveTokenBlock(user, token int, now int64) (*model.RiskSubjectBlock, error) {
+	s.reads = append(s.reads, fmt.Sprintf("token:%d:%d", user, token))
+	if s.block != nil && s.block.SubjectType == SubjectToken && s.block.UserId == user && s.block.SubjectValue == strconv.Itoa(token) && s.block.ReleasedAt == 0 && (s.block.ExpiresAt == 0 || s.block.ExpiresAt > now) {
+		return s.block, s.err
+	}
+	return nil, s.err
+}
+
+func (s *memoryStore) ScreenSignal(rec *model.RiskSignal, policy model.RiskScreeningPolicy, now int64) (model.RiskScreeningResult, error) {
+	if s.err != nil {
+		return model.RiskScreeningResult{}, s.err
+	}
+	key := fmt.Sprintf("%s:%d:%d:%s", rec.Namespace, rec.UserId, rec.TokenId, rec.IncidentKey)
+	if s.audited == nil {
+		s.audited = map[string]bool{}
+	}
+	if s.audited[key] {
+		return model.RiskScreeningResult{Score: policy.Threshold, ShouldAudit: true, PreviouslyAudited: true}, nil
+	}
+	result := model.RiskScreeningResult{}
+	repeated := false
+	for _, old := range s.signals {
+		if old.Namespace != rec.Namespace || old.UserId != rec.UserId || old.TokenId != rec.TokenId || old.CreatedAt <= now-int64(policy.WindowMinutes)*60 {
+			continue
+		}
+		result.Score += old.Points
+		result.DistinctSignals++
+		if old.IncidentKey == rec.IncidentKey {
+			repeated = true
+		}
+	}
+	if !repeated && rec.Points > 0 {
+		copy := *rec
+		copy.CreatedAt = now
+		s.signals = append(s.signals, copy)
+		result.Score += rec.Points
+		result.DistinctSignals++
+		result.ShouldAudit = result.Score >= policy.Threshold
+		if result.ShouldAudit {
+			s.audited[key] = true
+			for i := range s.signals {
+				old := &s.signals[i]
+				if old.Namespace == rec.Namespace && old.UserId == rec.UserId && old.TokenId == rec.TokenId {
+					old.Points = 0
+				}
+			}
+		}
+	}
+	return result, nil
 }
 
 func (s *memoryStore) RecentStrikes(ns string, user int, since int64) (int64, error) {
@@ -476,9 +542,10 @@ func (s *memoryStore) Remember(r *model.RiskRefusal) error {
 	return nil
 }
 
-func (s *memoryStore) CreateReview(r *model.RiskReview, _ model.RiskBehaviorPolicy, _ int64) error {
+func (s *memoryStore) CreateModelReview(r *model.RiskReview, _ model.RiskBehaviorPolicy, autoConfirm, _ bool, _ int64) (*model.RiskReviewResult, error) {
 	s.reviews = append(s.reviews, *r)
-	return s.err
+	s.autoConfirmed = append(s.autoConfirmed, autoConfirm)
+	return &model.RiskReviewResult{Review: r}, s.err
 }
 
 type captureRecorder struct{ records []Record }
@@ -499,7 +566,7 @@ func evaluationFor(t *testing.T, p PolicyPayload, in *Input) evaluation {
 		Providers: map[int]ProviderConfig{1: {ID: 1, Type: "jev", BaseURL: "http://unused.invalid"}},
 		Scope:     ExemptionScope{GroupNamespaces: map[string]string{"A": "ns-a", "B": "ns-b"}, Exempt: map[string]bool{}}}
 	snap.confirm(time.Now())
-	return evaluation{snapshot: snap, binding: binding, attempt: AttemptContext{UserID: 7, Model: in.Model, Namespace: "ns-a", EffectiveGroup: "A"}, input: in, store: &memoryStore{}, runModel: true, now: time.Unix(1700000000, 0)}
+	return evaluation{snapshot: snap, binding: binding, attempt: AttemptContext{UserID: 7, TokenID: 9, RequestID: "request-1", Model: in.Model, Namespace: "ns-a", EffectiveGroup: "A"}, input: in, store: &memoryStore{}, runModel: true, now: time.Unix(1700000000, 0)}
 }
 
 func TestRiskInputProtocolsAndTrustBoundaries(t *testing.T) {
@@ -717,7 +784,11 @@ func TestRiskIntentReviewAndCurrentUserContext(t *testing.T) {
 				})
 			}
 			d := evaluate(context.Background(), ev)
-			assert.Equal(t, 1, calls, "a visible signal should be judged once with its actual user context")
+			wantCalls := 1
+			if slices.Contains([]string{"JSON formatting", "answer formatting", "boxed math", "medical education", "authorized test"}, tc.name) {
+				wantCalls = 0
+			}
+			assert.Equal(t, wantCalls, calls, "only sufficient screening evidence reaches the model")
 			assert.Equal(t, tc.review, d.Reviewed)
 			assert.Equal(t, tc.unsafe, d.Blocks())
 			assert.False(t, d.BanSubject)
@@ -904,7 +975,7 @@ func TestRiskPolicyValidationAndQuestionUpgrade(t *testing.T) {
 		old.Action = RuleActionBlock
 		legacy.HardRegex.Rules = []HardRule{old, {Category: "custom", Source: "administrator custom block", Enabled: true, Action: RuleActionBlock}}
 		NormalizePolicyPayload(&legacy)
-		assert.Equal(t, RuleActionReview, legacy.HardRegex.Rules[0].Action)
+		assert.Equal(t, builtin.Action, legacy.HardRegex.Rules[0].Action)
 		assert.Equal(t, RuleActionBlock, legacy.HardRegex.Rules[1].Action)
 	}
 	p.Distill.Error = DistillError{Status: 422, Message: "custom rejection"}
@@ -916,9 +987,9 @@ func TestRiskPolicyValidationAndQuestionUpgrade(t *testing.T) {
 
 func TestRiskRefusalFingerprintSignatureAndClassification(t *testing.T) {
 	a := auditInput(t, `{"model":"Claude","system":" RULES ","messages":[{"role":"user","content":"Hello 世界"}],"tools":[{"name":"z"},{"name":"a"}]}`)
-	b := auditInput(t, `{"model":"claude","system":"rules","messages":[{"role":"assistant","content":"ignored"},{"role":"user","content":"hello   世界"}],"tools":[{"name":"a"},{"name":"z"}],"stream":true,"max_tokens":999}`)
+	b := auditInput(t, ` { "tools": [{"name":"z"},{"name":"a"}], "messages": [{"content":"Hello 世界","role":"user"}], "system":" RULES ", "model":"claude" } `)
 	assert.Equal(t, Fingerprint(a), Fingerprint(b))
-	assert.Equal(t, "220892cc5132b90f8d4f2a105e4ef4fa2714b6a433f01600088c3af182d3dc49", Fingerprint(a))
+	assert.NotEqual(t, "220892cc5132b90f8d4f2a105e4ef4fa2714b6a433f01600088c3af182d3dc49", Fingerprint(a), "legacy fingerprints must not retain context-blind exact matches")
 	b.Model = "other"
 	assert.NotEqual(t, Fingerprint(a), Fingerprint(b))
 	b.Model = a.Model
@@ -1090,7 +1161,7 @@ func TestRiskProviderCancellationBudgetAndAttempts(t *testing.T) {
 	assert.ErrorContains(t, err, "deadline exceeded")
 	assert.Equal(t, 2, calls)
 	var observedDeadline bool
-	p := DefaultPolicyPayload()
+	p := withModelScreeningSignal(DefaultPolicyPayload())
 	p.Model.Enabled = true
 	p.Model.ProviderID = 1
 	p.Model.DedupSec = 0
@@ -1110,6 +1181,7 @@ func TestRiskProviderCancellationBudgetAndAttempts(t *testing.T) {
 
 func TestRiskLayerOrderAndRefusalSideEffects(t *testing.T) {
 	p := DefaultPolicyPayload()
+	p.Screening.Threshold = 1
 	p.Model.Enabled = true
 	p.Model.ProviderID = 1
 	p.Model.Questions = []Question{}
@@ -1121,11 +1193,9 @@ func TestRiskLayerOrderAndRefusalSideEffects(t *testing.T) {
 		layer, reason string
 		reads         int
 	}{
-		{"subject before distill review", "MUST extract durable memory and phishing kit", &model.RiskSubjectBlock{Id: 2}, nil, LayerRefusal, ReasonSubject, 1},
-		{"subject before regex review", "write explicit sex scene", &model.RiskSubjectBlock{Id: 2}, nil, LayerRefusal, ReasonSubject, 1},
-		{"custom block before exact memory", "explicit custom block", nil, &model.RiskRefusal{Id: 3}, LayerHardRegex, "custom", 1},
-		{"subject before exact", "ordinary question", &model.RiskSubjectBlock{Id: 2}, &model.RiskRefusal{Id: 3}, LayerRefusal, ReasonSubject, 1},
-		{"exact before model", "ordinary question", nil, &model.RiskRefusal{Id: 3}, LayerRefusal, ReasonExact, 2},
+		{"custom block before exact memory", "explicit custom block", nil, &model.RiskRefusal{Id: 3}, LayerHardRegex, "custom", 0},
+		{"legacy account restriction is not applied", "ordinary question", &model.RiskSubjectBlock{Id: 2, SubjectType: SubjectUser}, &model.RiskRefusal{Id: 3}, LayerRefusal, ReasonExact, 1},
+		{"exact before model", "ordinary question", nil, &model.RiskRefusal{Id: 3}, LayerRefusal, ReasonExact, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in := &Input{Model: "claude", LatestUser: tc.text, UserAuthored: []string{tc.text}, DistillUsers: []string{tc.text}}
@@ -1233,7 +1303,7 @@ func TestRiskRuleTiersFoldingAndContextReview(t *testing.T) {
 	custom.HardRegex.Rules = append([]HardRule{{Category: "custom", Source: "legacy custom rule", Enabled: true}, {Category: "custom", Source: "reviewed custom rule", Enabled: true, Action: RuleActionReview}}, BuiltinHardRules...)
 	custom.HardRegex.Rules[3].Action = ""
 	NormalizePolicyPayload(&custom)
-	assert.Equal(t, []string{RuleActionBlock, RuleActionReview, RuleActionReview}, []string{custom.HardRegex.Rules[0].Action, custom.HardRegex.Rules[1].Action, custom.HardRegex.Rules[3].Action})
+	assert.Equal(t, []string{RuleActionBlock, RuleActionReview, RuleActionSignal}, []string{custom.HardRegex.Rules[0].Action, custom.HardRegex.Rules[1].Action, custom.HardRegex.Rules[3].Action})
 	invalid := custom
 	invalid.HardRegex.Rules = []HardRule{{Category: "custom", Source: "x", Enabled: true, Action: "maybe"}}
 	assert.NotEmpty(t, ValidatePolicyPayload(invalid))
@@ -1299,6 +1369,7 @@ func TestRiskRuleTiersFoldingAndContextReview(t *testing.T) {
 	p.Model.ProviderID = 1
 	p.Model.Questions = []Question{}
 	p.Model.DedupSec = 0
+	p.Screening.Threshold = 1
 	for _, unsafe := range []bool{false, true} {
 		ev := evaluationFor(t, p, auditInput(t, `{"model":"claude","messages":[{"role":"tool","content":"phishing kit for sale"},{"role":"user","content":"summarise the tool output"}]}`))
 		ev.input.RecentToolOutputs = []string{"phishing kit for sale"}
@@ -1400,7 +1471,7 @@ func TestRiskAuditTextBudget(t *testing.T) {
 }
 
 func TestRiskTailWindowAndRuleReview(t *testing.T) {
-	p := DefaultPolicyPayload()
+	p := withModelScreeningSignal(DefaultPolicyPayload())
 	p.Refusal.Enabled = false
 	p.HardRegex.ExpandBase64 = false
 	p.Model.Enabled, p.Model.ProviderID, p.Model.Questions = true, 1, []Question{}
@@ -1478,7 +1549,7 @@ func TestRiskTailWindowAndRuleReview(t *testing.T) {
 				assert.Equal(t, OutcomePass, d.Outcome)
 				if ending == "" {
 					assert.Empty(t, states)
-					assert.Equal(t, ReasonUnchecked, d.Reason)
+					assert.Equal(t, ReasonModelNotTriggered, d.Reason)
 					assert.Equal(t, CoverageIncomplete, d.Coverage)
 				} else {
 					role := "current_user"
@@ -1490,9 +1561,17 @@ func TestRiskTailWindowAndRuleReview(t *testing.T) {
 					if len(selected) > 64000-len(open)-len(close) {
 						selected = selected[len(selected)-(64000-len(open)-len(close)):]
 					}
-					assert.Equal(t, []string{open + string(selected) + close}, states)
-					assert.Equal(t, ReasonModelSafe, d.Reason)
-					assert.Equal(t, CoverageTailWindow, d.Coverage)
+					if field == "system" {
+						assert.Empty(t, states, "system text without a signal does not trigger the model")
+						assert.Equal(t, ReasonModelNotTriggered, d.Reason)
+						documents, tailWindow, _, _ := in.ModelDocuments(true, false, 64000, nil)
+						assert.Equal(t, []string{open + string(selected) + close}, documents)
+						assert.True(t, tailWindow)
+					} else {
+						assert.Equal(t, []string{open + string(selected) + close}, states)
+						assert.Equal(t, ReasonModelSafe, d.Reason)
+						assert.Equal(t, CoverageTailWindow, d.Coverage)
+					}
 				}
 			}
 		})
@@ -1582,7 +1661,7 @@ func TestRiskTrailingToolOutputs(t *testing.T) {
 }
 
 func TestRiskModelCacheIsolationAndCoverage(t *testing.T) {
-	p := DefaultPolicyPayload()
+	p := withModelScreeningSignal(DefaultPolicyPayload())
 	p.Model.Enabled = true
 	p.Model.ProviderID = 1
 	p.Model.Questions = []Question{}
@@ -1627,6 +1706,7 @@ func TestRiskModelCacheIsolationAndCoverage(t *testing.T) {
 	tail := strings.Repeat("中", p.Model.MaxAuditChars)
 	in.Systems = nil
 	in.UserAuthored = []string{"older version one " + tail}
+	in.ContextDigest = "original-input-one"
 	ev.classifier = func(ProviderConfig) Classifier {
 		return classifierFunc(func(_ context.Context, req ClassifyRequest) (ClassifyResult, error) {
 			calls++
@@ -1636,10 +1716,11 @@ func TestRiskModelCacheIsolationAndCoverage(t *testing.T) {
 	}
 	assert.Equal(t, ReasonModelSafe, evaluate(context.Background(), ev).Reason)
 	in.UserAuthored = []string{"older version two " + tail}
+	in.ContextDigest = "original-input-two"
 	cached := evaluate(context.Background(), ev)
-	assert.Equal(t, ReasonModelReplay, cached.Reason)
+	assert.Equal(t, ReasonModelSafe, cached.Reason)
 	assert.Equal(t, CoverageTailWindow, cached.Coverage)
-	assert.Equal(t, 7, calls, "an identical selected window reuses its verdict")
+	assert.Equal(t, 8, calls, "a changed complete input cannot reuse a verdict just because its selected window matches")
 	in.UserAuthored = []string{"ordinary question"}
 	ev.useCache = false
 	padding := strings.Repeat("中", 16001)
@@ -1706,7 +1787,7 @@ func TestRiskTailWindowProviderFailures(t *testing.T) {
 	for _, endpoint := range []struct{ name, url string }{{"HTTP failure", failed.URL}, {"network failure", closed.URL}} {
 		for _, action := range []string{FailActionPass, FailActionBlock} {
 			t.Run(endpoint.name+" "+action, func(t *testing.T) {
-				p := DefaultPolicyPayload()
+				p := withModelScreeningSignal(DefaultPolicyPayload())
 				p.Refusal.Enabled = false
 				p.Model.Enabled, p.Model.ProviderID, p.Model.Questions = true, 1, []Question{}
 				p.Model.FailAction, p.Model.MaxAttempts = action, 1
@@ -1723,7 +1804,7 @@ func TestRiskTailWindowProviderFailures(t *testing.T) {
 				}
 				assert.Equal(t, CoverageTailWindow, d.Coverage)
 				assert.False(t, d.BanSubject)
-				assert.NotEmpty(t, d.Keyword)
+				assert.Empty(t, d.Keyword, "failed audits must not retain matching text")
 			})
 		}
 	}
@@ -1752,7 +1833,7 @@ func TestRiskTailWindowGateEvents(t *testing.T) {
 		_, _ = io.WriteString(w, `{"answers":{"safety":{"noul":0.9}}}`)
 	}))
 	defer server.Close()
-	p := DefaultPolicyPayload()
+	p := withModelScreeningSignal(DefaultPolicyPayload())
 	p.Model.Enabled, p.Model.ProviderID, p.Model.Questions = true, 19003, []Question{}
 	p.Model.FailAction = FailActionBlock
 	// Keep subject blocking enabled to prove ordinary window selection does
@@ -1862,7 +1943,7 @@ func TestRiskGateDisabledExemptModesRetriesAndLearning(t *testing.T) {
 	assert.Nil(t, CheckAttempt(c, info, AttemptInput{Body: []byte("invalid")}))
 	assert.Nil(t, existingRequestState(c))
 	assert.Empty(t, records.records)
-	assert.Empty(t, store.reads)
+	assert.Equal(t, []string{"token:7:3"}, store.reads, "active token restrictions are checked even when audit is disabled")
 	preview, err := Preview(context.Background(), PreviewRequest{GroupName: "A", Body: "invalid"})
 	require.NoError(t, err)
 	assert.False(t, preview.Audited)
@@ -1883,7 +1964,7 @@ func TestRiskGateDisabledExemptModesRetriesAndLearning(t *testing.T) {
 	assert.Nil(t, CheckAttempt(c, info, AttemptInput{Phase: PhaseHTTPFirst, Body: []byte("invalid")}))
 	assert.Nil(t, existingRequestState(c))
 	assert.Empty(t, records.records)
-	assert.Empty(t, store.reads)
+	assert.Equal(t, []string{"token:7:3", "token:7:3", "token:7:3"}, store.reads)
 	assert.True(t, IsRiskError(CheckAttempt(requestContext("B"), info, AttemptInput{Phase: PhaseHTTPFirst, Body: []byte("invalid")})))
 	preview, err = Preview(context.Background(), PreviewRequest{GroupName: "A", Body: "invalid"})
 	require.NoError(t, err)
@@ -2236,7 +2317,7 @@ func TestRiskPreviewDoesNotShareCacheOrKeyState(t *testing.T) {
 		io.WriteString(w, `{"answers":{"safety":{"noul":0.9}}}`)
 	}))
 	defer server.Close()
-	p := DefaultPolicyPayload()
+	p := withModelScreeningSignal(DefaultPolicyPayload())
 	p.Model.Enabled = true
 	p.Model.ProviderID = 19002
 	p.Model.Questions = []Question{}
@@ -2278,7 +2359,7 @@ func TestRiskUnavailableSnapshotAndFailureModes(t *testing.T) {
 	t.Cleanup(func() { current.Store(oldSnap); defaultRecorder = oldRec })
 	rec := &captureRecorder{}
 	defaultRecorder = rec
-	p := DefaultPolicyPayload()
+	p := withModelScreeningSignal(DefaultPolicyPayload())
 	p.Model.Enabled = true
 	p.Model.ProviderID = 1
 	p.Model.FailAction = FailActionBlock
@@ -2412,7 +2493,7 @@ func TestRiskPreviewReportsOnlyInvokedModel(t *testing.T) {
 		{"bypassed group", `{"model":"claude","input":"ordinary question"}`, func(p *PolicyPayload, s *Snapshot, r *PreviewRequest) { s.Scope.Bypass = map[string]bool{"ns-a": true} }, false, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := DefaultPolicyPayload()
+			p := withModelScreeningSignal(DefaultPolicyPayload())
 			p.Refusal.Enabled = false
 			p.Model.Enabled = true
 			p.Model.ProviderID = 1
@@ -2425,9 +2506,9 @@ func TestRiskPreviewReportsOnlyInvokedModel(t *testing.T) {
 			}
 			ev.snapshot.Default.Policy = auditPolicy(t, p)
 			InstallSnapshot(ev.snapshot)
-			store.block = nil
+			store.exact = nil
 			if tc.refusal {
-				store.block = &model.RiskSubjectBlock{Id: 1}
+				store.exact = &model.RiskRefusal{Id: 1}
 			}
 			before := calls.Load()
 			result, err := Preview(context.Background(), req)
@@ -2439,4 +2520,417 @@ func TestRiskPreviewReportsOnlyInvokedModel(t *testing.T) {
 	assert.Empty(t, store.blocks)
 	assert.Empty(t, store.memories)
 	assert.Empty(t, store.hits)
+}
+
+func TestRiskTieredScreeningConsumptionAndIsolation(t *testing.T) {
+	p := DefaultPolicyPayload()
+	p.Refusal.Enabled = false
+	p.Model.Enabled, p.Model.ProviderID, p.Model.Questions = true, 1, []Question{}
+	p.Model.DedupSec = 0
+	store := &memoryStore{}
+	calls := 0
+	ev := evaluationFor(t, p, &Input{})
+	ev.store = store
+	ev.classifier = func(ProviderConfig) Classifier {
+		return classifierFunc(func(context.Context, ClassifyRequest) (ClassifyResult, error) {
+			calls++
+			return ClassifyResult{Scores: map[string]float64{"safety": .95}}, nil
+		})
+	}
+	for i, tc := range []struct {
+		text         string
+		score, calls int
+		triggered    bool
+	}{
+		{"ordinary coding request", 0, 0, false},
+		{"explain phishing reports", 1, 0, false},
+		{"explain phishing reports", 1, 0, false},
+		{"another phishing example", 2, 0, false},
+		{"phishing ddos ransomware terminology", 3, 1, true},
+		{"ordinary follow-up after consumption", 0, 1, false},
+		{"explain phishing reports", 0, 1, false},
+		{"a fresh phishing term", 1, 1, false},
+	} {
+		raw, err := common.Marshal(map[string]any{"model": "claude", "input": tc.text})
+		require.NoError(t, err)
+		ev.input = auditInput(t, string(raw))
+		ev.attempt.RequestID = fmt.Sprintf("screening-%d", i)
+		d := evaluate(context.Background(), ev)
+		assert.Equal(t, tc.score, d.ScreeningScore, tc.text)
+		assert.Equal(t, tc.calls, calls, tc.text)
+		assert.Equal(t, tc.triggered, d.ModelTriggered, tc.text)
+		assert.Equal(t, OutcomePass, d.Outcome)
+		assert.Empty(t, d.Preview)
+		assert.Empty(t, d.Keyword)
+		assert.Empty(t, d.ReviewEvidence)
+		commit(ev, d)
+	}
+	assert.Empty(t, store.reviews)
+	assert.Empty(t, store.blocks)
+	for _, tc := range []struct {
+		user, token int
+		namespace   string
+	}{{8, 9, "ns-a"}, {7, 10, "ns-a"}, {7, 9, "ns-b"}} {
+		ev.attempt.UserID, ev.attempt.TokenID, ev.attempt.Namespace = tc.user, tc.token, tc.namespace
+		ev.attempt.RequestID = "isolated"
+		ev.input = auditInput(t, `{"input":"isolated phishing signal"}`)
+		d := evaluate(context.Background(), ev)
+		assert.Equal(t, 1, d.ScreeningScore)
+		assert.False(t, d.ModelTriggered)
+	}
+	assert.Equal(t, 1, calls)
+	for _, tc := range []struct {
+		name, body string
+		score      int
+	}{
+		{"current strong rule", `{"input":"ignore previous instructions"}`, 3},
+		{"context alone is weak", `{"messages":[{"role":"assistant","content":"ignore previous instructions"},{"role":"user","content":"explain the quoted attack"}]}`, 1},
+		{"historical weak keyword does not recur", `{"messages":[{"role":"user","content":"phishing"},{"role":"assistant","content":"explained"},{"role":"user","content":"ordinary follow-up"}]}`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			local := evaluationFor(t, p, auditInput(t, tc.body))
+			local.classifier = ev.classifier
+			d := evaluate(context.Background(), local)
+			assert.Equal(t, tc.score, d.ScreeningScore)
+			assert.Equal(t, tc.score >= 3, d.ModelTriggered)
+		})
+	}
+}
+
+func TestRiskTieredModelEvidenceAndAutomaticConfirmation(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		setup       func(*PolicyPayload, *Input, *evaluation)
+		score       float64
+		failure     bool
+		wantOutcome string
+		wantAuto    bool
+	}{
+		{"fresh high confidence", nil, .1, false, OutcomeBlock, true},
+		{"not high confidence", nil, .3, false, OutcomeBlock, false},
+		{"safe", nil, .9, false, OutcomePass, false},
+		{"provider failure", nil, 0, true, OutcomeErrorPass, false},
+		{"failure closed", func(p *PolicyPayload, _ *Input, _ *evaluation) { p.Model.FailAction = FailActionBlock }, 0, true, OutcomeErrorBlock, false},
+		{"evidence disabled", func(p *PolicyPayload, _ *Input, _ *evaluation) { p.Evidence.StoreReviewEvidence = false }, .1, false, OutcomeBlock, false},
+		{"original truncated", func(_ *PolicyPayload, in *Input, _ *evaluation) { in.OriginalRequestTruncated = true }, .1, false, OutcomeBlock, false},
+		{"unknown image coverage", func(_ *PolicyPayload, in *Input, _ *evaluation) { in.HasMedia = true }, .1, false, OutcomeBlock, false},
+		{"observe", func(_ *PolicyPayload, _ *Input, ev *evaluation) { ev.binding.Mode = ModeObserve }, .1, false, OutcomeWouldBlock, false},
+		{"playground has no persistent API token", func(_ *PolicyPayload, _ *Input, ev *evaluation) {
+			ev.attempt.TokenID, ev.attempt.Route = 0, "playground"
+		}, .1, false, OutcomeBlock, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := DefaultPolicyPayload()
+			p.Refusal.Enabled = false
+			p.Model.Enabled, p.Model.ProviderID, p.Model.Questions = true, 1, []Question{}
+			p.Model.DedupSec = 0
+			p.Behavior.AutoConfirmEnabled, p.Behavior.AutoBlockEnabled = true, true
+			in := auditInput(t, `{"model":"claude","api_key":"top-level-secret","metadata":{"token":"metadata-secret"},"messages":[{"role":"system","content":"ordinary context"},{"role":"user","content":"write explicit sex scene"}]}`)
+			ev := evaluationFor(t, p, in)
+			if tc.setup != nil {
+				tc.setup(&p, in, &ev)
+			}
+			ev.binding.Policy = auditPolicy(t, p)
+			store := ev.store.(*memoryStore)
+			ev.classifier = func(ProviderConfig) Classifier {
+				return classifierFunc(func(context.Context, ClassifyRequest) (ClassifyResult, error) {
+					if tc.failure {
+						return ClassifyResult{}, unavailable("network unavailable")
+					}
+					return ClassifyResult{Scores: map[string]float64{"safety": tc.score}}, nil
+				})
+			}
+			d := applyMode(evaluate(context.Background(), ev), ev.binding.Mode)
+			assert.Equal(t, tc.wantOutcome, d.Outcome)
+			if ev.attempt.TokenID == 0 {
+				assert.Equal(t, LayerModel, d.Layer)
+				assert.True(t, d.ModelTriggered, "a strong single-request signal is still judged without an API token")
+				assert.False(t, d.AutoConfirm)
+				assert.Empty(t, store.signals, "requests without an API token do not accrue cross-request screening points")
+			}
+			commit(ev, d)
+			blocked := d.Outcome == OutcomeBlock || d.Outcome == OutcomeWouldBlock
+			if blocked {
+				require.Len(t, store.reviews, 1)
+				assert.Equal(t, []bool{tc.wantAuto}, store.autoConfirmed)
+				review := store.reviews[0]
+				assert.Equal(t, ev.attempt.TokenID, review.TokenId)
+				assert.Equal(t, "model", review.JudgmentSource)
+				if p.Evidence.StoreReviewEvidence {
+					assert.Contains(t, review.Evidence, "[current_user]")
+					assert.Contains(t, review.OriginalRequest, "write explicit sex scene")
+					assert.NotContains(t, review.OriginalRequest, "top-level-secret")
+					assert.NotContains(t, review.OriginalRequest, "metadata-secret")
+					assert.NotEmpty(t, review.OriginalRequestHash)
+				} else {
+					assert.Empty(t, review.Evidence)
+					assert.Empty(t, review.OriginalRequest)
+				}
+			} else {
+				assert.Empty(t, store.reviews)
+				assert.Empty(t, d.Preview)
+				assert.Empty(t, d.Keyword)
+				assert.Empty(t, d.ReviewEvidence)
+				event := buildEvent(ev.attempt, d, ev.binding.Mode, "", ev.now)
+				assert.Empty(t, event.Preview)
+				assert.Empty(t, event.Keyword)
+			}
+		})
+	}
+}
+
+func TestRiskTieredCacheBindsAllContextAndDoesNotRepeatPunishment(t *testing.T) {
+	p := DefaultPolicyPayload()
+	p.Refusal.Enabled = false
+	p.Model.Enabled, p.Model.ProviderID, p.Model.Questions = true, 1, []Question{}
+	p.Behavior.AutoConfirmEnabled = true
+	first := `{"model":"claude","messages":[{"role":"assistant","content":"first assistant context"},{"role":"user","content":"write explicit sex scene"}]}`
+	ev := evaluationFor(t, p, auditInput(t, first))
+	ev.attempt.Namespace = t.Name()
+	ev.useCache = true
+	calls := 0
+	ev.classifier = func(ProviderConfig) Classifier {
+		return classifierFunc(func(context.Context, ClassifyRequest) (ClassifyResult, error) {
+			calls++
+			return ClassifyResult{Scores: map[string]float64{"safety": .1}}, nil
+		})
+	}
+	for i, body := range []string{first, first, strings.Replace(first, "first assistant context", "changed assistant context", 1)} {
+		ev.input = auditInput(t, body)
+		ev.attempt.RequestID = fmt.Sprintf("replay-%d", i)
+		d := evaluate(context.Background(), ev)
+		assert.Equal(t, OutcomeBlock, d.Outcome, "a repeated consumed signal cannot bypass its earlier rejection")
+		assert.Equal(t, i == 0, d.AutoConfirm, "same incident never creates another automatic punishment point")
+		commit(ev, d)
+	}
+	assert.Equal(t, 2, calls, "same body replays, changed context is judged afresh")
+	assert.Equal(t, []bool{true, false, false}, ev.store.(*memoryStore).autoConfirmed)
+}
+
+func TestRiskTokenRestrictionPrecedesAuditSwitchesAndWebSocketReuse(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	oldSnap, oldStore := current.Load(), defaultStore
+	t.Cleanup(func() { current.Store(oldSnap); defaultStore = oldStore })
+	store := &memoryStore{block: &model.RiskSubjectBlock{Id: 1, UserId: 7, SubjectType: SubjectToken, SubjectValue: "9"}}
+	defaultStore = store
+	info := &relaycommon.RelayInfo{UserId: 7, TokenId: 9, OriginModelName: "gpt-5"}
+	for _, tc := range []struct {
+		name  string
+		setup func(*Snapshot, *gin.Context)
+		phase string
+	}{
+		{"disabled", func(s *Snapshot, _ *gin.Context) { s.Enabled = false }, PhaseHTTPFirst},
+		{"bypassed", func(s *Snapshot, _ *gin.Context) { s.Scope.Bypass = map[string]bool{"ns-a": true} }, PhaseHTTPFirst},
+		{"exempt", func(s *Snapshot, _ *gin.Context) { s.Scope.Exempt = map[string]bool{"ns-a": true} }, PhaseHTTPFirst},
+		{"observe", func(s *Snapshot, _ *gin.Context) { s.Default.Mode = ModeObserve }, PhaseHTTPFirst},
+		{"websocket after initial auth", func(_ *Snapshot, c *gin.Context) { c.Set("risk_token_block_checked", true) }, PhaseWSLocked},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := evaluationFor(t, DefaultPolicyPayload(), &Input{})
+			c := requestContext("A")
+			tc.setup(ev.snapshot, c)
+			InstallSnapshot(ev.snapshot)
+			err := CheckAttempt(c, info, AttemptInput{Phase: tc.phase, Body: []byte("invalid")})
+			require.NotNil(t, err)
+			assert.Equal(t, 403, err.StatusCode)
+			assert.Equal(t, ErrorCodeRefusalGuard, err.GetErrorCode())
+			assert.Nil(t, existingRequestState(c))
+		})
+	}
+	current.Store(&Snapshot{})
+	info.TokenId = 10
+	assert.Nil(t, CheckAttempt(requestContext("A"), info, AttemptInput{Body: []byte("invalid")}))
+	info.TokenId = 9
+	store.err = errors.New("database unavailable")
+	err := CheckAttempt(requestContext("A"), info, AttemptInput{})
+	require.NotNil(t, err)
+	assert.Equal(t, 503, err.StatusCode)
+}
+
+func TestRiskTieredLegacyPolicyUpgrade(t *testing.T) {
+	legacy := DefaultPolicyPayload()
+	for _, rule := range BuiltinHardRules {
+		if rule.Action != RuleActionSignal {
+			legacy.HardRegex.Rules = append(legacy.HardRegex.Rules, rule)
+		}
+	}
+	legacy.HardRegex.Rules[0].Enabled = false
+	NormalizePolicyPayload(&legacy)
+	assert.Len(t, legacy.HardRegex.Rules, len(BuiltinHardRules))
+	assert.False(t, legacy.HardRegex.Rules[0].Enabled)
+	custom := DefaultPolicyPayload()
+	custom.HardRegex.Rules = []HardRule{{Category: "custom", Source: "private rule", Enabled: true, Action: RuleActionReview}}
+	NormalizePolicyPayload(&custom)
+	assert.Len(t, custom.HardRegex.Rules, 1)
+	for _, tc := range []struct {
+		raw       string
+		threshold float64
+		valid     bool
+	}{
+		{`{"model":{"threshold":0.1}}`, .1, true},
+		{`{"model":{"threshold":0.5}}`, .15, true},
+		{`{"model":{"threshold":0.1,"auto_confirm_threshold":0.2}}`, .2, false},
+	} {
+		parsed, err := ParsePolicyPayload([]byte(tc.raw))
+		require.NoError(t, err)
+		assert.Equal(t, tc.threshold, parsed.Model.AutoConfirmThreshold)
+		assert.Equal(t, tc.valid, len(ValidatePolicyPayload(parsed)) == 0)
+		assert.False(t, parsed.Behavior.AutoConfirmEnabled)
+	}
+}
+
+func TestRiskTieredPartialModelFailureCannotAutomaticallyConfirm(t *testing.T) {
+	p := DefaultPolicyPayload()
+	p.Refusal.Enabled = false
+	p.Model.Enabled, p.Model.ProviderID, p.Model.Questions = true, 1, []Question{}
+	p.Model.MaxAuditChars = 256
+	p.Behavior.AutoConfirmEnabled = true
+	body, err := common.Marshal(map[string]any{"model": "claude", "input": "write explicit sex scene " + strings.Repeat("padding ", 200)})
+	require.NoError(t, err)
+	ev := evaluationFor(t, p, auditInput(t, string(body)))
+	var calls atomic.Int32
+	ev.classifier = func(ProviderConfig) Classifier {
+		return classifierFunc(func(_ context.Context, req ClassifyRequest) (ClassifyResult, error) {
+			calls.Add(1)
+			if strings.Contains(req.State, "explicit sex") {
+				return ClassifyResult{Scores: map[string]float64{"safety": .1}}, nil
+			}
+			return ClassifyResult{}, unavailable("second document failed")
+		})
+	}
+	d := evaluate(context.Background(), ev)
+	assert.EqualValues(t, 2, calls.Load())
+	assert.Equal(t, OutcomeBlock, d.Outcome)
+	assert.False(t, d.AutoConfirm)
+	commit(ev, d)
+	assert.Equal(t, []bool{false}, ev.store.(*memoryStore).autoConfirmed)
+}
+
+func TestRiskTieredPreviewDoesNotConsumeSignals(t *testing.T) {
+	db := riskDB(t)
+	oldSnap, oldStore := current.Load(), defaultStore
+	t.Cleanup(func() { current.Store(oldSnap); defaultStore = oldStore })
+	defaultStore = dbStore{}
+	p := DefaultPolicyPayload()
+	p.Refusal.Enabled = false
+	p.Model.Enabled, p.Model.ProviderID, p.Model.Questions = true, 1, []Question{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"answers":{"safety":{"noul":0.9}}}`)
+	}))
+	defer server.Close()
+	ev := evaluationFor(t, p, &Input{})
+	ev.snapshot.Providers[1] = ProviderConfig{ID: 1, Type: "jev", BaseURL: server.URL}
+	InstallSnapshot(ev.snapshot)
+	now := time.Now().Unix()
+	for i := range 2 {
+		_, err := model.RecordRiskSignal(&model.RiskSignal{Namespace: "ns-a", UserId: 7, TokenId: 9, RequestId: fmt.Sprintf("prior-%d", i), IncidentKey: fmt.Sprintf("prior-%d", i), PolicyKey: "test", PolicyRevision: 1, Points: 1}, p.Screening.Policy(), now)
+		require.NoError(t, err)
+	}
+	for range 2 {
+		result, err := Preview(context.Background(), PreviewRequest{GroupName: "A", UserID: 7, TokenID: 9, Body: `{"input":"third phishing question"}`, RunModel: true})
+		require.NoError(t, err)
+		assert.True(t, result.ModelRun)
+		assert.Equal(t, 3, result.Decision.ScreeningScore)
+		assert.Empty(t, result.Decision.ReviewEvidence)
+	}
+	var rows []model.RiskSignal
+	require.NoError(t, db.Find(&rows).Error)
+	require.Len(t, rows, 2)
+	for _, row := range rows {
+		assert.Zero(t, row.ConsumedAt)
+	}
+	var count int64
+	require.NoError(t, db.Model(&model.RiskReview{}).Count(&count).Error)
+	assert.Zero(t, count)
+}
+
+func TestRiskTieredIncidentIdentityIgnoresBusinessModel(t *testing.T) {
+	riskDB(t)
+	p := DefaultPolicyPayload()
+	p.Refusal.Enabled = false
+	p.HardRegex.Rules = []HardRule{{Category: "custom", Source: "blocked phrase", Action: RuleActionBlock, Enabled: true}}
+	first := `{"model":"model-a","instructions":"original system instructions","input":[{"role":"assistant","content":"assistant context"},{"role":"user","content":"blocked phrase"},{"type":"function_call_output","call_id":"call-1","output":"first tool result"}]}`
+	baseline := auditInput(t, first)
+	for i, tc := range []struct {
+		name, body string
+		count      int64
+	}{
+		{"original", first, 1},
+		{"business model retry", strings.Replace(first, "model-a", "model-b", 1), 1},
+		{"same input with formatting changes", "\n " + first + " ", 1},
+		{"changed tool content", strings.Replace(first, "first tool result", "different tool result", 1), 2},
+		{"changed assistant context", strings.Replace(first, "assistant context", "different assistant context", 1), 3},
+		{"changed instructions", strings.Replace(first, "original system instructions", "new system instructions", 1), 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := auditInput(t, tc.body)
+			if i == 1 || i == 2 {
+				assert.Equal(t, baseline.IncidentContextDigest, in.IncidentContextDigest)
+				assert.NotEqual(t, baseline.ContextDigest, in.ContextDigest, "model verdicts still bind the complete request")
+			} else if i > 2 {
+				assert.NotEqual(t, baseline.IncidentContextDigest, in.IncidentContextDigest)
+			}
+			ev := evaluationFor(t, p, in)
+			ev.attempt.RequestID = fmt.Sprintf("incident-%d", i)
+			ev.store = dbStore{}
+			d := evaluate(context.Background(), ev)
+			require.Equal(t, OutcomeBlock, d.Outcome)
+			commit(ev, d)
+			_, count, err := model.ListRiskReviews(model.RiskReviewFilter{}, 0, 10)
+			require.NoError(t, err)
+			assert.Equal(t, tc.count, count)
+		})
+	}
+}
+
+func TestRiskRefusalExactMatchRequiresFullContext(t *testing.T) {
+	riskDB(t)
+	p := DefaultPolicyPayload()
+	first := `{"model":"claude","instructions":"original system instructions","input":[{"role":"assistant","content":"assistant context"},{"role":"user","content":"ordinary question"},{"type":"function_call_output","call_id":"call-1","output":"first tool result"}]}`
+	baseline := auditInput(t, first)
+	remembered := &model.RiskRefusal{
+		Namespace: "ns-a", UserId: 7, Model: "claude", Fingerprint: Fingerprint(baseline),
+		FingerprintVersion: FingerprintVersion, SourceRequestId: "original-refusal", LastSeenAt: 1700000000,
+	}
+	require.NoError(t, model.RememberRiskRefusal(remembered))
+	stored, err := model.GetRiskRefusal("ns-a", 7, remembered.Fingerprint, 1700000000)
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	// This released v1 key was computed from the same system/user/tool-name
+	// fields without the complete request context. It must no longer block.
+	legacyBody := `{"model":"Claude","system":" RULES ","messages":[{"role":"user","content":"Hello 世界"}],"tools":[{"name":"z"},{"name":"a"}]}`
+	require.NoError(t, model.RememberRiskRefusal(&model.RiskRefusal{
+		Namespace: "ns-a", UserId: 7, Model: "claude",
+		Fingerprint: "220892cc5132b90f8d4f2a105e4ef4fa2714b6a433f01600088c3af182d3dc49", FingerprintVersion: 1,
+		SourceRequestId: "legacy-refusal", LastSeenAt: 1700000000,
+	}))
+	for _, tc := range []struct {
+		name, body string
+		blocked    bool
+	}{
+		{"identical context", first, true},
+		{"JSON whitespace does not change context", "\n " + first + " ", true},
+		{"changed tool output", strings.Replace(first, "first tool result", "a safe corrected tool result", 1), false},
+		{"changed assistant content", strings.Replace(first, "assistant context", "corrected assistant context", 1), false},
+		{"changed instructions", strings.Replace(first, "original system instructions", "new system instructions", 1), false},
+		{"changed assistant role", strings.Replace(first, `"role":"assistant"`, `"role":"developer"`, 1), false},
+		{"another business model", strings.Replace(first, `"model":"claude"`, `"model":"other"`, 1), false},
+		{"legacy context-blind cache", legacyBody, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := evaluationFor(t, p, auditInput(t, tc.body))
+			ev.store = dbStore{}
+			d := evaluate(context.Background(), ev)
+			if tc.blocked {
+				assert.Equal(t, OutcomeBlock, d.Outcome)
+				assert.Equal(t, LayerRefusal, d.Layer)
+				assert.Equal(t, ReasonExact, d.Reason)
+				assert.Equal(t, stored.Id, d.RefusalID)
+			} else {
+				assert.Equal(t, OutcomePass, d.Outcome)
+				assert.Zero(t, d.RefusalID)
+			}
+			assert.False(t, d.ModelTriggered)
+		})
+	}
 }

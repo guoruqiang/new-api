@@ -239,13 +239,13 @@ func TestRiskRoutesRequireAccountPermissionAndScopedLiveToken(t *testing.T) {
 			require.NoError(t, authz.SetUserPermissions(admin.Id, authz.PermissionsMap{authz.ResourceRisk: {authz.ActionWrite: true, authz.ActionUnblock: tc.unblock}}))
 			row := &model.RiskReview{
 				RequestKey: "revoke-permission-" + strconv.Itoa(i), RequestId: "revoke-permission-" + strconv.Itoa(i),
-				Namespace: "scope-review", UserId: 100 + i, CreatedAt: now, Mode: risk.ModeEnforce,
+				Namespace: "scope-review", UserId: 100 + i, TokenId: 300 + i, CreatedAt: now, Mode: risk.ModeEnforce,
 				Status: model.RiskReviewConfirmed, Revision: 2, Category: "nsfw", Points: 3, History: "[]", Evidence: "review evidence",
 			}
 			require.NoError(t, db.Create(row).Error)
 			require.NoError(t, db.Model(row).Update("block_review_ids", "["+strconv.Itoa(row.Id)+"]").Error)
 			block := &model.RiskSubjectBlock{
-				Namespace: row.Namespace, SubjectType: risk.SubjectUser, SubjectValue: strconv.Itoa(row.UserId),
+				Namespace: row.Namespace, UserId: row.UserId, SubjectType: "token", SubjectValue: strconv.Itoa(row.TokenId),
 				Reason: "behavior_score", SourceRequestId: "risk-review:" + strconv.Itoa(row.Id), ExpiresAt: now + 3600,
 			}
 			require.NoError(t, db.Create(block).Error)
@@ -262,6 +262,31 @@ func TestRiskRoutesRequireAccountPermissionAndScopedLiveToken(t *testing.T) {
 				assert.Equal(t, model.RiskReviewConfirmed, row.Status)
 				assert.Equal(t, 2, row.Revision)
 				assert.Zero(t, block.ReleasedAt, "denied revocation must not release the restriction")
+			}
+		})
+	}
+
+	for i, tc := range []struct {
+		name, credential string
+		status           int
+	}{
+		{"ban requires unblock scope", rootWrite, http.StatusForbidden},
+		{"ban with both scopes", rootWriteUnblock, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := &model.RiskReview{RequestKey: "ban-permission-" + strconv.Itoa(i), RequestId: "ban-permission-" + strconv.Itoa(i),
+				Namespace: "scope-review", UserId: 200 + i, TokenId: 500 + i, CreatedAt: now, Mode: risk.ModeEnforce,
+				Status: model.RiskReviewPending, Revision: 1, Category: "nsfw", History: "[]", Evidence: "review evidence", OriginalRequest: "original request"}
+			require.NoError(t, db.Create(row).Error)
+			response := request(http.MethodPost, "/api/risk/reviews/"+strconv.Itoa(row.Id)+"/resolve", tc.credential, `{"revision":1,"action":"ban","category":"nsfw","ttl_minutes":0,"note":"Human reviewed the original request"}`)
+			require.Equal(t, tc.status, response.Code, response.Body.String())
+			block, err := model.GetActiveRiskTokenBlock(row.UserId, row.TokenId, now)
+			require.NoError(t, err)
+			if tc.status == http.StatusOK {
+				require.NotNil(t, block)
+				assert.Zero(t, block.ExpiresAt)
+			} else {
+				assert.Nil(t, block)
 			}
 		})
 	}

@@ -584,6 +584,7 @@ type PreviewRequest struct {
 	PolicyRevision int    `json:"policy_revision"`
 	Mode           string `json:"mode"`
 	UserID         int    `json:"user_id"`
+	TokenID        int    `json:"token_id"`
 	Body           string `json:"body"`
 	RunModel       bool   `json:"run_model"`
 }
@@ -652,7 +653,7 @@ func Preview(ctx context.Context, req PreviewRequest) (PreviewResult, error) {
 	if err != nil {
 		return res, fmt.Errorf("body must be a JSON request: %w", err)
 	}
-	attempt := AttemptContext{Namespace: namespace, UserID: req.UserID, EffectiveGroup: group, ViaAuto: req.ViaAuto, Model: input.Model}
+	attempt := AttemptContext{Namespace: namespace, UserID: req.UserID, TokenID: req.TokenID, RequestID: "preview:" + input.ContextDigest, EffectiveGroup: group, ViaAuto: req.ViaAuto, Model: input.Model}
 	ev := evaluation{
 		snapshot: snap, binding: binding, attempt: attempt, input: input,
 		store: readOnlyStore{Store: defaultStore},

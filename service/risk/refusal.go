@@ -13,7 +13,7 @@ import (
 // FingerprintVersion and SignatureVersion version the refusal keys; changing
 // either algorithm requires a new version so older records stop matching.
 const (
-	FingerprintVersion = 1
+	FingerprintVersion = 2
 	SignatureVersion   = 1
 )
 
@@ -25,15 +25,17 @@ const (
 	signatureSlots     = 128
 )
 
-// Fingerprint is the exact refusal key: model, normalized system+user text and
-// tool names. Sampling parameters such as stream or max_tokens are excluded.
+// Fingerprint binds an exact refusal to the model and complete canonical
+// request context, including assistant/tool content and instructions. The
+// context digest excludes the top-level model, which is included separately.
 func Fingerprint(in *Input) string {
 	encoded, _ := common.Marshal(struct {
 		Version int      `json:"fingerprint_version"`
 		Model   string   `json:"model"`
 		Prompt  string   `json:"prompt"`
 		Tools   []string `json:"tools"`
-	}{FingerprintVersion, strings.ToLower(strings.TrimSpace(in.Model)), NormalizeText(in.fingerprintPrompt()), in.ToolNames})
+		Context string   `json:"context"`
+	}{FingerprintVersion, strings.ToLower(strings.TrimSpace(in.Model)), NormalizeText(in.fingerprintPrompt()), in.ToolNames, in.IncidentContextDigest})
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])
 }

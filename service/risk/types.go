@@ -33,19 +33,23 @@ const (
 )
 
 const (
-	ReasonModelSafe              = "model_safe"
-	ReasonModelReplay            = "model_replay"
-	ReasonRegexMiss              = "regex_miss"
-	ReasonFailOpen               = "fail_open"
-	ReasonCoverageIncompletePass = "coverage_incomplete_pass"
-	ReasonUnchecked              = "unchecked"
-	ReasonExemptGroup            = "exempt_group"
-	ReasonUncovered              = "uncovered"
-	ReasonExact                  = "exact"
-	ReasonSimilar                = "similar"
-	ReasonSubject                = "subject"
-	ReasonUnavailable            = "unavailable"
-	ReasonCoverageIncomplete     = "coverage_incomplete"
+	ReasonModelSafe               = "model_safe"
+	ReasonModelReplay             = "model_replay"
+	ReasonRegexMiss               = "regex_miss"
+	ReasonFailOpen                = "fail_open"
+	ReasonCoverageIncompletePass  = "coverage_incomplete_pass"
+	ReasonUnchecked               = "unchecked"
+	ReasonExemptGroup             = "exempt_group"
+	ReasonUncovered               = "uncovered"
+	ReasonExact                   = "exact"
+	ReasonSimilar                 = "similar"
+	ReasonSubject                 = "subject"
+	ReasonUnavailable             = "unavailable"
+	ReasonCoverageIncomplete      = "coverage_incomplete"
+	ReasonModelNotTriggered       = "model_not_triggered"
+	ReasonScreeningBelowThreshold = "screening_below_threshold"
+	ReasonScreeningRepeated       = "screening_repeated"
+	ReasonScreeningUnavailable    = "screening_unavailable"
 	// A review-tier rule hit that the decision model judged safe, or that no
 	// decision model could confirm; both pass and are logged for tuning.
 	ReasonRuleCleared     = "rule_cleared"
@@ -85,6 +89,7 @@ const ReservedAutoNamespace = "auto"
 const (
 	SubjectUser   = "user"
 	SubjectDevice = "device"
+	SubjectToken  = "token"
 )
 
 // AttemptContext describes one upstream attempt that the audit judges.
@@ -107,12 +112,17 @@ type AttemptContext struct {
 
 // Input is the role-preserving audit view of one request body.
 type Input struct {
-	Digest       string
-	Model        string
-	Systems      []string
-	DistillUsers []string
-	UserTurns    []string
-	UserAuthored []string
+	Digest                   string
+	ContextDigest            string
+	IncidentContextDigest    string
+	OriginalRequest          string
+	OriginalRequestHash      string
+	OriginalRequestTruncated bool
+	Model                    string
+	Systems                  []string
+	DistillUsers             []string
+	UserTurns                []string
+	UserAuthored             []string
 	// Model-only tails preserve the latest text after extraction bounds apply,
 	// without changing the local-rule and refusal-fingerprint input above.
 	modelSystems    []string
@@ -179,7 +189,14 @@ type Decision struct {
 	Reviewed bool `json:"reviewed,omitempty"`
 	// ReviewEvidence contains the bounded, role-labelled text used by the
 	// detector. It is stored only when the policy explicitly allows it.
-	ReviewEvidence string `json:"-"`
+	ReviewEvidence  string `json:"-"`
+	ScreeningScore  int    `json:"screening_score"`
+	ScreeningReason string `json:"screening_reason"`
+	ModelTriggered  bool   `json:"model_triggered"`
+	JudgmentSource  string `json:"judgment_source,omitempty"`
+	// Automatic confirmation requires fresh, successful judgments of every
+	// submitted document, never a replay, partial judgment or local rule.
+	AutoConfirm bool `json:"-"`
 }
 
 // Blocks reports whether the decision stops the request in enforce mode.

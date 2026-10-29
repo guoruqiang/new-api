@@ -37,11 +37,18 @@ import { formatNumber } from '@/lib/format'
 import { getServerErrorStatus } from '@/lib/server-error-message'
 
 import { riskGet, riskWrite } from '../api'
-import { LABELS } from '../constants'
+import {
+  JUDGMENT_SOURCE_LABELS,
+  LABELS,
+  NOTIFICATION_ERROR_LABELS,
+  NOTIFICATION_LABELS,
+} from '../constants'
 import { reviewResolveSchema } from '../lib/schema'
 import type { RiskReviewDetail } from '../types'
-import { Choice, Field } from './fields'
+import { Choice, Field, NumberField } from './fields'
 import { ValidationErrors } from './validation-errors'
+
+type ReviewAction = 'confirm' | 'dismiss' | 'revoke' | 'ban'
 
 export function ReviewDetail(props: {
   id: number
@@ -53,12 +60,12 @@ export function ReviewDetail(props: {
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const client = useQueryClient()
   const [action, setAction] = useState<{
-    type: 'confirm' | 'dismiss' | 'revoke'
+    type: ReviewAction
     revision: number
   } | null>(null)
   const form = useForm<z.infer<typeof reviewResolveSchema>>({
     resolver: zodResolver(reviewResolveSchema),
-    defaultValues: { category: 'custom', note: '' },
+    defaultValues: { category: 'custom', note: '', ttl_minutes: 30 },
   })
   const values = form.watch()
   const query = useQuery({
@@ -70,13 +77,13 @@ export function ReviewDetail(props: {
     mutationFn: (
       input: z.infer<typeof reviewResolveSchema> & {
         revision: number
-        action: 'confirm' | 'dismiss' | 'revoke'
+        action: ReviewAction
       }
     ) =>
       riskWrite<RiskReviewDetail>('post', `reviews/${props.id}/resolve`, input),
     onSuccess: (detail) => {
       setAction(null)
-      form.reset({ category: 'custom', note: '' })
+      form.reset({ category: 'custom', note: '', ttl_minutes: 30 })
       client.setQueryData(['risk', 'review', props.id], detail)
       void client.invalidateQueries({ queryKey: ['risk', 'reviews'] })
       void client.invalidateQueries({ queryKey: ['risk', 'blocks'] })
@@ -91,6 +98,19 @@ export function ReviewDetail(props: {
   const conflict = getServerErrorStatus(resolve.error) === 409
   const missingEvidence = !review?.evidence?.trim()
   const incompleteEvidence = missingEvidence || !!review?.evidence_truncated
+  const incompleteOriginalRequest =
+    !review?.original_request?.trim() || !!review?.original_request_truncated
+  const missingToken = (review?.token_id ?? 0) <= 0
+  const confirmUnavailable =
+    incompleteEvidence ||
+    incompleteOriginalRequest ||
+    missingToken ||
+    !detail?.behavior_enabled
+  const banUnavailable =
+    incompleteEvidence ||
+    incompleteOriginalRequest ||
+    missingToken ||
+    review?.mode !== 'enforce'
   const submitting = resolve.isPending
   const block = detail?.block
   const blockActive =
@@ -103,6 +123,17 @@ export function ReviewDetail(props: {
     confirm: 'Confirm violation',
     dismiss: 'Dismiss candidate',
     revoke: 'Revoke confirmation',
+    ban: 'Ban this API token',
+  }
+  let actionDescription =
+    'Check the saved evidence and category before recording this review. Observation candidates do not add points.'
+  if (action?.type === 'revoke') {
+    actionDescription =
+      'Revoking removes these points, clears related refusal records, and releases an automatic block that depended on this incident.'
+  }
+  if (action?.type === 'ban') {
+    actionDescription =
+      'Ban only the API token linked to this incident, across all groups. Use 0 minutes for a permanent manual ban; other tokens and the account remain available.'
   }
   return (
     <Dialog
@@ -128,6 +159,50 @@ export function ReviewDetail(props: {
             <div>
               <dt className='text-muted-foreground'>{t('User ID')}</dt>
               <dd>{formatNumber(review.user_id, locale)}</dd>
+            </div>
+            <div>
+              <dt className='text-muted-foreground'>{t('Token ID')}</dt>
+              <dd>
+                {missingToken ? '—' : formatNumber(review.token_id, locale)}
+              </dd>
+            </div>
+            <div>
+              <dt className='text-muted-foreground'>{t('Judgment source')}</dt>
+              <dd>
+                {t(
+                  JUDGMENT_SOURCE_LABELS[review.judgment_source] ??
+                    review.judgment_source
+                ) || '—'}
+              </dd>
+            </div>
+            <div>
+              <dt className='text-muted-foreground'>{t('Screening score')}</dt>
+              <dd>{formatNumber(review.screening_score ?? 0, locale)}</dd>
+            </div>
+            <div>
+              <dt className='text-muted-foreground'>{t('Screening reason')}</dt>
+              <dd>
+                {t(
+                  LABELS[review.screening_reason] ?? review.screening_reason
+                ) || '—'}
+              </dd>
+            </div>
+            <div>
+              <dt className='text-muted-foreground'>
+                {t('Configuration revision')}
+              </dt>
+              <dd>{formatNumber(review.config_revision ?? 0, locale)}</dd>
+            </div>
+            <div>
+              <dt className='text-muted-foreground'>
+                {t('Email notification')}
+              </dt>
+              <dd>
+                {t(
+                  NOTIFICATION_LABELS[review.notification_status] ??
+                    review.notification_status
+                ) || '—'}
+              </dd>
             </div>
             <div>
               <dt className='text-muted-foreground'>{t('Review status')}</dt>
@@ -160,6 +235,19 @@ export function ReviewDetail(props: {
               <dd>{t(LABELS[review.coverage] ?? review.coverage) || '—'}</dd>
             </div>
           </dl>
+          {review.notification_error && (
+            <p className='text-destructive text-sm'>
+              {t(
+                NOTIFICATION_ERROR_LABELS[review.notification_error] ??
+                  review.notification_error
+              )}
+            </p>
+          )}
+          <p className='text-muted-foreground text-sm'>
+            {t(
+              'Confirmed violations notify the bound email address; accounts without an email address are skipped.'
+            )}
+          </p>
           <section
             className='space-y-2 rounded-lg border p-3'
             aria-label={t('Behavior scoring')}
@@ -188,6 +276,13 @@ export function ReviewDetail(props: {
             </p>
             <p className='text-sm'>
               {t(
+                detail.auto_confirm_enabled
+                  ? 'High-confidence model confirmation enabled'
+                  : 'Manual confirmation only'
+              )}
+            </p>
+            <p className='text-sm'>
+              {t(
                 blockActive ? 'Active subject block' : 'No active subject block'
               )}
             </p>
@@ -200,6 +295,11 @@ export function ReviewDetail(props: {
               </p>
             )}
           </section>
+          <p className='text-muted-foreground text-sm'>
+            {t(
+              'Token bans apply across groups and do not affect other tokens or the account. The displayed group identifies the source request.'
+            )}
+          </p>
           {!detail.behavior_enabled && (
             <Alert>
               <AlertDescription>
@@ -212,6 +312,24 @@ export function ReviewDetail(props: {
               <AlertDescription>
                 {t(
                   'This candidate came from observation mode. Confirming it records the review only: 0 points and no automatic block.'
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
+          {!missingToken && incompleteOriginalRequest && (
+            <Alert>
+              <AlertDescription>
+                {t(
+                  'Complete request evidence is required to confirm this violation'
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
+          {missingToken && (
+            <Alert>
+              <AlertDescription>
+                {t(
+                  'Reviews without an API token cannot be confirmed or used to restrict tokens. Existing confirmations can still be revoked.'
                 )}
               </AlertDescription>
             </Alert>
@@ -242,6 +360,43 @@ export function ReviewDetail(props: {
               </p>
             )}
           </section>
+          <section
+            className='space-y-2'
+            aria-label={t('Original role content')}
+          >
+            <div className='flex items-center justify-between gap-2'>
+              <h3 className='font-medium'>{t('Original role content')}</h3>
+              {review.original_request && (
+                <CopyButton value={review.original_request} />
+              )}
+            </div>
+            <p className='text-muted-foreground text-sm'>
+              {t(
+                'This is retained role content, not the full HTTP request or the audit window. Normal request bodies are not stored.'
+              )}
+            </p>
+            {review.original_request ? (
+              <pre className='bg-muted max-h-80 overflow-auto rounded-lg p-3 text-sm break-words whitespace-pre-wrap'>
+                {review.original_request}
+              </pre>
+            ) : (
+              <p className='text-muted-foreground text-sm'>
+                {t('Original request evidence was not stored.')}
+              </p>
+            )}
+            {review.original_request_truncated && (
+              <p className='text-destructive text-sm'>
+                {t(
+                  'Original request evidence is truncated; token banning is unavailable.'
+                )}
+              </p>
+            )}
+            {review.original_request_hash && (
+              <p className='text-muted-foreground text-xs break-all'>
+                {t('Evidence hash')}: {review.original_request_hash}
+              </p>
+            )}
+          </section>
           {review.scores && (
             <section className='space-y-2'>
               <h3 className='font-medium'>{t('Question scores')}</h3>
@@ -257,47 +412,84 @@ export function ReviewDetail(props: {
                 {review.review_note}
               </p>
               <p className='text-muted-foreground text-xs'>
-                {t('Reviewer ID')}: {formatNumber(review.reviewed_by, locale)} ·{' '}
-                {new Date(review.reviewed_at * 1000).toLocaleString(locale)}
+                {t(
+                  JUDGMENT_SOURCE_LABELS[review.judgment_source] ??
+                    'Administrator confirmation'
+                )}
+                {review.reviewed_by > 0 && (
+                  <>
+                    {' '}
+                    · {t('Reviewer ID')}:{' '}
+                    {formatNumber(review.reviewed_by, locale)}
+                  </>
+                )}{' '}
+                · {new Date(review.reviewed_at * 1000).toLocaleString(locale)}
               </p>
             </section>
           )}
           {props.canWrite && (
             <div className='flex flex-wrap gap-2'>
-              {(['confirm', 'dismiss', 'revoke'] as const).map((type) => {
-                if (type === 'revoke' && !props.canUnblock) return null
-                if (
-                  type === 'revoke'
-                    ? review.status !== 'confirmed'
-                    : review.status !== 'pending'
-                ) {
-                  return null
+              {(['confirm', 'dismiss', 'revoke', 'ban'] as const).map(
+                (type) => {
+                  if (
+                    (type === 'revoke' || type === 'ban') &&
+                    !props.canUnblock
+                  ) {
+                    return null
+                  }
+                  if (
+                    type === 'ban' &&
+                    !['pending', 'confirmed'].includes(review.status)
+                  ) {
+                    return null
+                  }
+                  if (
+                    type !== 'ban' &&
+                    (type === 'revoke'
+                      ? review.status !== 'confirmed'
+                      : review.status !== 'pending')
+                  ) {
+                    return null
+                  }
+                  return (
+                    <Button
+                      key={type}
+                      variant={type === 'confirm' ? 'default' : 'outline'}
+                      disabled={
+                        submitting ||
+                        (type === 'ban' && banUnavailable) ||
+                        (type === 'confirm' && confirmUnavailable)
+                      }
+                      onClick={() => {
+                        resolve.reset()
+                        form.setValue(
+                          'category',
+                          reviewResolveSchema.shape.category.safeParse(
+                            review.category
+                          ).data ?? 'custom'
+                        )
+                        form.setValue(
+                          'ttl_minutes',
+                          type === 'ban'
+                            ? (values.ttl_minutes ?? 30)
+                            : undefined
+                        )
+                        setAction({ type, revision: review.revision })
+                      }}
+                    >
+                      {t(labels[type])}
+                    </Button>
+                  )
                 }
-                return (
-                  <Button
-                    key={type}
-                    variant={type === 'confirm' ? 'default' : 'outline'}
-                    disabled={
-                      submitting ||
-                      (type === 'confirm' &&
-                        (incompleteEvidence || !detail.behavior_enabled))
-                    }
-                    onClick={() => {
-                      resolve.reset()
-                      form.setValue(
-                        'category',
-                        reviewResolveSchema.shape.category.safeParse(
-                          review.category
-                        ).data ?? 'custom'
-                      )
-                      setAction({ type, revision: review.revision })
-                    }}
-                  >
-                    {t(labels[type])}
-                  </Button>
-                )
-              })}
+              )}
             </div>
+          )}
+          {props.canWrite && props.canUnblock && banUnavailable && (
+            <p className='text-muted-foreground text-sm'>
+              {t(
+                'Token banning requires an enforced request, a token ID, and complete saved audit and original request evidence.'
+              )}
+            </p>
           )}
         </div>
       )}
@@ -307,21 +499,18 @@ export function ReviewDetail(props: {
           if (!open && !submitting) setAction(null)
         }}
         title={t(action ? labels[action.type] : 'Review candidate')}
-        desc={t(
-          action?.type === 'revoke'
-            ? 'Revoking removes these points, clears related refusal records, and releases an automatic block that depended on this incident.'
-            : 'Check the saved evidence and category before recording this review. Observation candidates do not add points.'
-        )}
+        desc={t(actionDescription)}
         confirmText={t(action ? labels[action.type] : 'Continue')}
         isLoading={submitting}
-        destructive={action?.type === 'revoke'}
+        destructive={action?.type === 'revoke' || action?.type === 'ban'}
         disabled={
           !props.canWrite ||
           conflict ||
           !values.note.trim() ||
-          (action?.type === 'revoke' && !props.canUnblock) ||
-          (action?.type === 'confirm' &&
-            (incompleteEvidence || !detail?.behavior_enabled))
+          ((action?.type === 'revoke' || action?.type === 'ban') &&
+            !props.canUnblock) ||
+          (action?.type === 'ban' && banUnavailable) ||
+          (action?.type === 'confirm' && confirmUnavailable)
         }
         handleConfirm={() =>
           void form.handleSubmit((value) => {
@@ -330,14 +519,17 @@ export function ReviewDetail(props: {
               conflict ||
               !props.canWrite ||
               !value.note.trim() ||
-              (action.type === 'revoke' && !props.canUnblock) ||
-              (action.type === 'confirm' &&
-                (incompleteEvidence || !detail?.behavior_enabled))
+              ((action.type === 'revoke' || action.type === 'ban') &&
+                !props.canUnblock) ||
+              (action.type === 'ban' && banUnavailable) ||
+              (action.type === 'confirm' && confirmUnavailable)
             ) {
               return
             }
+            const { ttl_minutes, ...reviewFields } = value
             resolve.mutate({
-              ...value,
+              ...reviewFields,
+              ...(action.type === 'ban' ? { ttl_minutes } : {}),
               action: action.type,
               revision: action.revision,
             })
@@ -345,7 +537,7 @@ export function ReviewDetail(props: {
         }
       >
         <div className='space-y-3'>
-          {action?.type === 'confirm' && (
+          {(action?.type === 'confirm' || action?.type === 'ban') && (
             <Choice
               label='Category'
               value={values.category}
@@ -363,6 +555,31 @@ export function ReviewDetail(props: {
                 )
               }
             />
+          )}
+          {action?.type === 'ban' && (
+            <>
+              <p className='text-sm'>
+                {t('Token ID')}: {formatNumber(review?.token_id ?? 0, locale)} ·{' '}
+                {t('Group namespace')}: {review?.namespace}
+              </p>
+              <NumberField
+                label='Token ban duration (minutes, 0 = permanent)'
+                disabled={submitting}
+                value={values.ttl_minutes ?? 30}
+                min={0}
+                max={1440}
+                onChange={(ttl_minutes) =>
+                  form.setValue('ttl_minutes', ttl_minutes)
+                }
+              />
+              {form.formState.errors.ttl_minutes && (
+                <p role='alert' className='text-destructive text-sm'>
+                  {t(
+                    'Token ban duration must be an integer from 0 to 1440 minutes.'
+                  )}
+                </p>
+              )}
+            </>
           )}
           {action?.type === 'confirm' && (
             <p className='text-muted-foreground text-sm'>

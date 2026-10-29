@@ -66,6 +66,7 @@ export const policy: Policy = {
     questions: null,
     custom_instruction: '',
     threshold: 0.5,
+    auto_confirm_threshold: 0.15,
     near_miss_band: 0.08,
     fail_action: 'pass',
     budget_ms: 2000,
@@ -73,8 +74,10 @@ export const policy: Policy = {
     dedup_sec: 60,
     max_audit_chars: 16000,
   },
+  screening: { threshold: 3, window_minutes: 10 },
   behavior: {
     enabled: true,
+    auto_confirm_enabled: false,
     auto_block_enabled: false,
     window_minutes: 10,
     threshold: 6,

@@ -655,6 +655,9 @@ it('loads old policies with recording defaults and saves behavior settings indep
   })
   const legacy = structuredClone(policy)
   delete (legacy as Partial<Policy>).behavior
+  delete (legacy as Partial<Policy>).screening
+  delete (legacy.model as Partial<Policy['model']>).auto_confirm_threshold
+  legacy.model.threshold = 0.1
   delete (legacy.evidence as Partial<Policy['evidence']>).store_review_evidence
   const user = userEvent.setup()
   renderRisk(
@@ -674,17 +677,25 @@ it('loads old policies with recording defaults and saves behavior settings indep
   ).not.toBeInTheDocument()
   expect(
     screen.getByRole('switch', {
-      name: 'Automatically block at the score threshold',
+      name: 'Automatically suspend the offending API token',
     })
   ).not.toBeChecked()
   expect(
     screen.getByRole('switch', { name: 'Store review evidence' })
   ).toBeChecked()
   expect(
+    screen.getByRole('spinbutton', {
+      name: 'Screening points required for model review',
+    })
+  ).toHaveValue(3)
+  expect(
+    screen.getByRole('spinbutton', { name: 'Screening window (minutes)' })
+  ).toHaveValue(10)
+  expect(
     screen.getByRole('spinbutton', { name: 'Score window (minutes)' })
   ).toHaveValue(10)
   const threshold = screen.getByRole('spinbutton', {
-    name: 'Block score threshold',
+    name: 'Confirmed violation points for suspension',
   })
   expect(threshold).toHaveValue(6)
   expect(threshold).toHaveAttribute('min', '1')
@@ -702,6 +713,7 @@ it('loads old policies with recording defaults and saves behavior settings indep
         data: expect.objectContaining({
           payload: expect.objectContaining({
             behavior: { ...policy.behavior, threshold: 8 },
+            model: { ...legacy.model, auto_confirm_threshold: 0.1 },
             evidence: { store_preview: true, store_review_evidence: false },
             refusal: policy.refusal,
           }),
@@ -709,6 +721,92 @@ it('loads old policies with recording defaults and saves behavior settings indep
       })
     )
   )
+})
+
+it('saves screening and high-confidence confirmation settings separately from penalty points', async () => {
+  const write = vi.spyOn(api, 'request').mockResolvedValue({
+    data: {
+      success: true,
+      data: { ...row, revision: 2, config_revision: 4 },
+    },
+  })
+  const user = userEvent.setup()
+  renderRisk(
+    <PolicySettings
+      config={config}
+      row={row}
+      initial={policy}
+      defaults={defaults}
+      providers={[]}
+      view='model'
+      canWrite
+      onSaved={() => {}}
+    />
+  )
+  const screening = screen.getByRole('spinbutton', {
+    name: 'Screening points required for model review',
+  })
+  await user.clear(screening)
+  await user.type(screening, '5')
+  await user.click(
+    screen.getByRole('switch', {
+      name: 'Automatically confirm high-confidence model violations',
+    })
+  )
+  const threshold = screen.getByRole('spinbutton', {
+    name: 'Automatic confirmation safety threshold',
+  })
+  expect(threshold).toHaveValue(0.15)
+  await user.clear(threshold)
+  await user.type(threshold, '0.1')
+  await user.click(screen.getByRole('button', { name: 'Save settings' }))
+  await waitFor(() =>
+    expect(write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            screening: { threshold: 5, window_minutes: 10 },
+            behavior: { ...policy.behavior, auto_confirm_enabled: true },
+            model: { ...policy.model, auto_confirm_threshold: 0.1 },
+          }),
+        }),
+      })
+    )
+  )
+})
+
+it('validates screening integers, automatic confirmation bounds and the signal rule action', () => {
+  for (const patch of [
+    { threshold: 0 },
+    { threshold: 101 },
+    { threshold: 2.5 },
+    { window_minutes: 0 },
+    { window_minutes: 1441 },
+  ]) {
+    expect(
+      policySchema.safeParse({
+        ...policy,
+        screening: { ...policy.screening, ...patch },
+      }).success
+    ).toBe(false)
+  }
+  for (const auto_confirm_threshold of [-0.1, 1.1, 0.6]) {
+    expect(
+      policySchema.safeParse({
+        ...policy,
+        model: { ...policy.model, auto_confirm_threshold },
+      }).success
+    ).toBe(false)
+  }
+  expect(
+    policySchema.safeParse({
+      ...policy,
+      hard_regex: {
+        ...policy.hard_regex,
+        rules: [{ ...defaults.builtin_rules[0], action: 'signal' }],
+      },
+    }).success
+  ).toBe(true)
 })
 
 it('matches server numeric bounds and counts Unicode code points for question limits', () => {

@@ -51,7 +51,7 @@ func decisionError(c *gin.Context, d Decision, policy *CompiledPolicy) *types.Ne
 		}
 		return riskError(message, ErrorCodeDistillBlocked, policy.Payload.Distill.Error.Status)
 	case d.Layer == LayerRefusal && d.Reason == ReasonSubject:
-		return riskError(i18n.T(c, i18n.MsgRiskRefusalSubject), ErrorCodeRefusalGuard, http.StatusBadRequest)
+		return riskError(i18n.T(c, i18n.MsgRiskTokenRestricted), ErrorCodeRefusalGuard, http.StatusForbidden)
 	case d.Layer == LayerRefusal && d.Reason == ReasonSimilar:
 		percent := int(math.Round(d.Similarity * 100))
 		return riskError(i18n.T(c, i18n.MsgRiskRefusalSimilar, map[string]any{"Percent": percent}), ErrorCodeRefusalGuard, http.StatusBadRequest)

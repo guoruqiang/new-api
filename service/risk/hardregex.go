@@ -8,11 +8,12 @@ import (
 // Hard rule categories; "distill" rules follow the distill switch.
 var HardRuleCategories = []string{"nsfw", "distill", "crack", "jailbreak", "custom"}
 
-// Rule actions: a block rule stops the request on its own; a review rule only
-// sends the request to the decision model, which makes the final call.
+// Block rules stop the request; review rules contribute three screening
+// points and signal rules one. Only sufficient screening reaches the model.
 const (
 	RuleActionBlock  = "block"
 	RuleActionReview = "review"
+	RuleActionSignal = "signal"
 )
 
 const (
@@ -26,9 +27,14 @@ const (
 
 // BuiltinHardRules are vm2api's HARD_POLICY_RULES rewritten for RE2. Only
 // the keygen rule used look-around; it now captures the keyword in group 1.
-// Every builtin is reviewed in context: even an imperative can appear inside
-// a quote, a negation or a security exercise. Custom block rules remain direct.
+// Builtins only screen: even an imperative can be quoted, negated or part of
+// a security exercise. Custom block rules remain direct.
 var BuiltinHardRules = []HardRule{
+	{Category: "nsfw", Source: `(?:色情|性爱|裸照|淫秽)|\b(?:porn|nsfw|sexual|nude)\b`, Enabled: true, Action: RuleActionSignal},
+	{Category: "jailbreak", Source: `(?:越狱|破限)|\b(?:jailbreak|prompt\s+injection)\b`, Enabled: true, Action: RuleActionSignal},
+	{Category: "crack", Source: `(?:破解|注册机|激活码)|\b(?:keygen|warez|crack)\b`, Enabled: true, Action: RuleActionSignal},
+	{Category: "custom", Source: `(?:渗透|提权|木马|勒索|钓鱼)|\b(?:exploit|ransomware|phishing|ddos|privilege\s+escalation)\b`, Enabled: true, Action: RuleActionSignal},
+	{Category: "distill", Source: `(?:蒸馏|思维链)|\b(?:distill|chain[- ]of[- ]thought)\b`, Enabled: true, Action: RuleActionSignal},
 	{Category: "jailbreak", Source: `\b(?:jailbreak|dan)\s+mode\b`, Enabled: true, Action: RuleActionReview},
 	{Category: "jailbreak", Source: `\bignore\s+(?:all\s+)?(?:previous|prior|above)\s+(?:instructions|rules|prompts)\b`, Enabled: true, Action: RuleActionReview},
 	{Category: "jailbreak", Source: `\b(?:bypass|disable|remove)\s+(?:your\s+|the\s+|all\s+)?(?:safety|content)\s+(?:filters?|policies|restrictions|limits)\b`, Enabled: true, Action: RuleActionReview},

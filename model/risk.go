@@ -156,6 +156,7 @@ type RiskRefusal struct {
 
 type RiskSubjectBlock struct {
 	Id              int    `json:"id"`
+	UserId          int    `json:"user_id" gorm:"index:idx_risk_block_owner"`
 	Namespace       string `json:"namespace" gorm:"type:varchar(32);uniqueIndex:idx_risk_block_key,priority:1"`
 	SubjectType     string `json:"subject_type" gorm:"type:varchar(12);uniqueIndex:idx_risk_block_key,priority:2"`
 	SubjectValue    string `json:"subject_value" gorm:"type:varchar(80);uniqueIndex:idx_risk_block_key,priority:3"`
@@ -174,7 +175,7 @@ type RiskSubjectBlock struct {
 func RiskModels() []any {
 	return []any{
 		&RiskState{}, &RiskConfig{}, &RiskPolicy{}, &RiskProvider{}, &RiskGroupNamespace{},
-		&RiskEvent{}, &RiskCounter{}, &RiskRefusal{}, &RiskSubjectBlock{}, &RiskReview{},
+		&RiskEvent{}, &RiskCounter{}, &RiskRefusal{}, &RiskSubjectBlock{}, &RiskReview{}, &RiskSignal{},
 	}
 }
 
@@ -1007,6 +1008,7 @@ func CleanupRiskRecords(now, eventsBefore, countersBefore int64) (int64, error) 
 	}{
 		{&RiskEvent{}, "created_at < ?", []any{eventsBefore}},
 		{&RiskCounter{}, "bucket < ?", []any{countersBefore}},
+		{&RiskSignal{}, "created_at < ?", []any{eventsBefore}},
 		{&RiskRefusal{}, "expires_at > 0 AND expires_at <= ?", []any{now}},
 		{&RiskSubjectBlock{}, "(expires_at > 0 AND expires_at <= ?) OR (released_at > 0 AND released_at < ?)", []any{now, eventsBefore}},
 	}

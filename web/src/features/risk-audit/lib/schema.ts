@@ -101,7 +101,7 @@ export const policySchema = z
             category: z.string().min(1),
             source: unicodeText(400).min(1),
             enabled: z.boolean(),
-            action: z.enum(['block', 'review']).optional(),
+            action: z.enum(['block', 'review', 'signal']).optional(),
           })
         )
         .max(60)
@@ -132,6 +132,7 @@ export const policySchema = z
       questions: z.array(questionSchema).max(24).nullable(),
       custom_instruction: unicodeText(500),
       threshold: z.number().min(0).max(1),
+      auto_confirm_threshold: z.number().min(0).max(1),
       near_miss_band: z.number().min(0).max(1),
       fail_action: z.enum(['pass', 'block']),
       budget_ms: z.number().int().min(200).max(8000),
@@ -139,8 +140,13 @@ export const policySchema = z
       dedup_sec: z.number().int().min(0).max(3600),
       max_audit_chars: z.number().int().min(256).max(64000),
     }),
+    screening: z.object({
+      threshold: z.number().int().min(1).max(100),
+      window_minutes: z.number().int().min(1).max(1440),
+    }),
     behavior: z.object({
       enabled: z.boolean(),
+      auto_confirm_enabled: z.boolean(),
       auto_block_enabled: z.boolean(),
       window_minutes: z.number().int().min(1).max(1440),
       threshold: z.number().int().min(1).max(100),
@@ -153,6 +159,14 @@ export const policySchema = z
   })
 
   .superRefine((value, ctx) => {
+    if (value.model.auto_confirm_threshold > value.model.threshold) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['model', 'auto_confirm_threshold'],
+        message:
+          'Automatic confirmation threshold must not exceed the safety threshold.',
+      })
+    }
     const questions = value.model.questions ?? []
     if (
       new Set(questions.map((q) => q.id)).size !== questions.length ||
@@ -174,6 +188,7 @@ export const policySchema = z
   })
 
 export const reviewResolveSchema = z.object({
+  ttl_minutes: z.number().int().min(0).max(1440).optional(),
   category: z.enum([
     'nsfw',
     'jailbreak',
