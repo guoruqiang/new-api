@@ -23,7 +23,7 @@ import (
 	"github.com/QuantumNous/new-api/service"
 )
 
-// ProviderPreset is one systemone-compatible decision service.
+// ProviderPreset is one supported decision service.
 type ProviderPreset struct {
 	ID             string `json:"id"`
 	Label          string `json:"label"`
@@ -35,6 +35,7 @@ var ProviderPresets = []ProviderPreset{
 	{ID: "jev", Label: "Jev", DefaultModel: "jev-latest", DefaultBaseURL: "https://api.typesafe.ai"},
 	{ID: "laya", Label: "Laya", DefaultModel: "", DefaultBaseURL: "http://127.0.0.1:8000"},
 	{ID: "modernbert", Label: "ModernBERT", DefaultModel: "english", DefaultBaseURL: "http://127.0.0.1:8000"},
+	{ID: "openai", Label: "OpenAI Moderation", DefaultModel: "omni-moderation-latest", DefaultBaseURL: "https://api.openai.com"},
 }
 
 func presetFor(id string) (ProviderPreset, bool) {
@@ -70,9 +71,10 @@ func (cfg ProviderConfig) ResolvedModel(override string) string {
 }
 
 var (
-	decisionSuffix = regexp.MustCompile(`(?i)/(systemone|decide)$`)
-	versionSuffix  = regexp.MustCompile(`(?i)/v1$`)
-	keyLinePattern = regexp.MustCompile(`^(https?://\S+)\s+(\S+)$`)
+	decisionSuffix   = regexp.MustCompile(`(?i)/(systemone|decide)$`)
+	moderationSuffix = regexp.MustCompile(`(?i)/moderations$`)
+	versionSuffix    = regexp.MustCompile(`(?i)/v1$`)
+	keyLinePattern   = regexp.MustCompile(`^(https?://\S+)\s+(\S+)$`)
 )
 
 // DecisionURL keeps full /systemone or /decide URLs and appends the systemone
@@ -97,6 +99,7 @@ func DecisionURL(base string) string {
 func ModelsURL(base string) string {
 	trimmed := strings.TrimRight(strings.TrimSpace(base), "/")
 	trimmed = strings.TrimRight(decisionSuffix.ReplaceAllString(trimmed, ""), "/")
+	trimmed = strings.TrimRight(moderationSuffix.ReplaceAllString(trimmed, ""), "/")
 	trimmed = versionSuffix.ReplaceAllString(trimmed, "")
 	if !validHTTPURL(trimmed) {
 		return ""
@@ -267,6 +270,9 @@ func newProviderRuntime(cfg ProviderConfig) *providerRuntime {
 			base, key = m[1], m[2]
 		}
 		url := DecisionURL(base)
+		if cfg.Type == "openai" {
+			url = OpenAIModerationURL(base)
+		}
 		if url == "" {
 			continue
 		}
@@ -331,7 +337,7 @@ func maskKey(key string) string {
 	return string(runes[:4]) + "****" + string(runes[len(runes)-4:])
 }
 
-// ClassifyRequest is one systemone call.
+// ClassifyRequest is one decision-provider call.
 type ClassifyRequest struct {
 	State       string
 	Questions   []askedQuestion
@@ -339,9 +345,11 @@ type ClassifyRequest struct {
 	MaxAttempts int
 }
 
-// ClassifyResult carries the per-question safety scores.
+// ClassifyResult carries safety scores. OpenAI additionally returns its
+// category flags, which determine violations independently of score thresholds.
 type ClassifyResult struct {
 	Scores map[string]float64
+	Flags  map[string]bool
 	Model  string
 }
 
@@ -427,7 +435,20 @@ func (rt *providerRuntime) Classify(ctx context.Context, req ClassifyRequest) (C
 	if len(rt.targets) == 0 {
 		return ClassifyResult{}, unavailable("no endpoint configured")
 	}
-	payload, err := systemonePayload(req)
+	var payload []byte
+	var err error
+	if rt.cfg.Type == "openai" {
+		modelName := rt.cfg.ResolvedModel(req.Model)
+		if !strings.HasPrefix(modelName, "omni-moderation-") {
+			return ClassifyResult{}, unavailable("unsupported moderation model")
+		}
+		payload, err = common.Marshal(struct {
+			Model string `json:"model"`
+			Input string `json:"input"`
+		}{Model: modelName, Input: req.State})
+	} else {
+		payload, err = systemonePayload(req)
+	}
 	if err != nil {
 		return ClassifyResult{}, unavailable("encode request")
 	}
@@ -492,6 +513,9 @@ func (rt *providerRuntime) Classify(ctx context.Context, req ClassifyRequest) (C
 		}
 		if readErr != nil {
 			return ClassifyResult{}, unavailable("read response")
+		}
+		if rt.cfg.Type == "openai" {
+			return parseOpenAIModeration(body)
 		}
 		scores, err := parseScores(body, req.Questions)
 		if err != nil {

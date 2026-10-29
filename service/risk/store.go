@@ -232,6 +232,7 @@ const verdictCacheCapacity = 10000
 
 type cachedVerdict struct {
 	scores map[string]float64
+	flags  map[string]bool
 	model  string
 }
 

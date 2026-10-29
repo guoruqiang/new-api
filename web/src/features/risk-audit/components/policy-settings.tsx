@@ -177,6 +177,14 @@ export function PolicySettings(props: {
   const h = value.hard_regex
   const r = value.refusal
   const m = value.model
+  const selectedProvider = props.providers.find(
+    (provider) => provider.id === m.provider_id
+  )
+  const openaiModeration = selectedProvider?.provider_type === 'openai'
+  const moderationModelInvalid =
+    openaiModeration &&
+    m.model.trim() !== '' &&
+    !m.model.trim().startsWith('omni-moderation-')
   const b = value.behavior
   const disabled = !props.canWrite || save.isPending || props.loadingLatest
   const bindingsMatch = [
@@ -190,6 +198,7 @@ export function PolicySettings(props: {
   const unchanged = !form.formState.isDirty && bindingsMatch
   const saveDisabled =
     disabled ||
+    moderationModelInvalid ||
     props.activationBlocked ||
     conflict ||
     !props.defaults.policy_save_activation
@@ -797,7 +806,10 @@ export function PolicySettings(props: {
                       })),
                     ]}
                     onChange={(provider_id) =>
-                      update('model', { provider_id: Number(provider_id) })
+                      update('model', {
+                        provider_id: Number(provider_id),
+                        model: '',
+                      })
                     }
                   />
                   <Field label='Model'>
@@ -805,10 +817,32 @@ export function PolicySettings(props: {
                       disabled={disabled}
                       aria-label={t('Model')}
                       value={m.model}
+                      placeholder={
+                        selectedProvider?.model ||
+                        props.defaults.providers.find(
+                          (preset) =>
+                            preset.id === selectedProvider?.provider_type
+                        )?.default_model ||
+                        undefined
+                      }
                       onChange={(e) =>
                         update('model', { model: e.target.value })
                       }
                     />
+                    {openaiModeration && (
+                      <p className='text-muted-foreground text-sm'>
+                        {t(
+                          'Leave the model blank to use the provider default.'
+                        )}
+                      </p>
+                    )}
+                    {moderationModelInvalid && (
+                      <p role='alert' className='text-destructive text-sm'>
+                        {t(
+                          'OpenAI Moderation requires an omni-moderation model'
+                        )}
+                      </p>
+                    )}
                   </Field>
                 </FieldGroup>
               </FieldSet>
@@ -818,14 +852,16 @@ export function PolicySettings(props: {
                   {t('Scoring and limits')}
                 </FieldLegend>
                 <FieldGroup className='grid gap-4 sm:grid-cols-2 lg:grid-cols-3'>
-                  <NumberField
-                    disabled={disabled}
-                    label='Safety threshold'
-                    value={m.threshold}
-                    step={0.01}
-                    max={1}
-                    onChange={(threshold) => update('model', { threshold })}
-                  />
+                  {!openaiModeration && (
+                    <NumberField
+                      disabled={disabled}
+                      label='Safety threshold'
+                      value={m.threshold}
+                      step={0.01}
+                      max={1}
+                      onChange={(threshold) => update('model', { threshold })}
+                    />
+                  )}
                   <NumberField
                     disabled={disabled}
                     label='Automatic confirmation safety threshold'
@@ -837,16 +873,18 @@ export function PolicySettings(props: {
                       update('model', { auto_confirm_threshold })
                     }
                   />
-                  <NumberField
-                    disabled={disabled}
-                    label='Near-miss tolerance'
-                    value={m.near_miss_band}
-                    step={0.01}
-                    max={1}
-                    onChange={(near_miss_band) =>
-                      update('model', { near_miss_band })
-                    }
-                  />
+                  {!openaiModeration && (
+                    <NumberField
+                      disabled={disabled}
+                      label='Near-miss tolerance'
+                      value={m.near_miss_band}
+                      step={0.01}
+                      max={1}
+                      onChange={(near_miss_band) =>
+                        update('model', { near_miss_band })
+                      }
+                    />
+                  )}
                   <NumberField
                     disabled={disabled}
                     label='Total budget (ms)'
@@ -884,33 +922,60 @@ export function PolicySettings(props: {
                   />
                 </FieldGroup>
                 <p className='text-muted-foreground text-sm'>
-                  {t(
-                    'Lower model safety scores mean higher risk. Automatic confirmation requires a score below its threshold and complete violation evidence.'
-                  )}
+                  {openaiModeration
+                    ? t(
+                        'OpenAI category flags decide request blocking. Displayed safety scores equal 1 minus the OpenAI risk score; only automatic confirmation uses the safety threshold and requires complete evidence.'
+                      )
+                    : t(
+                        'Lower model safety scores mean higher risk. Automatic confirmation requires a score below its threshold and complete violation evidence.'
+                      )}
                 </p>
                 <p className='text-muted-foreground text-sm'>
-                  {t(
-                    'The decision model reviews the final characters of the combined system and user text. Trimming to this window is not a model failure. Rule matches outside the window are reviewed separately using bounded excerpts.'
-                  )}
+                  {openaiModeration
+                    ? t(
+                        'OpenAI reviews only the latest user text, not system prompts, assistant replies or tool results. Incomplete text without a violation flag follows the failure action; incomplete evidence never triggers automatic deductions.'
+                      )
+                    : t(
+                        'The decision model reviews the final characters of the combined system and user text. Trimming to this window is not a model failure. Rule matches outside the window are reviewed separately using bounded excerpts.'
+                      )}
                 </p>
               </FieldSet>
               <Separator />
-              <QuestionBank
-                disabled={disabled}
-                value={m.questions}
-                defaults={props.defaults.builtin_questions}
-                onChange={(questions) => update('model', { questions })}
-              />
-              <Field label='Additional safety question'>
-                <Textarea
-                  disabled={disabled}
-                  aria-label={t('Additional safety question')}
-                  value={m.custom_instruction}
-                  onChange={(e) =>
-                    update('model', { custom_instruction: e.target.value })
-                  }
-                />
-              </Field>
+              {openaiModeration ? (
+                <Alert role='status'>
+                  <AlertDescription>
+                    <p>
+                      {t(
+                        'OpenAI uses fixed content categories: sexual content, harassment, hate, violence, self-harm and illicit content. Custom questions are preserved but not used by this provider.'
+                      )}
+                    </p>
+                    <p>
+                      {t(
+                        'Jailbreak, distillation and custom intent rules are not covered. Unresolved signals follow the failure action without confirming a violation or deducting reputation.'
+                      )}
+                    </p>
+                  </AlertDescription>
+                </Alert>
+              ) : (
+                <>
+                  <QuestionBank
+                    disabled={disabled}
+                    value={m.questions}
+                    defaults={props.defaults.builtin_questions}
+                    onChange={(questions) => update('model', { questions })}
+                  />
+                  <Field label='Additional safety question'>
+                    <Textarea
+                      disabled={disabled}
+                      aria-label={t('Additional safety question')}
+                      value={m.custom_instruction}
+                      onChange={(e) =>
+                        update('model', { custom_instruction: e.target.value })
+                      }
+                    />
+                  </Field>
+                </>
+              )}
             </>
           )}
           <Separator />

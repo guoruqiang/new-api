@@ -275,7 +275,7 @@ func TestRiskPublishAndProviderRollback(t *testing.T) {
 	latest, err := GetLatestRiskConfig()
 	require.NoError(t, err)
 	assert.Nil(t, latest, "configuration and revision must roll back together")
-	provider := RiskProvider{Name: "local", ProviderType: "jev", BaseURL: "http://127.0.0.1"}
+	provider := RiskProvider{Name: "local", ProviderType: "openai", BaseURL: "http://127.0.0.1", Model: "omni-moderation-latest"}
 	require.ErrorIs(t, SaveRiskProvider(&provider, []string{"test-key"}), rejected)
 	assert.Zero(t, provider.Id, "failed insert must not leak a rolled-back id to a caller retry")
 	var count int64
@@ -293,6 +293,8 @@ func TestRiskPublishAndProviderRollback(t *testing.T) {
 	require.NoError(t, SaveRiskProvider(&provider, []string{}))
 	stored, err := GetRiskProvider(provider.Id)
 	require.NoError(t, err)
+	assert.Equal(t, "openai", stored.ProviderType)
+	assert.Equal(t, "omni-moderation-latest", stored.Model)
 	assert.Empty(t, stored.ApiKeys)
 	assert.Equal(t, 2, stored.KeysRevision)
 	revision, err := GetRiskChangeRevision()

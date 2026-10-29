@@ -41,7 +41,7 @@ import { ValidationErrors } from './validation-errors'
 
 const providerSchema = z.object({
   name: z.string().min(1).max(64),
-  provider_type: z.enum(['jev', 'laya', 'modernbert']),
+  provider_type: z.enum(['jev', 'laya', 'modernbert', 'openai']),
   base_url: z
     .url()
     .max(300)
@@ -71,7 +71,11 @@ export function ProviderCard(props: {
   const form = useForm({
     defaultValues: {
       name: initial.name,
-      provider_type: initial.provider_type as 'jev' | 'laya' | 'modernbert',
+      provider_type: initial.provider_type as
+        | 'jev'
+        | 'laya'
+        | 'modernbert'
+        | 'openai',
       base_url: initial.base_url,
       model: initial.model,
       proxy: initial.proxy,
@@ -108,7 +112,7 @@ export function ProviderCard(props: {
         ...(props.provider ? result : initial),
         provider_type: (props.provider
           ? result.provider_type
-          : initial.provider_type) as 'jev' | 'laya' | 'modernbert',
+          : initial.provider_type) as 'jev' | 'laya' | 'modernbert' | 'openai',
       })
       void queryClient.invalidateQueries({ queryKey: ['risk', 'providers'] })
       toast.success(t('Saved successfully'))
@@ -125,7 +129,14 @@ export function ProviderCard(props: {
       }),
     meta: { errorToast: false },
     onMutate: () => setModels([]),
-    onSuccess: (result) => setModels(result.models),
+    onSuccess: (result) =>
+      setModels(
+        value.provider_type === 'openai'
+          ? result.models.filter((model) =>
+              model.startsWith('omni-moderation-')
+            )
+          : result.models
+      ),
   })
   const disabled = !props.canWrite || save.isPending || probe.isPending
   return (
@@ -163,9 +174,11 @@ export function ProviderCard(props: {
               }))}
               onChange={(type) => {
                 const preset = props.presets.find((p) => p.id === type)
+                setModels([])
+                probe.reset()
                 form.setValue(
                   'provider_type',
-                  type as 'jev' | 'laya' | 'modernbert',
+                  type as 'jev' | 'laya' | 'modernbert' | 'openai',
                   { shouldDirty: true }
                 )
                 if (preset) {
@@ -202,6 +215,15 @@ export function ProviderCard(props: {
               </Button>
             </div>
           </Field>
+          {value.provider_type === 'openai' && (
+            <Alert role='status'>
+              <AlertDescription>
+                {t(
+                  'OpenAI Moderation uses omni-moderation-latest and the /v1/moderations endpoint. Use an OpenAI API key or a compatible moderation service.'
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
           {saveBeforeProbe && (
             <Alert role='status'>
               <AlertDescription>

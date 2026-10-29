@@ -50,6 +50,7 @@ const (
 	ReasonUnavailable             = "unavailable"
 	ReasonCoverageIncomplete      = "coverage_incomplete"
 	ReasonModelNotTriggered       = "model_not_triggered"
+	ReasonProviderUnsupported     = "provider_unsupported"
 	ReasonScreeningBelowThreshold = "screening_below_threshold"
 	ReasonScreeningRepeated       = "screening_repeated"
 	ReasonScreeningUnavailable    = "screening_unavailable"
@@ -128,10 +129,11 @@ type Input struct {
 	UserAuthored             []string
 	// Model-only tails preserve the latest text after extraction bounds apply,
 	// without changing the local-rule and refusal-fingerprint input above.
-	modelSystems    []string
-	modelUsers      []string
-	modelAssistants []string
-	modelTools      []string
+	modelSystems         []string
+	modelUsers           []string
+	modelAssistants      []string
+	modelTools           []string
+	currentUserTruncated bool
 	// Assistants and RecentToolOutputs are client-supplied context that only
 	// the review tier of local rules scans; the latest tool results are the
 	// only ones not already audited with an earlier request of the session.
@@ -203,6 +205,9 @@ type Decision struct {
 	// Automatic confirmation requires fresh, successful judgments of every
 	// submitted document, never a replay, partial judgment or local rule.
 	AutoConfirm bool `json:"-"`
+	// Content-only moderation identifies an incident by the full current user
+	// text, so changing unrelated tool context cannot deduct reputation again.
+	ModerationIncidentKey string `json:"-"`
 }
 
 // Blocks reports whether the decision stops the request in enforce mode.

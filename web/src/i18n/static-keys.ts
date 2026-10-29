@@ -1375,4 +1375,15 @@ export const STATIC_I18N_KEYS = [
   'Check the saved evidence and category before recording this review. Observation confirmations do not change reputation.',
   'Each distinct confirmed violation deducts 20 reputation points. Observation confirmations do not change reputation.',
   'Saved model assessments are shown as recorded. Historical severity or deduction values may differ from the actual reputation deduction above.',
+  // OpenAI moderation provider and coverage.
+  'OpenAI Moderation',
+  'Provider does not cover this review signal',
+  'Provider type must be jev, laya, modernbert or openai',
+  'OpenAI Moderation uses omni-moderation-latest and the /v1/moderations endpoint. Use an OpenAI API key or a compatible moderation service.',
+  'OpenAI category flags decide request blocking. Displayed safety scores equal 1 minus the OpenAI risk score; only automatic confirmation uses the safety threshold and requires complete evidence.',
+  'OpenAI reviews only the latest user text, not system prompts, assistant replies or tool results. Incomplete text without a violation flag follows the failure action; incomplete evidence never triggers automatic deductions.',
+  'OpenAI uses fixed content categories: sexual content, harassment, hate, violence, self-harm and illicit content. Custom questions are preserved but not used by this provider.',
+  'Jailbreak, distillation and custom intent rules are not covered. Unresolved signals follow the failure action without confirming a violation or deducting reputation.',
+  'OpenAI Moderation requires an omni-moderation model',
+  'Leave the model blank to use the provider default.',
 ] as const

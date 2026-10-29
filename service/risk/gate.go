@@ -1,6 +1,7 @@
 package risk
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -117,7 +118,7 @@ func failureDecision(base Decision, payload PolicyPayload, layer, reason, detail
 	d := base
 	d.Layer = layer
 	d.Keyword = truncateRunes(detail, 40)
-	if reason == ReasonCoverageIncomplete {
+	if reason == ReasonCoverageIncomplete || reason == ReasonProviderUnsupported {
 		d.Coverage = CoverageIncomplete
 	}
 	if payload.Model.FailAction == FailActionBlock {
@@ -129,6 +130,9 @@ func failureDecision(base Decision, payload PolicyPayload, layer, reason, detail
 	d.Reason = ReasonFailOpen
 	if reason == ReasonCoverageIncomplete {
 		d.Reason = ReasonCoverageIncompletePass
+	}
+	if reason == ReasonProviderUnsupported {
+		d.Reason = ReasonProviderUnsupported
 	}
 	return d
 }
@@ -220,6 +224,7 @@ func evaluate(ctx context.Context, ev evaluation) (d Decision) {
 	d.Fingerprint = Fingerprint(in)
 
 	var review *hardHit
+	distillSignaled := false
 	points, screeningReason := 0, ""
 	currentDoc, userIncomplete := in.CurrentUserDocument(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64)
 	contextDoc, contextIncomplete := in.ContextDocument(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64)
@@ -228,6 +233,7 @@ func evaluate(ctx context.Context, ev evaluation) (d Decision) {
 	distillInput.LatestUser = currentDoc
 	distillInput.Systems = []string{contextDoc}
 	for _, hit := range detectDistill(&distillInput, p) {
+		distillSignaled = true
 		if hit.Review != nil {
 			if review == nil {
 				review = hit.Review
@@ -340,6 +346,41 @@ func evaluate(ctx context.Context, ev evaluation) (d Decision) {
 		return failureDecision(d, payload, LayerModel, ReasonUnavailable, "no provider")
 	}
 	documents, tailWindow, docIncomplete, reviewCovered := in.ModelDocuments(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64, m.MaxAuditChars, review)
+	moderation := provider.Type == "openai"
+	moderationUncovered := false
+	if moderation {
+		// Moderation classifies content, not instructions or labelled dialogue.
+		// Sending assistant/tool history would attribute their content to the
+		// current user. Its fixed categories also cannot clear arbitrary rules.
+		moderationUncovered = distillSignaled || d.RefusalID > 0 || d.Similarity > 0
+		currentSignal := false
+		for _, rules := range [][]compiledRule{p.hardRules, p.signalRules} {
+			for _, rule := range rules {
+				if !allow(rule.category) {
+					continue
+				}
+				if rule.re.MatchString(currentDoc) {
+					currentSignal = true
+					moderationUncovered = moderationUncovered || rule.category != "nsfw"
+				}
+			}
+		}
+		if _, contextHit := matchHardRules(contextDoc, p.hardRules, allow); contextHit {
+			moderationUncovered = true
+		}
+		text, clipped := tailRunes(currentDoc, m.MaxAuditChars)
+		documents = nil
+		if text != "" {
+			documents = []string{text}
+		}
+		// Dropping old history does not mean that the current text was cut.
+		// This provider deliberately does not claim to moderate that history.
+		d.Coverage = CoverageComplete
+		ruleIncomplete = userIncomplete
+		tailWindow, docIncomplete, reviewCovered = false, userIncomplete || clipped || in.currentUserTruncated, currentSignal
+		incidentHash := sha256.Sum256([]byte("openai-moderation-current-user\x00" + currentDoc))
+		d.ModerationIncidentKey = hex.EncodeToString(incidentHash[:])
+	}
 	if payload.Evidence.StoreReviewEvidence {
 		d.ReviewEvidence = strings.Join(documents, "\n\n--- audit document ---\n\n")
 	}
@@ -349,6 +390,9 @@ func evaluate(ctx context.Context, ev evaluation) (d Decision) {
 		d.Coverage = CoverageTailWindow
 	}
 	if len(documents) == 0 {
+		if moderation {
+			return failureDecision(d, payload, LayerModel, ReasonProviderUnsupported, "no current user text to moderate")
+		}
 		d.Reason = ReasonUnchecked
 		if review != nil {
 			d.Reason = ReasonRuleUnconfirmed
@@ -359,6 +403,7 @@ func evaluate(ctx context.Context, ev evaluation) (d Decision) {
 	d.ProviderModel = modelName
 	var failure error
 	merged := map[string]float64{}
+	flaggedScores := map[string]float64{}
 	allCached := true
 	freshJudgments := true
 	for _, v := range classifyDocuments(ctx, ev, provider, modelName, documents) {
@@ -371,14 +416,35 @@ func evaluate(ctx context.Context, ev evaluation) (d Decision) {
 		}
 		allCached = allCached && v.cached
 		freshJudgments = freshJudgments && !v.cached
+		if v.model != "" {
+			d.ProviderModel = v.model
+		}
 		for id, score := range v.scores {
 			if current, seen := merged[id]; !seen || score < current {
 				merged[id] = score
 			}
+			if v.flags[id] {
+				if current, seen := flaggedScores[id]; !seen || score < current {
+					flaggedScores[id] = score
+				}
+			}
 		}
 	}
 	d.Scores = merged
-	if hits := judgeScores(merged, p.asked, m.Threshold, m.NearMissBand); len(hits) > 0 {
+	hits := judgeScores(merged, p.asked, m.Threshold, m.NearMissBand)
+	if moderation {
+		hits = nil
+		for category, score := range flaggedScores {
+			hits = append(hits, modelHit{category: category, score: score})
+		}
+		slices.SortFunc(hits, func(a, b modelHit) int {
+			if order := cmp.Compare(a.score, b.score); order != 0 {
+				return order
+			}
+			return strings.Compare(a.category, b.category)
+		})
+	}
+	if len(hits) > 0 {
 		d.JudgmentSource = "model"
 		d.JudgmentVersion = model.RiskJudgmentVersion
 		d.Deduction = model.RiskViolationDeduction
@@ -387,22 +453,44 @@ func evaluate(ctx context.Context, ev evaluation) (d Decision) {
 		seen := make(map[string]bool, len(hits))
 		for _, hit := range hits {
 			category := "custom"
-			for _, question := range p.asked {
-				if question.id == hit.category {
-					category = question.category
-					break
+			if moderation {
+				category = "safety"
+				if hit.category == "sexual" || hit.category == "sexual/minors" {
+					category = "nsfw"
+				}
+			} else {
+				for _, question := range p.asked {
+					if question.id == hit.category {
+						category = question.category
+						break
+					}
 				}
 			}
 			if !seen[category] {
 				seen[category] = true
-				d.Assessments = append(d.Assessments, model.RiskAssessment{Category: category, SafetyScore: hit.score, AppliedDeduction: model.RiskViolationDeduction})
+				assessment := model.RiskAssessment{Category: category, SafetyScore: hit.score, AppliedDeduction: model.RiskViolationDeduction}
+				if moderation {
+					assessment.Reason = "OpenAI Moderation flagged " + hit.category
+				}
+				d.Assessments = append(d.Assessments, assessment)
+			} else if moderation {
+				for i := range d.Assessments {
+					if d.Assessments[i].Category == category {
+						d.Assessments[i].Reason += ", " + hit.category
+						break
+					}
+				}
 			}
 		}
 		d.AutoConfirm = ev.attempt.TokenID > 0 && payload.Behavior.Enabled && payload.Behavior.AutoConfirmEnabled && failure == nil && freshJudgments &&
 			reviewCovered && d.Coverage != CoverageIncomplete && hits[0].score < m.AutoConfirmThreshold &&
 			payload.Evidence.StoreReviewEvidence && d.ReviewEvidence != "" && in.OriginalRequest != "" && !in.OriginalRequestTruncated
 		category := d.Assessments[0].Category
-		return blockDecision(d, LayerModel, "model", category, category, d.Rule)
+		keyword := category
+		if moderation {
+			keyword = hits[0].category
+		}
+		return blockDecision(d, LayerModel, "model", category, keyword, d.Rule)
 	}
 	if failure != nil {
 		detail := failure.Error()
@@ -410,6 +498,9 @@ func evaluate(ctx context.Context, ev evaluation) (d Decision) {
 			detail = unavail.Detail
 		}
 		return failureDecision(d, payload, LayerModel, ReasonUnavailable, detail)
+	}
+	if moderation && (moderationUncovered || d.Coverage == CoverageIncomplete) {
+		return failureDecision(d, payload, LayerModel, ReasonProviderUnsupported, "moderation cannot clear this review signal")
 	}
 	d.Layer = LayerModel
 	switch {
@@ -427,6 +518,8 @@ func evaluate(ctx context.Context, ev evaluation) (d Decision) {
 
 type documentVerdict struct {
 	scores map[string]float64
+	flags  map[string]bool
+	model  string
 	cached bool
 	err    error
 }
@@ -446,20 +539,23 @@ func classifyDocuments(ctx context.Context, ev evaluation, provider ProviderConf
 			if ev.useCache && m.DedupSec > 0 {
 				key = verdictKey(ev, provider, modelName, document)
 				if cached, found, _ := verdictCache.Get(key); found {
-					verdicts[i] = documentVerdict{scores: cached.scores, cached: true}
+					verdicts[i] = documentVerdict{scores: cached.scores, flags: cached.flags, model: cached.model, cached: true}
 					return
 				}
 			}
 			req := ClassifyRequest{State: document, Questions: ev.binding.Policy.asked, Model: modelName, MaxAttempts: m.MaxAttempts}
+			if provider.Type == "openai" {
+				req.Questions = nil
+			}
 			result, err := classifier.Classify(callCtx, req)
 			if err != nil {
 				verdicts[i] = documentVerdict{err: err}
 				return
 			}
 			if key != "" {
-				verdictCache.SetWithTTL(key, cachedVerdict{scores: result.Scores, model: modelName}, time.Duration(m.DedupSec)*time.Second)
+				verdictCache.SetWithTTL(key, cachedVerdict{scores: result.Scores, flags: result.Flags, model: result.Model}, time.Duration(m.DedupSec)*time.Second)
 			}
-			verdicts[i] = documentVerdict{scores: result.Scores}
+			verdicts[i] = documentVerdict{scores: result.Scores, flags: result.Flags, model: result.Model}
 		})
 	}
 	wg.Wait()
@@ -549,6 +645,9 @@ func recordReviewCandidate(ev evaluation, d Decision) {
 	// context must not inherit an earlier human dismissal or model verdict.
 	incidentHash := sha256.Sum256([]byte(rec.IncidentKey + "\x00" + ev.input.IncidentContextDigest))
 	rec.IncidentKey = hex.EncodeToString(incidentHash[:])
+	if d.ModerationIncidentKey != "" {
+		rec.IncidentKey = d.ModerationIncidentKey
+	}
 	policy := payload.Behavior.Policy()
 	if ev.snapshot != nil {
 		policy.ExpectedChangeRevision = ev.snapshot.ChangeRevision

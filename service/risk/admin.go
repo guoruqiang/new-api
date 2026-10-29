@@ -336,13 +336,16 @@ func validateProvider(in ProviderInput) []*common.Message {
 		problems = append(problems, common.NewMessage("Name is required and allows at most 64 characters"))
 	}
 	if _, ok := presetFor(in.ProviderType); !ok {
-		problems = append(problems, common.NewMessage("Provider type must be jev, laya or modernbert"))
+		problems = append(problems, common.NewMessage("Provider type must be jev, laya, modernbert or openai"))
 	}
-	if in.BaseURL == "" || len(in.BaseURL) > 300 || !validHTTPURL(in.BaseURL) {
+	if in.BaseURL == "" || len(in.BaseURL) > 300 || !validHTTPURL(in.BaseURL) || in.ProviderType == "openai" && OpenAIModerationURL(in.BaseURL) == "" {
 		problems = append(problems, common.NewMessage("Base URL must be an http(s) URL of at most 300 characters"))
 	}
 	if len([]rune(in.Model)) > 120 {
 		problems = append(problems, common.NewMessage("{{field}} allows at most {{max}} characters", map[string]any{"field": "model", "max": 120}))
+	}
+	if in.ProviderType == "openai" && in.Model != "" && !strings.HasPrefix(in.Model, "omni-moderation-") {
+		problems = append(problems, common.NewMessage("OpenAI Moderation requires an omni-moderation model"))
 	}
 	if in.Proxy != "" {
 		_, err := common.ParseProxyURLStrict(in.Proxy)

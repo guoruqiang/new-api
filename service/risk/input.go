@@ -446,6 +446,9 @@ func ExtractInput(body []byte, headers http.Header) (*Input, error) {
 	in.IncidentContextDigest = hex.EncodeToString(incidentHash[:])
 	in.OriginalRequest, in.OriginalRequestHash, in.OriginalRequestTruncated = originalRoleText(doc)
 	in.Model, _ = doc["model"].(string)
+	if len(in.UserAuthored) > 0 {
+		in.currentUserTruncated = utf8.RuneCountInString(in.UserAuthored[len(in.UserAuthored)-1]) > auditTextBudget
+	}
 	if tail, cut := recentTexts(in.Systems, auditTextBudget, true); cut {
 		in.modelSystems = tail
 	}

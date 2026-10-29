@@ -97,6 +97,7 @@ export const LABELS: Record<string, string> = {
   upstream: 'Upstream response',
   gpt_skipped: 'GPT model skipped',
   unavailable: 'Decision model unavailable',
+  provider_unsupported: 'Provider does not cover this review signal',
   store_unavailable: 'Risk storage unavailable',
   coverage_incomplete: 'Incomplete coverage',
   harvest_needle: 'Harvest wrapper match',

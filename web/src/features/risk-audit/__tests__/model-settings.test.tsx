@@ -28,6 +28,248 @@ import { policySchema } from '../lib/schema'
 import type { Policy } from '../types'
 import { config, defaults, policy, row, renderRisk } from './fixtures'
 
+const openaiPreset = {
+  id: 'openai',
+  label: 'OpenAI Moderation',
+  default_base_url: 'https://api.openai.com',
+  default_model: 'omni-moderation-latest',
+}
+const decisionProviders = [
+  {
+    id: 1,
+    name: 'Jev',
+    provider_type: 'jev',
+    base_url: 'https://api.example.test',
+    model: 'jev-latest',
+    proxy: '',
+    api_key_count: 1,
+    key_states: [],
+  },
+  {
+    id: 2,
+    name: 'OpenAI Moderation',
+    provider_type: 'openai',
+    base_url: openaiPreset.default_base_url,
+    model: openaiPreset.default_model,
+    proxy: '',
+    api_key_count: 1,
+    key_states: [],
+  },
+]
+
+it('selects and saves the OpenAI moderation protocol with its endpoint and model defaults', async () => {
+  const write = vi
+    .spyOn(api, 'request')
+    .mockResolvedValue({ data: { success: true, data: decisionProviders[1] } })
+  const user = userEvent.setup()
+  renderRisk(
+    <ProviderCard
+      presets={[...defaults.providers, openaiPreset]}
+      canWrite
+      onSaved={() => {}}
+    />
+  )
+  await user.type(
+    screen.getByRole('textbox', { name: 'Name' }),
+    'Official moderation'
+  )
+  await user.selectOptions(
+    screen.getByRole('combobox', { name: 'Provider type' }),
+    'openai'
+  )
+  expect(screen.getByRole('textbox', { name: 'Base URL' })).toHaveValue(
+    openaiPreset.default_base_url
+  )
+  expect(screen.getByRole('textbox', { name: 'Model' })).toHaveValue(
+    openaiPreset.default_model
+  )
+  await user.click(screen.getByRole('button', { name: 'Save provider' }))
+  await waitFor(() =>
+    expect(write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: '/api/risk/providers',
+        data: expect.objectContaining({
+          name: 'Official moderation',
+          provider_type: 'openai',
+          base_url: openaiPreset.default_base_url,
+          model: openaiPreset.default_model,
+        }),
+      })
+    )
+  )
+})
+
+it('offers only compatible moderation models from the OpenAI catalog', async () => {
+  vi.spyOn(api, 'request').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        models: [
+          'omni-moderation-latest',
+          'omni-moderation-2024-09-26',
+          'gpt-example',
+          'text-moderation-latest',
+        ],
+      },
+    },
+  })
+  const user = userEvent.setup()
+  renderRisk(
+    <ProviderCard
+      provider={decisionProviders[1]}
+      presets={[...defaults.providers, openaiPreset]}
+      canWrite
+      onSaved={() => {}}
+    />
+  )
+  await user.click(screen.getByRole('button', { name: 'Fetch models' }))
+  const models = await screen.findByRole('combobox', {
+    name: 'Available models',
+  })
+  expect(
+    within(models)
+      .getAllByRole('option')
+      .map((option) => option.textContent)
+  ).toEqual(['omni-moderation-latest', 'omni-moderation-2024-09-26'])
+})
+
+it('blocks an incompatible saved model override until the administrator clears or corrects it', async () => {
+  const write = vi.spyOn(api, 'request').mockResolvedValue({
+    data: {
+      success: true,
+      data: { ...row, revision: 2, config_revision: 4 },
+    },
+  })
+  const user = userEvent.setup()
+  renderRisk(
+    <PolicySettings
+      config={config}
+      row={row}
+      initial={{
+        ...policy,
+        model: {
+          ...policy.model,
+          enabled: true,
+          provider_id: 2,
+          model: 'english',
+        },
+      }}
+      defaults={defaults}
+      providers={decisionProviders}
+      view='model'
+      canWrite
+      onSaved={() => {}}
+    />
+  )
+  expect(screen.getByRole('textbox', { name: 'Model' })).toHaveValue('english')
+  expect(
+    screen.getByText('OpenAI Moderation requires an omni-moderation model')
+  ).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Save and enable' })).toBeDisabled()
+  expect(write).not.toHaveBeenCalled()
+  await user.clear(screen.getByRole('textbox', { name: 'Model' }))
+  await user.click(screen.getByRole('button', { name: 'Save and enable' }))
+  await waitFor(() =>
+    expect(write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            model: expect.objectContaining({ provider_id: 2, model: '' }),
+          }),
+        }),
+      })
+    )
+  )
+})
+
+it('uses OpenAI fixed categories while preserving hidden custom questions and clearing the previous model override', async () => {
+  const write = vi.spyOn(api, 'request').mockResolvedValue({
+    data: {
+      success: true,
+      data: { ...row, revision: 2, config_revision: 4 },
+    },
+  })
+  const user = userEvent.setup()
+  const initial: Policy = {
+    ...policy,
+    model: {
+      ...policy.model,
+      enabled: true,
+      provider_id: 1,
+      model: 'jev-latest',
+      custom_instruction: 'Keep this custom policy',
+      questions: defaults.builtin_questions,
+    },
+  }
+  renderRisk(
+    <PolicySettings
+      config={config}
+      row={row}
+      initial={initial}
+      defaults={defaults}
+      providers={decisionProviders}
+      view='model'
+      canWrite
+      onSaved={() => {}}
+    />
+  )
+  await user.selectOptions(
+    screen.getByRole('combobox', { name: 'Decision provider' }),
+    '2'
+  )
+  expect(screen.getByRole('textbox', { name: 'Model' })).toHaveValue('')
+  expect(screen.getByRole('textbox', { name: 'Model' })).toHaveAttribute(
+    'placeholder',
+    'omni-moderation-latest'
+  )
+  expect(
+    screen.queryByRole('textbox', { name: 'Additional safety question' })
+  ).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('spinbutton', { name: 'Safety threshold' })
+  ).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('spinbutton', { name: 'Near-miss tolerance' })
+  ).not.toBeInTheDocument()
+  expect(
+    screen.getByRole('spinbutton', {
+      name: 'Automatic confirmation safety threshold',
+    })
+  ).toBeVisible()
+  expect(
+    screen.getByText(
+      /Jailbreak, distillation and custom intent rules are not covered/
+    )
+  ).toBeVisible()
+  await user.click(screen.getByRole('button', { name: 'Save settings' }))
+  await waitFor(() =>
+    expect(write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            model: expect.objectContaining({
+              provider_id: 2,
+              model: '',
+              custom_instruction: initial.model.custom_instruction,
+              questions: defaults.builtin_questions,
+            }),
+          }),
+        }),
+      })
+    )
+  )
+  await user.selectOptions(
+    screen.getByRole('combobox', { name: 'Decision provider' }),
+    '1'
+  )
+  expect(
+    screen.getByRole('textbox', { name: 'Additional safety question' })
+  ).toHaveValue('Keep this custom policy')
+  expect(
+    screen.getByRole('spinbutton', { name: 'Safety threshold' })
+  ).toHaveValue(policy.model.threshold)
+})
+
 it('requires a configured provider before an enabled model can be saved', async () => {
   const write = vi.spyOn(api, 'request')
   const user = userEvent.setup()
