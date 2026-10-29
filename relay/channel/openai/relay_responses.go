@@ -95,14 +95,21 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			data = string(rewriteSGLangResponsesCreatedAt(info, []byte(data), "response.created_at", streamResponse.Response.CreatedAt))
 		}
 		switch streamResponse.Type {
-		case "response.completed", "response.incomplete", "response.failed":
+		case "response.completed", "response.done", "response.incomplete", "response.failed":
 			if reason, refused := risk.ClassifyResponsesPayload(common.StringToByteSlice(data)); refused {
 				info.PerformanceBusinessRejection = true
 				common.SetContextKey(c, constant.ContextKeyAdminRejectReason, reason)
 			}
 		}
-		sendResponsesStreamData(c, streamResponse, data)
 		accumulator.Observe(&streamResponse, common.StringToByteSlice(data))
+		if err := helper.ResponseChunkData(c, streamResponse, data); err != nil {
+			sr.Stop(err)
+			return
+		}
+		if (streamResponse.Type == "response.completed" || streamResponse.Type == "response.done") &&
+			streamResponse.Response != nil && info.StreamStatus.ResponseOutcome() == string(relaycommon.ResponseOutcomeCompleted) {
+			sr.Done()
+		}
 	})
 
 	common.SetContextKey(c, constant.ContextKeyResponseStreamStatus, info.StreamStatus)

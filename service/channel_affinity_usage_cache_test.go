@@ -3,14 +3,22 @@ package service
 import (
 	"fmt"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+var channelAffinityTestSeq atomic.Int64
+
+func affinityTestKeys(t *testing.T) (string, string) {
+	t.Helper()
+	key := fmt.Sprintf("%s:%d", t.Name(), channelAffinityTestSeq.Add(1))
+	return key, key
+}
 
 func buildChannelAffinityStatsContextForTest(t *testing.T, ruleName, usingGroup, keyFP string) *gin.Context {
 	t.Helper()
@@ -36,9 +44,8 @@ func buildChannelAffinityStatsContextForTest(t *testing.T, ruleName, usingGroup,
 }
 
 func TestObserveChannelAffinityUsageCacheByRelayFormat_ClaudeMode(t *testing.T) {
-	ruleName := t.Name()
+	ruleName, keyFP := affinityTestKeys(t)
 	usingGroup := "default"
-	keyFP := "test-key"
 	ctx := buildChannelAffinityStatsContextForTest(t, ruleName, usingGroup, keyFP)
 
 	usage := &dto.Usage{
@@ -53,19 +60,18 @@ func TestObserveChannelAffinityUsageCacheByRelayFormat_ClaudeMode(t *testing.T) 
 	ObserveChannelAffinityUsageCacheByRelayFormat(ctx, usage, types.RelayFormatClaude)
 	stats := GetChannelAffinityUsageCacheStats(ruleName, usingGroup, keyFP)
 
-	assert.EqualValues(t, 1, stats.Total)
-	assert.EqualValues(t, 1, stats.Hit)
-	assert.EqualValues(t, 100, stats.PromptTokens)
-	assert.EqualValues(t, 40, stats.CompletionTokens)
-	assert.EqualValues(t, 140, stats.TotalTokens)
-	assert.EqualValues(t, 30, stats.CachedTokens)
-	assert.Equal(t, cacheTokenRateModeCachedOverPromptPlusCached, stats.CachedTokenRateMode)
+	require.EqualValues(t, 1, stats.Total)
+	require.EqualValues(t, 1, stats.Hit)
+	require.EqualValues(t, 100, stats.PromptTokens)
+	require.EqualValues(t, 40, stats.CompletionTokens)
+	require.EqualValues(t, 140, stats.TotalTokens)
+	require.EqualValues(t, 30, stats.CachedTokens)
+	require.Equal(t, cacheTokenRateModeCachedOverPromptPlusCached, stats.CachedTokenRateMode)
 }
 
 func TestObserveChannelAffinityUsageCacheByRelayFormat_MixedMode(t *testing.T) {
-	ruleName := t.Name()
+	ruleName, keyFP := affinityTestKeys(t)
 	usingGroup := "default"
-	keyFP := "test-key"
 	ctx := buildChannelAffinityStatsContextForTest(t, ruleName, usingGroup, keyFP)
 
 	openAIUsage := &dto.Usage{
@@ -85,17 +91,16 @@ func TestObserveChannelAffinityUsageCacheByRelayFormat_MixedMode(t *testing.T) {
 	ObserveChannelAffinityUsageCacheByRelayFormat(ctx, claudeUsage, types.RelayFormatClaude)
 	stats := GetChannelAffinityUsageCacheStats(ruleName, usingGroup, keyFP)
 
-	assert.EqualValues(t, 2, stats.Total)
-	assert.EqualValues(t, 2, stats.Hit)
-	assert.EqualValues(t, 180, stats.PromptTokens)
-	assert.EqualValues(t, 30, stats.CachedTokens)
-	assert.Equal(t, cacheTokenRateModeMixed, stats.CachedTokenRateMode)
+	require.EqualValues(t, 2, stats.Total)
+	require.EqualValues(t, 2, stats.Hit)
+	require.EqualValues(t, 180, stats.PromptTokens)
+	require.EqualValues(t, 30, stats.CachedTokens)
+	require.Equal(t, cacheTokenRateModeMixed, stats.CachedTokenRateMode)
 }
 
 func TestObserveChannelAffinityUsageCacheByRelayFormat_UnsupportedModeKeepsEmpty(t *testing.T) {
-	ruleName := t.Name()
+	ruleName, keyFP := affinityTestKeys(t)
 	usingGroup := "default"
-	keyFP := "test-key"
 	ctx := buildChannelAffinityStatsContextForTest(t, ruleName, usingGroup, keyFP)
 
 	usage := &dto.Usage{
@@ -108,8 +113,8 @@ func TestObserveChannelAffinityUsageCacheByRelayFormat_UnsupportedModeKeepsEmpty
 	ObserveChannelAffinityUsageCacheByRelayFormat(ctx, usage, types.RelayFormatGemini)
 	stats := GetChannelAffinityUsageCacheStats(ruleName, usingGroup, keyFP)
 
-	assert.EqualValues(t, 1, stats.Total)
-	assert.EqualValues(t, 1, stats.Hit)
-	assert.EqualValues(t, 25, stats.CachedTokens)
-	assert.Equal(t, "", stats.CachedTokenRateMode)
+	require.EqualValues(t, 1, stats.Total)
+	require.EqualValues(t, 1, stats.Hit)
+	require.EqualValues(t, 25, stats.CachedTokens)
+	require.Equal(t, "", stats.CachedTokenRateMode)
 }
