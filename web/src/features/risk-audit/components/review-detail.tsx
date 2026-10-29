@@ -42,6 +42,8 @@ import {
   LABELS,
   NOTIFICATION_ERROR_LABELS,
   NOTIFICATION_LABELS,
+  SEVERITY_LABELS,
+  SEVERITY_STATUS_LABELS,
 } from '../constants'
 import { reviewResolveSchema } from '../lib/schema'
 import type { RiskReviewDetail } from '../types'
@@ -117,8 +119,7 @@ export function ReviewDetail(props: {
     !!block &&
     !block.released_at &&
     (!block.expires_at || block.expires_at * 1000 > Date.now())
-  const categoryPoints = ['nsfw', 'jailbreak'].includes(values.category) ? 3 : 1
-  const confirmationPoints = review?.mode === 'observe' ? 0 : categoryPoints
+  const confirmedBan = action?.type === 'ban' && review?.status === 'confirmed'
   const labels = {
     confirm: 'Confirm violation',
     dismiss: 'Dismiss candidate',
@@ -126,10 +127,10 @@ export function ReviewDetail(props: {
     ban: 'Ban this API token',
   }
   let actionDescription =
-    'Check the saved evidence and category before recording this review. Observation candidates do not add points.'
+    'Check the saved evidence and category before recording this review. Observation confirmations do not change reputation.'
   if (action?.type === 'revoke') {
     actionDescription =
-      'Revoking removes these points, clears related refusal records, and releases an automatic block that depended on this incident.'
+      'Revoking removes this deduction, recalculates reputation, clears related refusal records, and releases an automatic block that depended on this incident.'
   }
   if (action?.type === 'ban') {
     actionDescription =
@@ -176,11 +177,9 @@ export function ReviewDetail(props: {
               </dd>
             </div>
             <div>
-              <dt className='text-muted-foreground'>{t('Screening score')}</dt>
-              <dd>{formatNumber(review.screening_score ?? 0, locale)}</dd>
-            </div>
-            <div>
-              <dt className='text-muted-foreground'>{t('Screening reason')}</dt>
+              <dt className='text-muted-foreground'>
+                {t('Model review trigger')}
+              </dt>
               <dd>
                 {t(
                   LABELS[review.screening_reason] ?? review.screening_reason
@@ -219,8 +218,12 @@ export function ReviewDetail(props: {
               <dd>{t(LABELS[review.category] ?? review.category) || '—'}</dd>
             </div>
             <div>
-              <dt className='text-muted-foreground'>{t('Confirmed points')}</dt>
-              <dd>{formatNumber(review.points, locale)}</dd>
+              <dt className='text-muted-foreground'>
+                {t('Actual reputation deduction')}
+              </dt>
+              <dd aria-label={t('Actual reputation deduction')}>
+                {formatNumber(review.deduction, locale)}
+              </dd>
             </div>
             <div>
               <dt className='text-muted-foreground'>{t('Reason')}</dt>
@@ -234,6 +237,27 @@ export function ReviewDetail(props: {
               <dt className='text-muted-foreground'>{t('Coverage')}</dt>
               <dd>{t(LABELS[review.coverage] ?? review.coverage) || '—'}</dd>
             </div>
+            {review.severity && (
+              <div>
+                <dt className='text-muted-foreground'>{t('Severity')}</dt>
+                <dd>
+                  {t(SEVERITY_LABELS[review.severity] ?? review.severity)}
+                </dd>
+              </div>
+            )}
+            {review.severity_status && (
+              <div>
+                <dt className='text-muted-foreground'>
+                  {t('Severity assessment')}
+                </dt>
+                <dd>
+                  {t(
+                    SEVERITY_STATUS_LABELS[review.severity_status] ??
+                      review.severity_status
+                  )}
+                </dd>
+              </div>
+            )}
           </dl>
           {review.notification_error && (
             <p className='text-destructive text-sm'>
@@ -250,20 +274,46 @@ export function ReviewDetail(props: {
           </p>
           <section
             className='space-y-2 rounded-lg border p-3'
-            aria-label={t('Behavior scoring')}
+            aria-label={t('User reputation')}
           >
             <p className='font-medium'>
-              {t('Confirmed score: {{score}} / {{threshold}}', {
-                score: formatNumber(detail.score.score, locale),
-                threshold: formatNumber(detail.score.threshold, locale),
+              {t('User reputation: {{score}} / {{initial}}', {
+                score: formatNumber(detail.reputation.score, locale),
+                initial: formatNumber(detail.reputation.initial_score, locale),
               })}
             </p>
             <p className='text-muted-foreground text-sm'>
-              {t('Score window: {{minutes}} minutes', {
-                minutes: formatNumber(detail.score.window_minutes, locale),
-              })}{' '}
-              · {t('Confirmed events')}:{' '}
-              {formatNumber(detail.score.confirmed_events, locale)}
+              {t('Automatic suspension threshold')}:{' '}
+              {formatNumber(detail.reputation.ban_threshold, locale)} ·{' '}
+              {t('Confirmed events')}:{' '}
+              {formatNumber(detail.reputation.confirmed_events, locale)}
+            </p>
+            <p className='text-muted-foreground text-sm'>
+              {t('Total deducted')}:{' '}
+              {formatNumber(detail.reputation.total_deducted, locale)} ·{' '}
+              {t('Recovered points')}:{' '}
+              {formatNumber(detail.reputation.recovered_points, locale)}
+            </p>
+            <p className='text-muted-foreground text-sm'>
+              {t('Last confirmed violation')}:{' '}
+              {detail.reputation.last_violation_at
+                ? new Date(
+                    detail.reputation.last_violation_at * 1000
+                  ).toLocaleString(locale)
+                : '—'}
+            </p>
+            <p className='text-muted-foreground text-sm'>
+              {t('Next reputation recovery')}:{' '}
+              {detail.reputation.next_recovery_at
+                ? new Date(
+                    detail.reputation.next_recovery_at * 1000
+                  ).toLocaleString(locale)
+                : '—'}
+            </p>
+            <p className='text-muted-foreground text-sm'>
+              {t(
+                'Reputation is shared by this user across API tokens. Automatic suspension only affects the token involved in the new violation.'
+              )}
             </p>
             <p className='text-sm'>
               {t(
@@ -311,7 +361,7 @@ export function ReviewDetail(props: {
             <Alert>
               <AlertDescription>
                 {t(
-                  'This candidate came from observation mode. Confirming it records the review only: 0 points and no automatic block.'
+                  'This candidate came from observation mode. Confirmation records the review without deducting reputation or automatically suspending a token.'
                 )}
               </AlertDescription>
             </Alert>
@@ -397,6 +447,22 @@ export function ReviewDetail(props: {
               </p>
             )}
           </section>
+          {review.assessments && (
+            <section
+              className='space-y-2'
+              aria-label={t('Model category assessments')}
+            >
+              <h3 className='font-medium'>{t('Model category assessments')}</h3>
+              <p className='text-muted-foreground text-sm'>
+                {t(
+                  'Saved model assessments are shown as recorded. Historical severity or deduction values may differ from the actual reputation deduction above.'
+                )}
+              </p>
+              <pre className='bg-muted max-h-80 overflow-auto rounded-lg p-3 text-xs break-words whitespace-pre-wrap'>
+                {review.assessments}
+              </pre>
+            </section>
+          )}
           {review.scores && (
             <section className='space-y-2'>
               <h3 className='font-medium'>{t('Question scores')}</h3>
@@ -541,19 +607,19 @@ export function ReviewDetail(props: {
             <Choice
               label='Category'
               value={values.category}
-              disabled={submitting}
+              disabled={submitting || confirmedBan}
               options={reviewResolveSchema.shape.category.options.map(
                 (category) => ({
                   value: category,
                   label: LABELS[category] ?? category,
                 })
               )}
-              onChange={(category) =>
+              onChange={(category) => {
                 form.setValue(
                   'category',
                   reviewResolveSchema.shape.category.parse(category)
                 )
-              }
+              }}
             />
           )}
           {action?.type === 'ban' && (
@@ -583,9 +649,9 @@ export function ReviewDetail(props: {
           )}
           {action?.type === 'confirm' && (
             <p className='text-muted-foreground text-sm'>
-              {t('Points on confirmation: {{points}}', {
-                points: formatNumber(confirmationPoints, locale),
-              })}
+              {t(
+                'Each distinct confirmed violation deducts 20 reputation points. Observation confirmations do not change reputation.'
+              )}
             </p>
           )}
           <Field label='Review note' hint='Required'>

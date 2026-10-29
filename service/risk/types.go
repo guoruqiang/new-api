@@ -4,7 +4,10 @@
 // upstream attempt.
 package risk
 
-import "github.com/QuantumNous/new-api/relaykit/types"
+import (
+	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relaykit/types"
+)
 
 const (
 	ModeObserve = "observe"
@@ -189,11 +192,14 @@ type Decision struct {
 	Reviewed bool `json:"reviewed,omitempty"`
 	// ReviewEvidence contains the bounded, role-labelled text used by the
 	// detector. It is stored only when the policy explicitly allows it.
-	ReviewEvidence  string `json:"-"`
-	ScreeningScore  int    `json:"screening_score"`
-	ScreeningReason string `json:"screening_reason"`
-	ModelTriggered  bool   `json:"model_triggered"`
-	JudgmentSource  string `json:"judgment_source,omitempty"`
+	ReviewEvidence  string                 `json:"-"`
+	ScreeningScore  int                    `json:"screening_score"`
+	ScreeningReason string                 `json:"screening_reason"`
+	ModelTriggered  bool                   `json:"model_triggered"`
+	JudgmentSource  string                 `json:"judgment_source,omitempty"`
+	Assessments     []model.RiskAssessment `json:"assessments,omitempty"`
+	Deduction       int                    `json:"deduction"`
+	JudgmentVersion int                    `json:"judgment_version"`
 	// Automatic confirmation requires fresh, successful judgments of every
 	// submitted document, never a replay, partial judgment or local rule.
 	AutoConfirm bool `json:"-"`

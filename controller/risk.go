@@ -316,7 +316,7 @@ func GetRiskReview(c *gin.Context) {
 	if binding.Policy != nil {
 		payload = binding.Policy.Payload
 	}
-	score, err := model.GetRiskTokenBehaviorScore(row.Namespace, row.UserId, row.TokenId, payload.Behavior.Policy(), common.GetTimestamp())
+	reputation, err := model.GetRiskUserReputation(row.UserId, common.GetTimestamp())
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -327,7 +327,7 @@ func GetRiskReview(c *gin.Context) {
 		return
 	}
 	c.Header("Cache-Control", "no-store")
-	common.ApiSuccess(c, gin.H{"review": row, "score": score, "block": block, "behavior_enabled": payload.Behavior.Enabled, "auto_block_enabled": payload.Behavior.AutoBlockEnabled, "auto_confirm_enabled": payload.Behavior.AutoConfirmEnabled, "mode": binding.Mode})
+	common.ApiSuccess(c, gin.H{"review": row, "reputation": reputation, "block": block, "behavior_enabled": payload.Behavior.Enabled, "auto_block_enabled": payload.Behavior.AutoBlockEnabled, "auto_confirm_enabled": payload.Behavior.AutoConfirmEnabled, "mode": binding.Mode})
 }
 
 func readRiskReview(c *gin.Context) (*model.RiskReview, bool) {
@@ -390,7 +390,7 @@ func ResolveRiskReview(c *gin.Context) {
 			riskWriteError(c, model.ErrRiskRevisionConflict)
 			return
 		}
-		if !slices.Contains([]string{"nsfw", "jailbreak", "reverse", "pentest", "cyber", "distill", "custom", "safety", "crack", "refusal"}, body.Category) {
+		if !slices.Contains([]string{"nsfw", "jailbreak", "reverse", "pentest", "cyber", "distill", "custom", "safety", "crack"}, body.Category) {
 			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid risk review category"))
 			return
 		}
@@ -467,7 +467,7 @@ func ResolveRiskReview(c *gin.Context) {
 		return
 	}
 	c.Header("Cache-Control", "no-store")
-	common.ApiSuccess(c, gin.H{"review": result.Review, "score": result.Score, "block": result.Block, "behavior_enabled": payload.Behavior.Enabled, "auto_block_enabled": payload.Behavior.AutoBlockEnabled, "auto_confirm_enabled": payload.Behavior.AutoConfirmEnabled, "mode": binding.Mode})
+	common.ApiSuccess(c, gin.H{"review": result.Review, "reputation": result.Reputation, "block": result.Block, "behavior_enabled": payload.Behavior.Enabled, "auto_block_enabled": payload.Behavior.AutoBlockEnabled, "auto_confirm_enabled": payload.Behavior.AutoConfirmEnabled, "mode": binding.Mode})
 }
 
 func GetRiskEvent(c *gin.Context) {

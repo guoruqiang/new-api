@@ -203,7 +203,11 @@ export type RiskReview = {
   evidence_truncated: boolean
   coverage: string
   status: 'pending' | 'confirmed' | 'dismissed' | 'revoked'
-  points: number
+  deduction: number
+  severity: string
+  severity_status: string
+  assessments: string
+  judgment_version: number
   revision: number
   reviewed_at: number
   reviewed_by: number
@@ -212,12 +216,15 @@ export type RiskReview = {
 }
 export type RiskReviewDetail = {
   review: RiskReview
-  score: {
+  reputation: {
     score: number
+    initial_score: number
+    ban_threshold: number
     confirmed_events: number
-    window_minutes: number
-    threshold: number
-    block_ttl_minutes: number
+    total_deducted: number
+    recovered_points: number
+    last_violation_at: number
+    next_recovery_at: number
   }
   block?: MemoryRow | null
   behavior_enabled: boolean

@@ -38,14 +38,6 @@ func (dbStore) CreateModelReview(rec *model.RiskReview, policy model.RiskBehavio
 	return model.CreateRiskModelReview(rec, policy, autoConfirm, allowAutoBlock, now)
 }
 
-type ScreeningStore interface {
-	ScreenSignal(*model.RiskSignal, model.RiskScreeningPolicy, int64) (model.RiskScreeningResult, error)
-}
-
-func (dbStore) ScreenSignal(rec *model.RiskSignal, policy model.RiskScreeningPolicy, now int64) (model.RiskScreeningResult, error) {
-	return model.RecordRiskSignal(rec, policy, now)
-}
-
 func (dbStore) ActiveTokenBlock(userID, tokenID int, now int64) (*model.RiskSubjectBlock, error) {
 	return model.GetActiveRiskTokenBlock(userID, tokenID, now)
 }
@@ -69,13 +61,6 @@ func (dbStore) Remember(rec *model.RiskRefusal) error   { return model.RememberR
 
 // readOnlyStore lets previews read records without writing any.
 type readOnlyStore struct{ Store }
-
-func (readOnlyStore) ScreenSignal(rec *model.RiskSignal, policy model.RiskScreeningPolicy, now int64) (model.RiskScreeningResult, error) {
-	if rec.UserId <= 0 || rec.TokenId <= 0 {
-		return model.RiskScreeningResult{Score: rec.Points, DistinctSignals: 1, ShouldAudit: rec.Points >= policy.Threshold}, nil
-	}
-	return model.PreviewRiskSignal(rec, policy, now)
-}
 
 func (readOnlyStore) Block(*model.RiskSubjectBlock) error { return nil }
 func (readOnlyStore) HitBlock(int, int64) error           { return nil }

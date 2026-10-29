@@ -76,10 +76,6 @@ export function PolicySettings(props: {
   const form = useForm<Policy>({
     defaultValues: {
       ...props.initial,
-      screening: {
-        ...props.defaults.policy.screening,
-        ...props.initial.screening,
-      },
       model: {
         ...props.defaults.policy.model,
         ...props.initial.model,
@@ -281,45 +277,21 @@ export function PolicySettings(props: {
           </FieldSet>
           <Separator />
           <FieldSet className='min-w-0 gap-3'>
-            <FieldLegend variant='label'>{t('Model screening')}</FieldLegend>
+            <FieldLegend variant='label'>{t('User reputation')}</FieldLegend>
             <p className='text-muted-foreground text-sm'>
               {t(
-                'Keywords and short-term signals accumulate screening points. The decision model runs only when the screening threshold is reached; these points are not confirmed violations.'
+                'User reputation starts at 100 and is shared across tokens. Each distinct confirmed violation deducts 20 points; the automatic suspension threshold is 0.'
               )}
             </p>
-            <FieldGroup className='grid gap-4 sm:grid-cols-2'>
-              <NumberField
-                disabled={disabled}
-                label='Screening points required for model review'
-                value={value.screening.threshold}
-                min={1}
-                max={100}
-                onChange={(threshold) => update('screening', { threshold })}
-              />
-              <NumberField
-                disabled={disabled}
-                label='Screening window (minutes)'
-                value={value.screening.window_minutes}
-                min={1}
-                max={1440}
-                onChange={(window_minutes) =>
-                  update('screening', { window_minutes })
-                }
-              />
-            </FieldGroup>
-          </FieldSet>
-          <Separator />
-          <FieldSet className='min-w-0 gap-3'>
-            <FieldLegend variant='label'>{t('Behavior scoring')}</FieldLegend>
             <p className='text-muted-foreground text-sm'>
               {t(
-                'Confirmed explicit content and jailbreak violations add 3 points; other categories add 1. Only enforced requests count. Repeated evidence is deduplicated within the score window.'
+                'In enforcement mode, a model-confirmed violation blocks the current request immediately. Reputation only delays token suspension; it does not permit violating requests.'
               )}
             </p>
             <FieldGroup className='grid gap-4 sm:grid-cols-2'>
               <Toggle
                 disabled={disabled}
-                label='Enable behavior scoring'
+                label='Enable user reputation'
                 checked={b.enabled}
                 onChange={(enabled) => update('behavior', { enabled })}
               />
@@ -342,28 +314,10 @@ export function PolicySettings(props: {
             </FieldGroup>
             <p className='text-muted-foreground text-sm'>
               {t(
-                'Automatic confirmation adds violation points. Automatic suspension affects only the offending API token, across groups, for the configured duration (30 minutes by default). Permanent bans require an administrator; observation mode never penalizes tokens.'
+                'Suspension affects only the token involved in the new violation. After seven days without a new confirmed violation, reputation recovers by 5 points, then 5 daily, up to 100. Observation mode does not change reputation.'
               )}
             </p>
             <FieldGroup className='grid gap-4 sm:grid-cols-3'>
-              <NumberField
-                disabled={disabled}
-                label='Score window (minutes)'
-                value={b.window_minutes}
-                min={1}
-                max={1440}
-                onChange={(window_minutes) =>
-                  update('behavior', { window_minutes })
-                }
-              />
-              <NumberField
-                disabled={disabled}
-                label='Confirmed violation points for suspension'
-                value={b.threshold}
-                min={1}
-                max={100}
-                onChange={(threshold) => update('behavior', { threshold })}
-              />
               <NumberField
                 disabled={disabled}
                 label='Block duration (minutes)'
@@ -380,10 +334,12 @@ export function PolicySettings(props: {
           {props.view === 'distill' && (
             <>
               <FieldSet className='min-w-0 gap-3'>
-                <FieldLegend variant='label'>{t('When to block')}</FieldLegend>
+                <FieldLegend variant='label'>
+                  {t('When to request model review')}
+                </FieldLegend>
                 <p className='text-muted-foreground text-sm'>
                   {t(
-                    'Ordinary distillation keywords, formatting signals and fingerprints require contextual review by the decision model before blocking.'
+                    'Distillation matches, including harvest wrappers, formatting signals and fingerprints, request contextual review by the decision model. Matches alone do not confirm a violation.'
                   )}
                 </p>
                 <FieldGroup className='grid gap-3 sm:grid-cols-2'>
@@ -537,7 +493,9 @@ export function PolicySettings(props: {
           {props.view === 'hard_regex' && (
             <>
               <FieldSet className='min-w-0 gap-3'>
-                <FieldLegend variant='label'>{t('When to block')}</FieldLegend>
+                <FieldLegend variant='label'>
+                  {t('When to request model review')}
+                </FieldLegend>
                 <FieldGroup className='grid gap-3 sm:grid-cols-2'>
                   <Toggle
                     disabled={disabled}
@@ -573,12 +531,7 @@ export function PolicySettings(props: {
                 </p>
                 <p className='text-muted-foreground text-sm'>
                   {t(
-                    'Review rules, and any rule hit in system, assistant or tool text, are sent to the decision model, which makes the final call. Without the decision model they are only recorded.'
-                  )}
-                </p>
-                <p className='text-muted-foreground text-sm'>
-                  {t(
-                    'Built-in rules keep their default handling. Change the pattern or category to customize handling.'
+                    'All rule matches request model review. Without an available decision model, matches alone do not confirm violations or deduct reputation.'
                   )}
                 </p>
                 <StaticDataTable
@@ -635,47 +588,7 @@ export function PolicySettings(props: {
                     {
                       id: 'action',
                       header: t('Handling'),
-                      cell: (rule, i) => {
-                        const builtin = props.defaults.builtin_rules.find(
-                          (defaultRule) =>
-                            defaultRule.category === rule.category &&
-                            defaultRule.source === rule.source.trim()
-                        )
-                        return (
-                          <Choice
-                            disabled={disabled || !!builtin}
-                            hideLabel
-                            label='Handling'
-                            value={builtin?.action ?? rule.action ?? 'block'}
-                            options={[
-                              {
-                                value: 'review',
-                                label: 'Review by the decision model',
-                              },
-                              { value: 'block', label: 'Block directly' },
-                              {
-                                value: 'signal',
-                                label: 'Screen current user text only',
-                              },
-                            ]}
-                            onChange={(action) =>
-                              update('hard_regex', {
-                                rules: rules.map((old, n) =>
-                                  n === i
-                                    ? {
-                                        ...old,
-                                        action: action as
-                                          | 'block'
-                                          | 'review'
-                                          | 'signal',
-                                      }
-                                    : old
-                                ),
-                              })
-                            }
-                          />
-                        )
-                      },
+                      cell: () => t('Review by the decision model'),
                     },
                     {
                       id: 'rule',
@@ -752,7 +665,7 @@ export function PolicySettings(props: {
               </FieldSet>
               <Field
                 label='Additional regex patterns'
-                hint='Additional patterns block directly.'
+                hint='Additional patterns trigger model review.'
               >
                 <TagInput
                   disabled={disabled}
@@ -767,10 +680,12 @@ export function PolicySettings(props: {
           {props.view === 'refusal' && (
             <>
               <FieldSet className='min-w-0 gap-3'>
-                <FieldLegend variant='label'>{t('When to block')}</FieldLegend>
+                <FieldLegend variant='label'>
+                  {t('When to request model review')}
+                </FieldLegend>
                 <p className='text-muted-foreground text-sm'>
                   {t(
-                    'Similar refusal matches are signals for contextual review by the decision model; similarity alone does not block a request.'
+                    'Exact and similar refusal matches trigger model review. A refusal match alone does not confirm a violation or deduct reputation.'
                   )}
                 </p>
                 <FieldGroup className='grid gap-4 sm:grid-cols-2'>
@@ -811,7 +726,7 @@ export function PolicySettings(props: {
                 </FieldLegend>
                 <p className='text-muted-foreground text-sm'>
                   {t(
-                    'Existing subject blocks remain available below. New API token restrictions use confirmed behavior scores, not hit counts.'
+                    'Existing subject blocks remain available below. Automatic token suspensions use user reputation, not hit counts.'
                   )}
                 </p>
                 <FieldGroup className='grid gap-4 sm:grid-cols-2'>

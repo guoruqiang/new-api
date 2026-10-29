@@ -274,7 +274,7 @@ it('shows the reviewed tail window alongside a safe preview verdict', async () =
   )
   expect(screen.getByRole('status')).toHaveTextContent('Model judged safe')
   expect(screen.getByRole('status')).toHaveTextContent(
-    'Screening score: 3 · User rule match'
+    'Model review trigger: User rule match'
   )
   expect(write).toHaveBeenCalledWith(
     expect.objectContaining({

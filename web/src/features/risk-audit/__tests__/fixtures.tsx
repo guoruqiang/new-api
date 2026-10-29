@@ -74,13 +74,10 @@ export const policy: Policy = {
     dedup_sec: 60,
     max_audit_chars: 16000,
   },
-  screening: { threshold: 3, window_minutes: 10 },
   behavior: {
     enabled: true,
     auto_confirm_enabled: false,
     auto_block_enabled: false,
-    window_minutes: 10,
-    threshold: 6,
     block_ttl_minutes: 30,
   },
   evidence: { store_preview: true, store_review_evidence: true },

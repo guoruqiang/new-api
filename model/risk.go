@@ -175,7 +175,7 @@ type RiskSubjectBlock struct {
 func RiskModels() []any {
 	return []any{
 		&RiskState{}, &RiskConfig{}, &RiskPolicy{}, &RiskProvider{}, &RiskGroupNamespace{},
-		&RiskEvent{}, &RiskCounter{}, &RiskRefusal{}, &RiskSubjectBlock{}, &RiskReview{}, &RiskSignal{},
+		&RiskEvent{}, &RiskCounter{}, &RiskRefusal{}, &RiskSubjectBlock{}, &RiskReview{}, &RiskSignal{}, &RiskReputationEntry{},
 	}
 }
 
@@ -804,15 +804,61 @@ func HitRiskBlock(id int, now int64) error {
 }
 
 func ReleaseRiskBlock(id, operatorID int, now int64) (bool, error) {
-	result := DB.Model(&RiskSubjectBlock{}).Where("id = ? AND released_at = 0", id).
-		Updates(map[string]any{"released_at": now, "released_by": operatorID})
-	return result.RowsAffected > 0, result.Error
+	changed := false
+	err := riskTransaction(func(tx *gorm.DB) error {
+		changed = false
+		state, err := lockRiskState(tx)
+		if err != nil {
+			return err
+		}
+		var row RiskSubjectBlock
+		if err := tx.Where("id = ? AND released_at = 0", id).First(&row).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		if err := releaseRiskBlockBases(tx, &row, operatorID, now, nil); err != nil {
+			return err
+		}
+		result := tx.Model(&RiskSubjectBlock{}).Where("id = ? AND released_at = 0", id).Updates(map[string]any{"released_at": now, "released_by": operatorID})
+		if result.Error != nil {
+			return result.Error
+		}
+		changed = result.RowsAffected > 0
+		return bumpRiskState(tx, state, false)
+	})
+	return changed, err
 }
 
 func ClearRiskBlocks(namespace string, operatorID int, now int64) (int64, error) {
-	result := DB.Model(&RiskSubjectBlock{}).Where("namespace = ? AND released_at = 0", namespace).
-		Updates(map[string]any{"released_at": now, "released_by": operatorID})
-	return result.RowsAffected, result.Error
+	var changed int64
+	err := riskTransaction(func(tx *gorm.DB) error {
+		changed = 0
+		state, err := lockRiskState(tx)
+		if err != nil {
+			return err
+		}
+		var rows []RiskSubjectBlock
+		if err := tx.Where("namespace = ? AND released_at = 0", namespace).Find(&rows).Error; err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if err := releaseRiskBlockBases(tx, &row, operatorID, now, nil); err != nil {
+				return err
+			}
+		}
+		result := tx.Model(&RiskSubjectBlock{}).Where("namespace = ? AND released_at = 0", namespace).Updates(map[string]any{"released_at": now, "released_by": operatorID})
+		if result.Error != nil {
+			return result.Error
+		}
+		changed = result.RowsAffected
+		if changed == 0 {
+			return nil
+		}
+		return bumpRiskState(tx, state, false)
+	})
+	return changed, err
 }
 
 func ListRiskBlocks(filter RiskListFilter, now int64, offset, limit int) ([]RiskSubjectBlock, int64, error) {

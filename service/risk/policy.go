@@ -116,22 +116,11 @@ type BehaviorConfig struct {
 	Enabled            bool `json:"enabled"`
 	AutoConfirmEnabled bool `json:"auto_confirm_enabled"`
 	AutoBlockEnabled   bool `json:"auto_block_enabled"`
-	WindowMinutes      int  `json:"window_minutes"`
-	Threshold          int  `json:"threshold"`
 	BlockTTLMinutes    int  `json:"block_ttl_minutes"`
 }
 
-type ScreeningConfig struct {
-	Threshold     int `json:"threshold"`
-	WindowMinutes int `json:"window_minutes"`
-}
-
-func (s ScreeningConfig) Policy() model.RiskScreeningPolicy {
-	return model.RiskScreeningPolicy{Threshold: s.Threshold, WindowMinutes: s.WindowMinutes}
-}
-
 func (b BehaviorConfig) Policy() model.RiskBehaviorPolicy {
-	return model.RiskBehaviorPolicy{WindowMinutes: b.WindowMinutes, Threshold: b.Threshold, BlockTTLMinutes: b.BlockTTLMinutes}
+	return model.RiskBehaviorPolicy{BlockTTLMinutes: b.BlockTTLMinutes}
 }
 
 // PolicyPayload is one immutable policy revision as stored and edited.
@@ -143,7 +132,6 @@ type PolicyPayload struct {
 	Model         ModelConfig     `json:"model"`
 	Evidence      EvidenceConfig  `json:"evidence"`
 	Behavior      BehaviorConfig  `json:"behavior"`
-	Screening     ScreeningConfig `json:"screening"`
 }
 
 // DefaultDistillRules returns the shipped vm2api distill rule set.
@@ -188,9 +176,8 @@ func DefaultPolicyPayload() PolicyPayload {
 			MaxAuditChars:        16000,
 			AutoConfirmThreshold: 0.15,
 		},
-		Evidence:  EvidenceConfig{StorePreview: true, StoreReviewEvidence: true},
-		Behavior:  BehaviorConfig{Enabled: true, WindowMinutes: 10, Threshold: 6, BlockTTLMinutes: 30},
-		Screening: ScreeningConfig{Threshold: 3, WindowMinutes: 10},
+		Evidence: EvidenceConfig{StorePreview: true, StoreReviewEvidence: true},
+		Behavior: BehaviorConfig{Enabled: true, BlockTTLMinutes: 30},
 	}
 }
 
@@ -217,8 +204,8 @@ func ParsePolicyPayload(raw []byte) (PolicyPayload, error) {
 	return payload, nil
 }
 
-// effectiveAction is a rule's action. Rules saved before actions existed keep
-// blocking unless they are a built-in rule, which follows its built-in action.
+// effectiveAction preserves legacy matching priority. Every matching action
+// now only triggers model review; it never blocks a request by itself.
 func effectiveAction(rule HardRule) string {
 	if rule.Action != "" {
 		return rule.Action
@@ -340,6 +327,22 @@ func NormalizePolicyPayload(p *PolicyPayload) {
 			q.Label = q.ID
 		}
 	}
+	// Only the complete, enabled former default set receives the new topic.
+	// Customized instructions or disabled topics remain the administrator's choice.
+	if len(p.Model.Questions) == len(BuiltinQuestions)-1 {
+		oldDefaults := true
+		seen := map[string]bool{}
+		for _, q := range p.Model.Questions {
+			match := slices.ContainsFunc(BuiltinQuestions, func(b Question) bool {
+				return b.ID != "distill" && b.ID == q.ID && b.Instructions == q.Instructions && q.Enabled
+			})
+			oldDefaults = oldDefaults && match && !seen[q.ID]
+			seen[q.ID] = true
+		}
+		if oldDefaults {
+			p.Model.Questions = append(p.Model.Questions, BuiltinQuestions[len(BuiltinQuestions)-1])
+		}
+	}
 }
 
 func checkPattern(field, source string, problems *[]*common.Message) {
@@ -431,10 +434,6 @@ func ValidatePolicyPayload(p PolicyPayload) []*common.Message {
 	checkRange(&problems, "refusal.max_similar_candidates", r.MaxSimilarCandidates, 1, 10000)
 
 	m := p.Model
-	checkRange(&problems, "screening.threshold", p.Screening.Threshold, 1, 100)
-	checkRange(&problems, "screening.window_minutes", p.Screening.WindowMinutes, 1, 1440)
-	checkRange(&problems, "behavior.window_minutes", p.Behavior.WindowMinutes, 1, 1440)
-	checkRange(&problems, "behavior.threshold", p.Behavior.Threshold, 1, 100)
 	checkRange(&problems, "behavior.block_ttl_minutes", p.Behavior.BlockTTLMinutes, 1, 1440)
 	if m.Enabled && m.ProviderID <= 0 {
 		problems = append(problems, common.NewMessage("A provider is required when the model layer is enabled"))

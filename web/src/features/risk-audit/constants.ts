@@ -67,7 +67,7 @@ export const LABELS: Record<string, string> = {
   pentest: 'Unauthorized penetration testing',
   cyber: 'Cyber abuse',
   safety: 'Safety',
-  behavior_score: 'Behavior score threshold reached',
+  behavior_score: 'Automatic token restriction',
   unchecked: 'No layers enabled',
   observe: 'Observe',
   enforce: 'Enforce',
@@ -119,6 +119,20 @@ export const LABELS: Record<string, string> = {
   'openai_finish_reason=content_filter': 'Upstream content filter',
   'claude_stop_reason=refusal': 'Upstream refusal',
 }
+export const SEVERITY_LABELS: Record<string, string> = {
+  fixed: 'Fixed deduction',
+  mild: 'Mild',
+  moderate: 'Moderate',
+  severe: 'Severe',
+  unknown: 'Unknown',
+}
+export const SEVERITY_STATUS_LABELS: Record<string, string> = {
+  fixed: 'Fixed deduction',
+  confirmed: 'Severity assessed',
+  missing: 'Severity missing',
+  ambiguous: 'Severity ambiguous',
+  unavailable: 'Severity unavailable',
+}
 export const JUDGMENT_SOURCE_LABELS: Record<string, string> = {
   manual: 'Administrator confirmation',
   model: 'Model confirmation',
@@ -133,6 +147,8 @@ export const NOTIFICATION_LABELS: Record<string, string> = {
   skipped: 'Notification skipped',
 }
 export const NOTIFICATION_ERROR_LABELS: Record<string, string> = {
+  duplicate_incident:
+    'This violation was already processed. This duplicate does not deduct reputation or send another email.',
   claim_expired: 'Email notification processing timed out',
   recipient_lookup_failed: 'Unable to load the notification recipient',
   no_bound_email: 'No bound email address',

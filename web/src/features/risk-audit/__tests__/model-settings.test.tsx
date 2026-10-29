@@ -522,7 +522,7 @@ it('preserves commas in regex patterns entered with the keyboard', async () => {
   )
 })
 
-it('saves the chosen rule handling and adds new rules for model review', async () => {
+it('preserves legacy rule actions while showing model review for existing and new rules', async () => {
   const write = vi.spyOn(api, 'request').mockResolvedValue({
     data: { success: true, data: { ...row, revision: 2, config_revision: 4 } },
   })
@@ -535,7 +535,13 @@ it('saves the chosen rule handling and adds new rules for model review', async (
         ...policy,
         hard_regex: {
           ...policy.hard_regex,
-          rules: [{ ...defaults.builtin_rules[0], source: 'custom-pattern' }],
+          rules: [
+            {
+              ...defaults.builtin_rules[0],
+              source: 'custom-pattern',
+              action: 'block',
+            },
+          ],
         },
       }}
       defaults={defaults}
@@ -545,13 +551,16 @@ it('saves the chosen rule handling and adds new rules for model review', async (
       onSaved={() => {}}
     />
   )
-  const handling = screen.getByRole('combobox', { name: 'Handling' })
-  expect(handling).toHaveValue('review')
-  await user.selectOptions(handling, 'block')
+  expect(
+    screen.queryByRole('combobox', { name: 'Handling' })
+  ).not.toBeInTheDocument()
+  expect(
+    screen.getByRole('cell', { name: 'Review by the decision model' })
+  ).toBeVisible()
   await user.click(screen.getByRole('button', { name: 'Add rule' }))
-  expect(screen.getAllByRole('combobox', { name: 'Handling' })[1]).toHaveValue(
-    'review'
-  )
+  expect(
+    screen.getAllByRole('cell', { name: 'Review by the decision model' })
+  ).toHaveLength(2)
   await user.type(screen.getAllByRole('textbox', { name: 'Regex' })[1], 'new')
   await user.click(screen.getByRole('button', { name: 'Save settings' }))
   await waitFor(() =>
@@ -581,7 +590,7 @@ it('saves the chosen rule handling and adds new rules for model review', async (
   )
 })
 
-it('locks exact built-in rule handling to its default while custom patterns and categories stay editable', () => {
+it('describes built-in and custom matches as model review without offering direct blocking', () => {
   const distillRule = {
     category: 'distill',
     source: 'distill-pattern',
@@ -614,25 +623,25 @@ it('locks exact built-in rule handling to its default while custom patterns and 
       onSaved={() => {}}
     />
   )
-  const handling = screen.getAllByRole('combobox', { name: 'Handling' })
-  expect(handling).toHaveLength(4)
-  expect(handling[0]).toHaveValue('review')
-  expect(handling[0]).toBeDisabled()
-  expect(handling[1]).toHaveValue('block')
-  expect(handling[1]).toBeEnabled()
-  expect(handling[2]).toHaveValue('block')
-  expect(handling[2]).toBeEnabled()
-  expect(handling[3]).toHaveValue('review')
-  expect(handling[3]).toBeDisabled()
+  expect(
+    screen.queryByRole('combobox', { name: 'Handling' })
+  ).not.toBeInTheDocument()
+  expect(
+    screen.getAllByRole('cell', { name: 'Review by the decision model' })
+  ).toHaveLength(4)
+  expect(screen.queryByText('Block directly')).not.toBeInTheDocument()
+  expect(
+    screen.queryByText('Additional patterns block directly.')
+  ).not.toBeInTheDocument()
+  expect(
+    screen.getByText(
+      'All rule matches request model review. Without an available decision model, matches alone do not confirm violations or deduct reputation.'
+    )
+  ).toBeVisible()
 })
 
 it('rejects behavior score values outside the server bounds and non-integer values', () => {
   for (const patch of [
-    { threshold: 0 },
-    { threshold: 101 },
-    { threshold: 2.5 },
-    { window_minutes: 0 },
-    { window_minutes: 1441 },
     { block_ttl_minutes: 0 },
     { block_ttl_minutes: 1441 },
     { block_ttl_minutes: Number.NaN },
@@ -646,84 +655,99 @@ it('rejects behavior score values outside the server bounds and non-integer valu
   }
 })
 
-it('loads old policies with recording defaults and saves behavior settings independently of legacy hit thresholds', async () => {
-  const write = vi.spyOn(api, 'request').mockResolvedValue({
-    data: {
-      success: true,
-      data: { ...row, revision: 2, config_revision: 4 },
-    },
-  })
-  const legacy = structuredClone(policy)
-  delete (legacy as Partial<Policy>).behavior
-  delete (legacy as Partial<Policy>).screening
-  delete (legacy.model as Partial<Policy['model']>).auto_confirm_threshold
-  legacy.model.threshold = 0.1
-  delete (legacy.evidence as Partial<Policy['evidence']>).store_review_evidence
-  const user = userEvent.setup()
-  renderRisk(
-    <PolicySettings
-      config={config}
-      row={row}
-      initial={legacy}
-      defaults={defaults}
-      providers={[]}
-      view='refusal'
-      canWrite
-      onSaved={() => {}}
-    />
-  )
-  expect(
-    screen.queryByRole('spinbutton', { name: 'Hits before blocking' })
-  ).not.toBeInTheDocument()
-  expect(
-    screen.getByRole('switch', {
-      name: 'Automatically suspend the offending API token',
+it.each([false, true])(
+  'loads reputation defaults without overwriting legacy explicit automation settings: %s',
+  async (automationEnabled) => {
+    const write = vi.spyOn(api, 'request').mockResolvedValue({
+      data: {
+        success: true,
+        data: { ...row, revision: 2, config_revision: 4 },
+      },
     })
-  ).not.toBeChecked()
-  expect(
-    screen.getByRole('switch', { name: 'Store review evidence' })
-  ).toBeChecked()
-  expect(
-    screen.getByRole('spinbutton', {
-      name: 'Screening points required for model review',
-    })
-  ).toHaveValue(3)
-  expect(
-    screen.getByRole('spinbutton', { name: 'Screening window (minutes)' })
-  ).toHaveValue(10)
-  expect(
-    screen.getByRole('spinbutton', { name: 'Score window (minutes)' })
-  ).toHaveValue(10)
-  const threshold = screen.getByRole('spinbutton', {
-    name: 'Confirmed violation points for suspension',
-  })
-  expect(threshold).toHaveValue(6)
-  expect(threshold).toHaveAttribute('min', '1')
-  expect(threshold).toHaveAttribute('max', '100')
-  expect(threshold).toHaveAttribute('step', '1')
-  await user.clear(threshold)
-  await user.type(threshold, '8')
-  await user.click(
-    screen.getByRole('switch', { name: 'Store review evidence' })
-  )
-  await user.click(screen.getByRole('button', { name: 'Save settings' }))
-  await waitFor(() =>
-    expect(write).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          payload: expect.objectContaining({
-            behavior: { ...policy.behavior, threshold: 8 },
-            model: { ...legacy.model, auto_confirm_threshold: 0.1 },
-            evidence: { store_preview: true, store_review_evidence: false },
-            refusal: policy.refusal,
-          }),
-        }),
+    const legacy = structuredClone(policy)
+    if (automationEnabled) {
+      legacy.behavior.auto_confirm_enabled = true
+      legacy.behavior.auto_block_enabled = true
+      Object.assign(legacy.behavior, {
+        deductions: { nsfw: { mild: 100, moderate: 100, severe: 100 } },
       })
+    } else {
+      delete (legacy as Partial<Policy>).behavior
+    }
+    delete (legacy.model as Partial<Policy['model']>).auto_confirm_threshold
+    legacy.model.threshold = 0.1
+    delete (legacy.evidence as Partial<Policy['evidence']>)
+      .store_review_evidence
+    const user = userEvent.setup()
+    renderRisk(
+      <PolicySettings
+        config={config}
+        row={row}
+        initial={legacy}
+        defaults={defaults}
+        providers={[]}
+        view='refusal'
+        canWrite
+        onSaved={() => {}}
+      />
     )
-  )
-})
+    expect(
+      screen.queryByRole('spinbutton', { name: 'Hits before blocking' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByRole('switch', {
+        name: 'Automatically suspend the offending API token',
+      })
+    ).toHaveAttribute('aria-checked', String(automationEnabled))
+    expect(
+      screen.getByRole('switch', {
+        name: 'Automatically confirm high-confidence model violations',
+      })
+    ).toHaveAttribute('aria-checked', String(automationEnabled))
+    expect(
+      screen.getByRole('switch', { name: 'Store review evidence' })
+    ).toBeChecked()
+    for (const name of [
+      'Screening points required for model review',
+      'Screening window (minutes)',
+      'Score window (minutes)',
+      'Confirmed violation points for suspension',
+    ]) {
+      expect(screen.queryByRole('spinbutton', { name })).not.toBeInTheDocument()
+    }
+    const duration = screen.getByRole('spinbutton', {
+      name: 'Block duration (minutes)',
+    })
+    expect(duration).toHaveValue(30)
+    await user.clear(duration)
+    await user.type(duration, '45')
+    await user.click(
+      screen.getByRole('switch', { name: 'Store review evidence' })
+    )
+    await user.click(screen.getByRole('button', { name: 'Save settings' }))
+    await waitFor(() =>
+      expect(write).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            payload: expect.objectContaining({
+              behavior: {
+                ...policy.behavior,
+                auto_confirm_enabled: automationEnabled,
+                auto_block_enabled: automationEnabled,
+                block_ttl_minutes: 45,
+              },
+              model: { ...legacy.model, auto_confirm_threshold: 0.1 },
+              evidence: { store_preview: true, store_review_evidence: false },
+              refusal: policy.refusal,
+            }),
+          }),
+        })
+      )
+    )
+  }
+)
 
-it('saves screening and high-confidence confirmation settings separately from penalty points', async () => {
+it('saves automation settings without category deductions or severity controls', async () => {
   const write = vi.spyOn(api, 'request').mockResolvedValue({
     data: {
       success: true,
@@ -743,11 +767,22 @@ it('saves screening and high-confidence confirmation settings separately from pe
       onSaved={() => {}}
     />
   )
-  const screening = screen.getByRole('spinbutton', {
-    name: 'Screening points required for model review',
-  })
-  await user.clear(screening)
-  await user.type(screening, '5')
+  expect(
+    screen.queryByRole('group', { name: 'Deductions by category' })
+  ).not.toBeInTheDocument()
+  for (const name of ['Fixed deduction', 'Mild', 'Moderate', 'Severe']) {
+    expect(screen.queryByRole('spinbutton', { name })).not.toBeInTheDocument()
+  }
+  expect(
+    screen.getByText(
+      'User reputation starts at 100 and is shared across tokens. Each distinct confirmed violation deducts 20 points; the automatic suspension threshold is 0.'
+    )
+  ).toBeVisible()
+  expect(
+    screen.getByText(
+      'In enforcement mode, a model-confirmed violation blocks the current request immediately. Reputation only delays token suspension; it does not permit violating requests.'
+    )
+  ).toBeVisible()
   await user.click(
     screen.getByRole('switch', {
       name: 'Automatically confirm high-confidence model violations',
@@ -765,8 +800,10 @@ it('saves screening and high-confidence confirmation settings separately from pe
       expect.objectContaining({
         data: expect.objectContaining({
           payload: expect.objectContaining({
-            screening: { threshold: 5, window_minutes: 10 },
-            behavior: { ...policy.behavior, auto_confirm_enabled: true },
+            behavior: {
+              ...policy.behavior,
+              auto_confirm_enabled: true,
+            },
             model: { ...policy.model, auto_confirm_threshold: 0.1 },
           }),
         }),
@@ -775,21 +812,15 @@ it('saves screening and high-confidence confirmation settings separately from pe
   )
 })
 
-it('validates screening integers, automatic confirmation bounds and the signal rule action', () => {
-  for (const patch of [
-    { threshold: 0 },
-    { threshold: 101 },
-    { threshold: 2.5 },
-    { window_minutes: 0 },
-    { window_minutes: 1441 },
-  ]) {
-    expect(
-      policySchema.safeParse({
-        ...policy,
-        screening: { ...policy.screening, ...patch },
-      }).success
-    ).toBe(false)
-  }
+it('validates automatic confirmation bounds and removes legacy category deductions', () => {
+  const parsed = policySchema.parse({
+    ...policy,
+    behavior: {
+      ...policy.behavior,
+      deductions: { nsfw: { mild: 100, moderate: 100, severe: 100 } },
+    },
+  })
+  expect(parsed.behavior).toEqual(policy.behavior)
   for (const auto_confirm_threshold of [-0.1, 1.1, 0.6]) {
     expect(
       policySchema.safeParse({

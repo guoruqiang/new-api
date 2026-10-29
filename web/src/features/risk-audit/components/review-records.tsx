@@ -30,7 +30,7 @@ import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
 
 import { riskGet } from '../api'
-import { JUDGMENT_SOURCE_LABELS, LABELS } from '../constants'
+import { JUDGMENT_SOURCE_LABELS, LABELS, SEVERITY_LABELS } from '../constants'
 import type { Directory, Page, RiskReview } from '../types'
 import { Choice, Field } from './fields'
 import { ReviewDetail } from './review-detail'
@@ -64,7 +64,7 @@ export function ReviewRecords(props: {
     <div className='space-y-4 py-2'>
       <p className='text-muted-foreground text-sm'>
         {t(
-          'Candidates require review before scoring. Confirmed explicit content and jailbreak violations add 3 points; other categories add 1. Observation candidates always add 0 points.'
+          'Confirmed violations reduce user reputation. Signals and pending reviews do not deduct points. Observation mode never changes reputation.'
         )}
       </p>
       <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-4'>
@@ -188,9 +188,18 @@ export function ReviewRecords(props: {
               ),
             },
             {
-              id: 'points',
-              header: t('Confirmed points'),
-              cell: (row) => formatNumber(row.points, locale),
+              id: 'deduction',
+              header: t('Actual reputation deduction'),
+              cell: (row) => (
+                <div>
+                  <p>{formatNumber(row.deduction, locale)}</p>
+                  {row.severity && (
+                    <p className='text-muted-foreground text-xs'>
+                      {t(SEVERITY_LABELS[row.severity] ?? row.severity)}
+                    </p>
+                  )}
+                </div>
+              ),
             },
             {
               id: 'details',

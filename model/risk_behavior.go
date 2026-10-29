@@ -36,6 +36,12 @@ type RiskReview struct {
 	UserId                   int    `json:"user_id" gorm:"index:idx_risk_review_scope,priority:2"`
 	TokenId                  int    `json:"token_id"`
 	JudgmentSource           string `json:"judgment_source" gorm:"type:varchar(12)"`
+	Severity                 string `json:"severity" gorm:"type:varchar(12)"`
+	SeverityStatus           string `json:"severity_status" gorm:"type:varchar(16)"`
+	Assessments              string `json:"assessments" gorm:"type:text"`
+	Deduction                int    `json:"deduction"`
+	JudgmentVersion          int    `json:"judgment_version"`
+	ReputationEntryId        int    `json:"-" gorm:"index:idx_risk_review_reputation"`
 	ScreeningScore           int    `json:"screening_score"`
 	ScreeningReason          string `json:"screening_reason" gorm:"type:varchar(64)"`
 	ConfigRevision           int64  `json:"config_revision" gorm:"bigint"`
@@ -88,6 +94,7 @@ func (p RiskBehaviorPolicy) normalized() RiskBehaviorPolicy {
 	if p.BlockTTLMinutes <= 0 {
 		p.BlockTTLMinutes = 30
 	}
+	p.BlockTTLMinutes = min(p.BlockTTLMinutes, 1440)
 	return p
 }
 
@@ -100,9 +107,10 @@ type RiskBehaviorScore struct {
 }
 
 type RiskReviewResult struct {
-	Review *RiskReview       `json:"review"`
-	Score  RiskBehaviorScore `json:"score"`
-	Block  *RiskSubjectBlock `json:"block,omitempty"`
+	Review     *RiskReview           `json:"review"`
+	Score      RiskBehaviorScore     `json:"-"`
+	Reputation RiskReputationSummary `json:"reputation"`
+	Block      *RiskSubjectBlock     `json:"block,omitempty"`
 }
 
 type RiskReviewFilter struct {
@@ -167,9 +175,11 @@ func CreateRiskReviewCandidate(input *RiskReview, policy RiskBehaviorPolicy, now
 		saved.DuplicateOf = 0
 		saved.RequestKey = key
 		saved.CreatedAt = now
-		saved.Status, saved.Points, saved.Revision = RiskReviewPending, 0, 1
+		saved.Status, saved.Points, saved.Revision, saved.Deduction = RiskReviewPending, 0, 1, 0
+		saved.Severity, saved.SeverityStatus = "", ""
 		saved.ReviewedAt, saved.ReviewedBy, saved.ReviewNote, saved.History, saved.BlockReviewIds = 0, 0, "", "[]", ""
 		saved.NotificationStatus, saved.NotificationAt, saved.NotificationError = "", 0, ""
+		saved.ReputationEntryId = 0
 		if original := []rune(saved.OriginalRequest); len(original) > 262144 {
 			saved.OriginalRequest = string(original[:262144])
 			saved.OriginalRequestTruncated = true
@@ -286,12 +296,12 @@ func CreateRiskModelReview(input *RiskReview, policy RiskBehaviorPolicy, autoCon
 	if err != nil {
 		return nil, err
 	}
-	if autoConfirm && riskModelReviewComplete(input) && riskModelReviewComplete(row) && row.Status == RiskReviewPending {
-		judgment := *input
+	judgment := *input
+	if autoConfirm && riskModelReviewComplete(input) && riskModelReviewComplete(row) && row.Status == RiskReviewPending && riskReviewDeduction(&judgment, true) == nil {
 		return resolveRiskReview(row.Id, row.Revision, 0, "confirm", judgment.Category, "model_confirmed", policy, allowAutoBlock, now, &judgment, -1)
 	}
-	score, err := GetRiskTokenBehaviorScore(row.Namespace, row.UserId, row.TokenId, policy, now)
-	return &RiskReviewResult{Review: row, Score: score}, err
+	reputation, err := GetRiskUserReputation(row.UserId, now)
+	return &RiskReviewResult{Review: row, Reputation: reputation}, err
 }
 
 // GetActiveRiskTokenBlock is intentionally namespace-independent: a blocked
@@ -347,7 +357,7 @@ func FinishRiskReviewNotification(id int, status, errorCode string, now int64) e
 	}
 	switch errorCode {
 	case "", "no_email", "mail_send_failed", "mail_disabled", "review_withdrawn", "claim_expired", "notification_disabled", "user_not_found":
-	case "recipient_lookup_failed", "no_bound_email", "invalid_bound_email", "review_lookup_failed", "review_no_longer_confirmed", "restriction_lookup_failed", "email_delivery_failed":
+	case "recipient_lookup_failed", "no_bound_email", "invalid_bound_email", "review_lookup_failed", "review_no_longer_confirmed", "restriction_lookup_failed", "email_delivery_failed", "duplicate_incident":
 	default:
 		return ErrRiskReviewTransition
 	}
@@ -355,14 +365,22 @@ func FinishRiskReviewNotification(id int, status, errorCode string, now int64) e
 }
 
 type riskReviewHistory struct {
-	Action          string `json:"action"`
-	At              int64  `json:"at"`
-	OperatorId      int    `json:"operator_id"`
-	Category        string `json:"category"`
-	Note            string `json:"note"`
-	Revision        int    `json:"revision"`
-	Source          string `json:"source,omitempty"`
-	BlockTTLMinutes int    `json:"block_ttl_minutes,omitempty"`
+	Action            string `json:"action"`
+	At                int64  `json:"at"`
+	OperatorId        int    `json:"operator_id"`
+	Category          string `json:"category"`
+	Note              string `json:"note"`
+	Revision          int    `json:"revision"`
+	Source            string `json:"source,omitempty"`
+	BlockTTLMinutes   int    `json:"block_ttl_minutes,omitempty"`
+	Severity          string `json:"severity,omitempty"`
+	Deduction         int    `json:"deduction,omitempty"`
+	RequestedSeverity string `json:"requested_severity,omitempty"`
+	BanReleasedAt     int64  `json:"ban_released_at,omitempty"`
+	BanReleasedBy     int    `json:"ban_released_by,omitempty"`
+	BlockId           int    `json:"block_id,omitempty"`
+	BlockExpiresAt    int64  `json:"block_expires_at,omitempty"`
+	AutomaticBlock    bool   `json:"automatic_block,omitempty"`
 }
 
 // ResolveRiskReview is the sole scoring transition. State, score and resulting
@@ -421,6 +439,13 @@ func resolveRiskReview(id, expectedRevision, operatorID int, action, category, n
 		if err := tx.First(&row, id).Error; err != nil {
 			return err
 		}
+		if action == "confirm" || action == "ban" {
+			var lastConfirmed int64
+			if err := tx.Model(&RiskReputationEntry{}).Where("user_id = ?", row.UserId).Select("COALESCE(MAX(confirmed_at), 0)").Scan(&lastConfirmed).Error; err != nil {
+				return err
+			}
+			now = max(now, lastConfirmed)
+		}
 		var history []riskReviewHistory
 		if err := common.UnmarshalJsonStr(row.History, &history); err != nil {
 			return err
@@ -434,7 +459,7 @@ func resolveRiskReview(id, expectedRevision, operatorID int, action, category, n
 				return ErrRiskRevisionConflict
 			}
 			result.Review = &row
-			result.Score, _, err = riskBehaviorScore(tx, row.Namespace, row.UserId, row.TokenId, policy, now)
+			result.Reputation, err = riskUserReputation(tx, row.UserId, now)
 			return err
 		}
 		if modelConfirm {
@@ -451,7 +476,9 @@ func resolveRiskReview(id, expectedRevision, operatorID int, action, category, n
 			}
 			row.Scores, row.Coverage = judgment.Scores, judgment.Coverage
 			row.ScreeningScore, row.ScreeningReason = judgment.ScreeningScore, judgment.ScreeningReason
+			row.Severity, row.SeverityStatus, row.Assessments, row.JudgmentVersion = judgment.Severity, judgment.SeverityStatus, judgment.Assessments, judgment.JudgmentVersion
 		}
+		newConfirmation := false
 		switch action {
 		case "confirm", "ban":
 			if category == "" || (action == "confirm" && row.Status != RiskReviewPending) || (action == "ban" && (row.TokenId <= 0 || (row.Status != RiskReviewPending && row.Status != RiskReviewConfirmed))) {
@@ -463,7 +490,16 @@ func resolveRiskReview(id, expectedRevision, operatorID int, action, category, n
 			if modelConfirm && !riskModelReviewComplete(&row) {
 				return ErrRiskReviewTransition
 			}
+			if action == "ban" && row.Status == RiskReviewConfirmed && category != row.Category {
+				return ErrRiskReviewTransition
+			}
+			newConfirmation = row.Status == RiskReviewPending
 			row.Status, row.Category, row.Points = RiskReviewConfirmed, category, 0
+			if newConfirmation {
+				if err := riskReviewDeduction(&row, modelConfirm); err != nil {
+					return err
+				}
+			}
 			row.JudgmentSource = "manual"
 			if modelConfirm {
 				row.JudgmentSource = "model"
@@ -471,11 +507,13 @@ func resolveRiskReview(id, expectedRevision, operatorID int, action, category, n
 			if row.Mode == "enforce" && row.NotificationStatus == "" {
 				row.NotificationStatus = "pending"
 			}
-			if row.Mode == "enforce" {
-				row.Points = 1
-				if category == "nsfw" || category == "jailbreak" {
-					row.Points = 3
+			if newConfirmation && row.Mode == "enforce" {
+				if err := recordRiskReputation(tx, &row, now); err != nil {
+					return err
 				}
+			}
+			if row.Mode != "enforce" {
+				row.Deduction = 0
 			}
 		case "dismiss":
 			if row.Status != RiskReviewPending {
@@ -495,7 +533,7 @@ func resolveRiskReview(id, expectedRevision, operatorID int, action, category, n
 		}
 		row.Revision++
 		row.ReviewedAt, row.ReviewedBy, row.ReviewNote = now, operatorID, note
-		history = append(history, riskReviewHistory{Action: action, At: now, OperatorId: operatorID, Category: category, Note: note, Revision: row.Revision, Source: row.JudgmentSource, BlockTTLMinutes: max(manualTTL, 0)})
+		history = append(history, riskReviewHistory{Action: action, At: now, OperatorId: operatorID, Category: category, Note: note, Revision: row.Revision, Source: row.JudgmentSource, BlockTTLMinutes: max(manualTTL, 0), Severity: row.Severity, Deduction: row.Deduction})
 		encoded, err := common.Marshal(history)
 		if err != nil {
 			return err
@@ -505,70 +543,19 @@ func resolveRiskReview(id, expectedRevision, operatorID int, action, category, n
 			return err
 		}
 		if action == "dismiss" || action == "revoke" {
-			row.Evidence, row.OriginalRequest = "", ""
-			if err := tx.Model(&row).Updates(map[string]any{"evidence": "", "original_request": ""}).Error; err != nil {
+			if err := clearRiskReviewEvidence(tx, &row); err != nil {
 				return err
 			}
-			var aliases []RiskReview
-			if err := tx.Select("request_id", "fingerprint").Where("duplicate_of = ?", row.Id).Find(&aliases).Error; err != nil {
+			if err := revokeRiskReputation(tx, &row, operatorID, now); err != nil {
 				return err
-			}
-			requests, fingerprints := []string{row.RequestId}, []string{}
-			if row.Fingerprint != "" {
-				fingerprints = append(fingerprints, row.Fingerprint)
-			}
-			for _, alias := range aliases {
-				requests = append(requests, alias.RequestId)
-				if alias.Fingerprint != "" {
-					fingerprints = append(fingerprints, alias.Fingerprint)
-				}
-			}
-			if err := tx.Model(&RiskEvent{}).Where("namespace = ? AND user_id = ? AND request_id IN ?", row.Namespace, row.UserId, requests).Update("preview", "").Error; err != nil {
-				return err
-			}
-			refusals := tx.Where("namespace = ? AND user_id = ?", row.Namespace, row.UserId)
-			if len(fingerprints) > 0 {
-				refusals = refusals.Where("fingerprint IN ? OR source_request_id IN ?", fingerprints, requests)
-			} else {
-				refusals = refusals.Where("source_request_id IN ?", requests)
-			}
-			if err := refusals.Delete(&RiskRefusal{}).Error; err != nil {
-				return err
-			}
-			var block RiskSubjectBlock
-			err := tx.Where("namespace = ? AND subject_type = ? AND subject_value = ? AND released_at = 0", row.Namespace, "token", strconv.Itoa(row.TokenId)).First(&block).Error
-			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-				return err
-			}
-			if err == nil && (block.Reason == "behavior_score" || block.Reason == "manual_review") {
-				triggerID, parseErr := strconv.Atoi(strings.TrimPrefix(block.SourceRequestId, "risk-review:"))
-				if parseErr != nil {
-					return parseErr
-				}
-				var trigger RiskReview
-				if err := tx.First(&trigger, triggerID).Error; err != nil {
-					return err
-				}
-				var ids []int
-				if err := common.UnmarshalJsonStr(trigger.BlockReviewIds, &ids); err != nil {
-					return err
-				}
-				for _, reviewID := range ids {
-					if reviewID == row.Id {
-						if err := tx.Model(&RiskSubjectBlock{}).Where("id = ?", block.Id).Updates(map[string]any{"released_at": now, "released_by": operatorID}).Error; err != nil {
-							return err
-						}
-						break
-					}
-				}
 			}
 		}
-		score, contributing, err := riskBehaviorScore(tx, row.Namespace, row.UserId, row.TokenId, policy, now)
+		reputation, err := riskUserReputation(tx, row.UserId, now)
 		if err != nil {
 			return err
 		}
-		result.Review, result.Score = &row, score
-		if row.TokenId > 0 && riskReviewEvidenceComplete(&row) && (action == "ban" || (action == "confirm" && row.Mode == "enforce" && allowAutoBlock && row.CreatedAt > now-int64(policy.WindowMinutes)*60 && score.Score >= policy.Threshold)) {
+		result.Review, result.Reputation = &row, reputation
+		if row.TokenId > 0 && riskReviewEvidenceComplete(&row) && (action == "ban" || (action == "confirm" && newConfirmation && row.Mode == "enforce" && allowAutoBlock && row.Deduction > 0 && reputation.Score <= 0)) {
 			if action == "confirm" {
 				var active RiskSubjectBlock
 				err := tx.Where("user_id = ? AND subject_type = ? AND subject_value = ? AND released_at = 0", row.UserId, "token", strconv.Itoa(row.TokenId)).Where("expires_at = 0 OR expires_at > ?", now).First(&active).Error
@@ -576,6 +563,13 @@ func resolveRiskReview(id, expectedRevision, operatorID int, action, category, n
 					return err
 				}
 				if err == nil {
+					expires := now + int64(policy.BlockTTLMinutes)*60
+					if active.ExpiresAt > 0 {
+						expires = min(expires, active.ExpiresAt)
+					}
+					if err := recordRiskBlockBasis(tx, &row, active.Id, expires, true); err != nil {
+						return err
+					}
 					result.Block = &active
 					if modelConfirm {
 						return nil
@@ -595,7 +589,20 @@ func resolveRiskReview(id, expectedRevision, operatorID int, action, category, n
 					return err
 				}
 				active := err == nil && block.ReleasedAt == 0 && (block.ExpiresAt == 0 || block.ExpiresAt > now)
-				if !active || (action == "ban" && (manualTTL == 0 || block.ExpiresAt != 0)) {
+				desiredExpiry := now + int64(manualTTL)*60
+				if manualTTL == 0 {
+					desiredExpiry = 0
+				}
+				strongerManual := action == "ban" && block.ExpiresAt != 0 && (desiredExpiry == 0 || desiredExpiry > block.ExpiresAt)
+				if !active || strongerManual {
+					if block.ReleasedAt > 0 {
+						// Older releases only marked the block row. Preserve that
+						// boundary before reusing it, without releasing this new
+						// decision or reviving any earlier manual/automatic basis.
+						if err := releaseRiskBlockBases(tx, &block, block.ReleasedBy, block.ReleasedAt, &row); err != nil {
+							return err
+						}
+					}
 					block.Namespace, block.SubjectType, block.SubjectValue, block.UserId = row.Namespace, "token", strconv.Itoa(row.TokenId), row.UserId
 					block.Reason, block.SourceRequestId, block.Fingerprint = "behavior_score", fmt.Sprintf("risk-review:%d", row.Id), row.Fingerprint
 					block.ReleasedAt, block.ReleasedBy, block.LastSeenAt, block.ExpiresAt = 0, 0, now, now+int64(policy.BlockTTLMinutes)*60
@@ -606,7 +613,6 @@ func resolveRiskReview(id, expectedRevision, operatorID int, action, category, n
 						} else {
 							block.ExpiresAt = now + int64(manualTTL)*60
 						}
-						contributing = []RiskReview{{Id: row.Id}}
 					}
 					if block.Id == 0 {
 						block.FirstSeenAt = now
@@ -614,18 +620,13 @@ func resolveRiskReview(id, expectedRevision, operatorID int, action, category, n
 					if err := tx.Save(&block).Error; err != nil {
 						return err
 					}
-					ids := make([]int, 0, len(contributing))
-					for _, contributor := range contributing {
-						ids = append(ids, contributor.Id)
-					}
-					encoded, err := common.Marshal(ids)
-					if err != nil {
-						return err
-					}
-					row.BlockReviewIds = string(encoded)
-					if err := tx.Model(&row).Update("block_review_ids", row.BlockReviewIds).Error; err != nil {
-						return err
-					}
+				}
+				expires := block.ExpiresAt
+				if action == "ban" {
+					expires = desiredExpiry
+				}
+				if err := recordRiskBlockBasis(tx, &row, block.Id, expires, action == "confirm"); err != nil {
+					return err
 				}
 				result.Block = &block
 			}
@@ -653,7 +654,7 @@ func cleanupRiskReviews(now, before int64) (int64, error) {
 				return err
 			}
 			var rows []RiskReview
-			if err := tx.Select("id", "namespace", "user_id", "token_id").Where("duplicate_of = 0 AND created_at < ? AND id > ?", before, lastID).Order("id asc").Limit(1000).Find(&rows).Error; err != nil {
+			if err := tx.Select("id", "namespace", "user_id", "token_id", "status", "reputation_entry_id").Where("duplicate_of = 0 AND created_at < ? AND id > ?", before, lastID).Order("id asc").Limit(1000).Find(&rows).Error; err != nil {
 				return err
 			}
 			batchLength = len(rows)
@@ -676,10 +677,68 @@ func cleanupRiskReviews(now, before int64) (int64, error) {
 			for _, block := range blocks {
 				live[block.Namespace+"\x00"+block.SubjectValue] = true
 			}
+			// Reputation is user-wide: another token or routing group can have
+			// been restricted using this review's deduction. Keep its evidence
+			// and revocation entry point while that restriction is active.
+			userIDs, entryIDs := make([]int, 0, len(rows)), make([]int, 0, len(rows))
+			for _, row := range rows {
+				if row.Status == RiskReviewConfirmed && row.ReputationEntryId > 0 {
+					userIDs = append(userIDs, row.UserId)
+					entryIDs = append(entryIDs, row.ReputationEntryId)
+				}
+			}
+			protectedEntries := map[int]bool{}
+			if len(entryIDs) > 0 {
+				var restrictedUsers []int
+				if err := tx.Model(&RiskSubjectBlock{}).Distinct("user_id").Where("user_id IN ? AND subject_type = ? AND reason = ? AND released_at = 0", userIDs, "token", "behavior_score").Where("expires_at = 0 OR expires_at > ?", now).Pluck("user_id", &restrictedUsers).Error; err != nil {
+					return err
+				}
+				// A manual restriction can also have a still-live automatic basis
+				// from another group. Retain that basis's reputation dependencies
+				// only until its own automatic expiry, never indefinitely merely
+				// because the manual restriction is permanent.
+				var manualBlocks []RiskSubjectBlock
+				if err := tx.Select("id", "user_id").Where("user_id IN ? AND subject_type = ? AND reason = ? AND released_at = 0", userIDs, "token", "manual_review").Where("expires_at = 0 OR expires_at > ?", now).Find(&manualBlocks).Error; err != nil {
+					return err
+				}
+				if len(manualBlocks) > 0 {
+					blockIDs := make(map[int]bool, len(manualBlocks))
+					manualUserIDs := make([]int, 0, len(manualBlocks))
+					for _, block := range manualBlocks {
+						blockIDs[block.Id] = true
+						manualUserIDs = append(manualUserIDs, block.UserId)
+					}
+					var bases []RiskReview
+					if err := tx.Select("user_id", "history").Where("user_id IN ? AND status = ? AND mode = ?", manualUserIDs, RiskReviewConfirmed, "enforce").Find(&bases).Error; err != nil {
+						return err
+					}
+					for _, basis := range bases {
+						var history []riskReviewHistory
+						if err := common.UnmarshalJsonStr(basis.History, &history); err != nil {
+							return err
+						}
+						for _, command := range history {
+							if command.AutomaticBlock && blockIDs[command.BlockId] && command.BanReleasedAt == 0 && command.BlockExpiresAt > now {
+								restrictedUsers = append(restrictedUsers, basis.UserId)
+								break
+							}
+						}
+					}
+				}
+				if len(restrictedUsers) > 0 {
+					var ids []int
+					if err := tx.Model(&RiskReputationEntry{}).Where("id IN ? AND user_id IN ? AND revoked_at = 0", entryIDs, restrictedUsers).Pluck("id", &ids).Error; err != nil {
+						return err
+					}
+					for _, id := range ids {
+						protectedEntries[id] = true
+					}
+				}
+			}
 			ids := make([]int, 0, len(rows))
 			for _, row := range rows {
 				nextID = row.Id
-				if !live[row.Namespace+"\x00"+strconv.Itoa(row.TokenId)] {
+				if !live[row.Namespace+"\x00"+strconv.Itoa(row.TokenId)] && !protectedEntries[row.ReputationEntryId] {
 					ids = append(ids, row.Id)
 				}
 			}
@@ -699,4 +758,38 @@ func cleanupRiskReviews(now, before int64) (int64, error) {
 		}
 		lastID = nextID
 	}
+}
+
+func clearRiskReviewEvidence(tx *gorm.DB, row *RiskReview) error {
+	row.Evidence, row.OriginalRequest = "", ""
+	if err := tx.Model(row).Updates(map[string]any{"evidence": "", "original_request": ""}).Error; err != nil {
+		return err
+	}
+	var aliases []RiskReview
+	if err := tx.Select("request_id", "fingerprint").Where("duplicate_of = ?", row.Id).Find(&aliases).Error; err != nil {
+		return err
+	}
+	requests, fingerprints := []string{row.RequestId}, []string{}
+	if row.Fingerprint != "" {
+		fingerprints = append(fingerprints, row.Fingerprint)
+	}
+	for _, alias := range aliases {
+		requests = append(requests, alias.RequestId)
+		if alias.Fingerprint != "" {
+			fingerprints = append(fingerprints, alias.Fingerprint)
+		}
+	}
+	if err := tx.Model(&RiskEvent{}).Where("namespace = ? AND user_id = ? AND request_id IN ?", row.Namespace, row.UserId, requests).Update("preview", "").Error; err != nil {
+		return err
+	}
+	refusals := tx.Where("namespace = ? AND user_id = ?", row.Namespace, row.UserId)
+	if len(fingerprints) > 0 {
+		refusals = refusals.Where("fingerprint IN ? OR source_request_id IN ?", fingerprints, requests)
+	} else {
+		refusals = refusals.Where("source_request_id IN ?", requests)
+	}
+	if err := refusals.Delete(&RiskRefusal{}).Error; err != nil {
+		return err
+	}
+	return nil
 }

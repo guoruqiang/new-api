@@ -107,7 +107,7 @@ func setupResponsesWSRequestTest(t *testing.T) (*model.User, *model.Token) {
 	return user, token
 }
 
-func installRelayRiskPolicy(t *testing.T, payload risk.PolicyPayload, mode string, exempt bool) {
+func installRelayRiskPolicy(t *testing.T, payload risk.PolicyPayload, mode string, exempt bool) risk.PolicyPayload {
 	t.Helper()
 	require.NoError(t, model.DB.AutoMigrate(model.RiskModels()...))
 	require.NoError(t, model.DB.AutoMigrate(&model.Option{}))
@@ -118,6 +118,40 @@ func installRelayRiskPolicy(t *testing.T, payload risk.PolicyPayload, mode strin
 	baseRevision := 0
 	for _, row := range rows {
 		baseRevision = max(baseRevision, row.Revision)
+	}
+	if !payload.Model.Enabled {
+		provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var request struct {
+				State     string         `json:"state"`
+				Questions map[string]any `json:"questions"`
+			}
+			if err := common.DecodeJson(r.Body, &request); err != nil {
+				http.Error(w, "invalid classifier request", http.StatusBadRequest)
+				return
+			}
+			answers := map[string]any{}
+			for key := range request.Questions {
+				score := 0.99
+				if key == "fixture_policy" && (strings.Contains(request.State, "riskblock") || strings.Contains(request.State, "changedrule")) {
+					score = 0.01
+				}
+				answers[key] = map[string]any{"noul": score}
+			}
+			encoded, err := common.Marshal(map[string]any{"answers": answers})
+			if err != nil {
+				http.Error(w, "encoding error", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(encoded)
+		}))
+		t.Cleanup(provider.Close)
+		keys := []string{"test-model-key"}
+		saved, problems, err := risk.SaveProvider(0, risk.ProviderInput{Name: fmt.Sprintf("relay-fixture-%d", baseRevision), ProviderType: "jev", BaseURL: provider.URL, Model: "fixture", APIKeys: &keys})
+		require.NoError(t, err)
+		require.Empty(t, problems)
+		payload.Model.Enabled, payload.Model.ProviderID = true, saved.Id
+		payload.Model.Questions = []risk.Question{{ID: "fixture_policy", Label: "Fixture policy", Instructions: "Is this request free of riskblock and changedrule violations?", Enabled: true}}
 	}
 	policy, problems, err := risk.CreatePolicyRevision("integration", "Integration", baseRevision, payload, 1)
 	require.NoError(t, err)
@@ -139,6 +173,7 @@ func installRelayRiskPolicy(t *testing.T, payload risk.PolicyPayload, mode strin
 	_, problems, err = risk.PublishConfig(view.Revision, cfg, 1)
 	require.NoError(t, err)
 	require.Empty(t, problems)
+	return payload
 }
 
 func TestResponsesWebSocketRiskRechecksEveryMessageAndKeepsAuthenticationBoundary(t *testing.T) {
@@ -168,7 +203,7 @@ func TestResponsesWebSocketRiskRechecksEveryMessageAndKeepsAuthenticationBoundar
 	payload := risk.DefaultPolicyPayload()
 	payload.Distill.Enabled, payload.Refusal.Enabled, payload.Model.Enabled = false, false, false
 	payload.HardRegex.Rules = []risk.HardRule{{Category: "custom", Source: "riskblock", Enabled: true}}
-	installRelayRiskPolicy(t, payload, risk.ModeEnforce, true)
+	payload = installRelayRiskPolicy(t, payload, risk.ModeEnforce, true)
 	for _, tc := range []struct {
 		text, event string
 		quota       int
@@ -180,7 +215,7 @@ func TestResponsesWebSocketRiskRechecksEveryMessageAndKeepsAuthenticationBoundar
 	} {
 		if tc.text == "changedrule" {
 			payload.HardRegex.Rules[0].Source = "changedrule"
-			installRelayRiskPolicy(t, payload, risk.ModeEnforce, true)
+			payload = installRelayRiskPolicy(t, payload, risk.ModeEnforce, true)
 		}
 		body, err := common.Marshal(map[string]any{"type": "response.create", "model": "ws-billing", "input": tc.text})
 		require.NoError(t, err)
@@ -234,7 +269,7 @@ func TestHTTPRiskGateRunsBeforeReservation(t *testing.T) {
 				payload.HardRegex.Enabled, payload.Refusal.Enabled = false, true
 				payload.Refusal.SubjectBlockEnabled = false
 			}
-			installRelayRiskPolicy(t, payload, tc.mode, tc.exempt)
+			payload = installRelayRiskPolicy(t, payload, tc.mode, tc.exempt)
 			if tc.disabled {
 				view, err := risk.LatestConfig()
 				require.NoError(t, err)
@@ -323,14 +358,14 @@ func TestRiskAutoGroupRetryRejectsBeforeNextUpstreamAndRefunds(t *testing.T) {
 			require.NoError(t, model.DB.Create(&model.Ability{ChannelId: channelB.Id, Model: "ws-billing", Group: "group-b", Enabled: true}).Error)
 			payload := risk.DefaultPolicyPayload()
 			payload.Distill.Enabled, payload.Refusal.Enabled, payload.Model.Enabled, payload.HardRegex.Enabled = false, false, false, false
-			installRelayRiskPolicy(t, payload, risk.ModeEnforce, true)
+			payload = installRelayRiskPolicy(t, payload, risk.ModeEnforce, true)
 			payload.Distill.Enabled = true
 			payload.Distill.SkipGPTModels = false
 			payload.Distill.HardNeedles = []string{"riskblock"}
 			// A deliberately configured hard rule tests the relay rejection
 			// contract; built-in distill hints now require contextual review.
 			payload.HardRegex.Rules = []risk.HardRule{{Category: "distill", Source: "riskblock", Enabled: true, Action: risk.RuleActionBlock}}
-			// Custom local rejection wording must never trigger the upstream violation fee.
+			// A local model rejection must never trigger the upstream violation fee.
 			payload.Distill.Error = risk.DistillError{Status: http.StatusForbidden, Message: service.CSAMViolationMarker}
 			policy, problems, err := risk.CreatePolicyRevision("retry-block", "Retry block", 0, payload, 1)
 			require.NoError(t, err)
@@ -376,7 +411,7 @@ func TestRiskAutoGroupRetryRejectsBeforeNextUpstreamAndRefunds(t *testing.T) {
 				event := readResponsesWSTestEvent(t, fixture.client)
 				require.Equal(t, "error", event["type"])
 				assert.Equal(t, float64(http.StatusForbidden), event["status"])
-				require.Contains(t, fmt.Sprint(event), "risk_distill_blocked")
+				require.Contains(t, fmt.Sprint(event), "risk_policy_blocked")
 			} else {
 				request, err := http.NewRequest(http.MethodPost, fixture.gatewayURL+"/v1/responses", strings.NewReader(`{"model":"ws-billing","input":"riskblock"}`))
 				require.NoError(t, err)
@@ -388,7 +423,7 @@ func TestRiskAutoGroupRetryRejectsBeforeNextUpstreamAndRefunds(t *testing.T) {
 				require.NoError(t, err)
 				require.NoError(t, response.Body.Close())
 				require.Equal(t, http.StatusForbidden, response.StatusCode, string(body))
-				require.Contains(t, string(body), "risk_distill_blocked")
+				require.Contains(t, string(body), "risk_policy_blocked")
 				select {
 				case <-fixture.httpDone:
 				case <-time.After(3 * time.Second):

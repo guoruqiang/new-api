@@ -199,7 +199,7 @@ function RiskAuditWorkspace(props: {
         <div className='min-w-0 space-y-5'>
           <p className='text-muted-foreground text-sm'>
             {t(
-              'Requests pass through the enabled stages in order. Select a stage to view its events and settings.'
+              'Enabled checks identify signals for model review. Only confirmed violations affect reputation; request blocking and token suspension are separate outcomes. Select a stage to inspect its events and settings.'
             )}
           </p>
           {props.failed && (
@@ -252,7 +252,7 @@ function RiskAuditWorkspace(props: {
           <Accordion className='rounded-xl border px-4'>
             <AccordionItem value='reviews'>
               <AccordionTrigger>
-                {t('Review and behavior scoring')}
+                {t('Review and user reputation')}
               </AccordionTrigger>
               <AccordionContent>
                 <ReviewRecords

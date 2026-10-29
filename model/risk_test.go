@@ -814,6 +814,7 @@ func TestRiskBehaviorConfirmationAndRevocation(t *testing.T) {
 	require.NoError(t, ReconcileRiskGroupNamespaces([]string{"vip"}))
 	namespaces, err := ListRiskGroupNamespaces(true)
 	require.NoError(t, err)
+	seedHistoricalRiskReputation(t, db, 7, 60, 9999)
 	ns, now, policy := namespaces[0].Namespace, int64(10000), RiskBehaviorPolicy{}
 	first := riskReviewCandidate(t, ns, "first", "fp1", "enforce", now)
 	second := riskReviewCandidate(t, ns, "second", "fp2", "enforce", now+1)
@@ -822,16 +823,16 @@ func TestRiskBehaviorConfirmationAndRevocation(t *testing.T) {
 	assert.Zero(t, score.Score, "pending model hits are not punishments")
 	confirmed, err := ResolveRiskReview(first.Id, 1, 99, "confirm", "nsfw", "explicit generation request", policy, false, now+2)
 	require.NoError(t, err)
-	assert.Equal(t, 3, confirmed.Score.Score)
+	assert.Equal(t, 20, confirmed.Reputation.Score)
 	assert.Nil(t, confirmed.Block)
 	confirmed, err = ResolveRiskReview(second.Id, 1, 99, "confirm", "jailbreak", "explicit evasion request", policy, true, now+3)
 	require.NoError(t, err)
-	assert.Equal(t, 6, confirmed.Score.Score)
+	assert.Zero(t, confirmed.Reputation.Score)
 	require.NotNil(t, confirmed.Block)
 	assert.Equal(t, "token", confirmed.Block.SubjectType)
 	assert.Equal(t, "77", confirmed.Block.SubjectValue)
 	assert.Equal(t, now+3+1800, confirmed.Block.ExpiresAt)
-	assert.Equal(t, 2, confirmed.Score.ConfirmedEvents)
+	assert.Equal(t, 3, confirmed.Reputation.ConfirmedEvents)
 
 	// Same instruction and expected revision is an idempotent retry. A stale
 	// instruction cannot amend the category or extend the block.
@@ -845,7 +846,7 @@ func TestRiskBehaviorConfirmationAndRevocation(t *testing.T) {
 	require.NoError(t, RememberRiskRefusal(&refusal))
 	revoked, err := ResolveRiskReview(first.Id, 2, 99, "revoke", "", "medical quotation was misclassified", policy, true, now+5)
 	require.NoError(t, err)
-	assert.Equal(t, 3, revoked.Score.Score)
+	assert.Equal(t, 20, revoked.Reputation.Score)
 	assert.Equal(t, RiskReviewRevoked, revoked.Review.Status)
 	block, err := GetActiveRiskBlock(ns, "token", "77", now+5)
 	require.NoError(t, err)
@@ -866,33 +867,30 @@ func TestRiskBehaviorConfirmationAndRevocation(t *testing.T) {
 
 func TestRiskBehaviorScopeWindowAndDisabledEnforcement(t *testing.T) {
 	useRiskDB(t)
-	policy := RiskBehaviorPolicy{WindowMinutes: 2, Threshold: 2, BlockTTLMinutes: 5}
+	policy := RiskBehaviorPolicy{}
 	for _, test := range []struct {
 		name, mode, category string
 		age                  int64
 		want                 int
 	}{
-		{"observe", "observe", "nsfw", 0, 0},
-		{"ordinary", "enforce", "cyber", 0, 1},
-		{"old", "enforce", "nsfw", 120, 0},
+		{"observe", "observe", "nsfw", 0, 100},
+		{"ordinary", "enforce", "cyber", 0, 80},
+		{"old", "enforce", "nsfw", 120, 60},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			row := riskReviewCandidate(t, test.name, test.name, test.name, test.mode, 1000-test.age)
 			result, err := ResolveRiskReview(row.Id, 1, 88, "confirm", test.category, "reviewed", policy, true, 1000)
 			require.NoError(t, err)
-			assert.Equal(t, test.want, result.Score.Score)
+			assert.Equal(t, test.want, result.Reputation.Score)
 			assert.Nil(t, result.Block, "observe or inactive namespaces cannot produce blocks")
-			assert.Equal(t, 2, result.Score.WindowMinutes)
-			assert.Equal(t, 2, result.Score.Threshold)
-			assert.Equal(t, 5, result.Score.BlockTTLMinutes)
 		})
 	}
-	otherUser, err := GetRiskTokenBehaviorScore("ordinary", 8, 77, policy, 1000)
+	otherUser, err := GetRiskUserReputation(8, 1000)
 	require.NoError(t, err)
-	assert.Zero(t, otherUser.Score)
-	expired, err := GetRiskTokenBehaviorScore("ordinary", 7, 77, policy, 1120)
+	assert.Equal(t, 100, otherUser.Score)
+	expired, err := GetRiskUserReputation(7, 1120)
 	require.NoError(t, err)
-	assert.Zero(t, expired.Score)
+	assert.Equal(t, 60, expired.Score)
 
 	require.NoError(t, ReconcileRiskGroupNamespaces([]string{"disabled"}))
 	namespaces, err := ListRiskGroupNamespaces(true)
@@ -900,7 +898,7 @@ func TestRiskBehaviorScopeWindowAndDisabledEnforcement(t *testing.T) {
 	row := riskReviewCandidate(t, namespaces[0].Namespace, "disabled", "disabled", "enforce", 1000)
 	result, err := ResolveRiskReview(row.Id, 1, 88, "confirm", "nsfw", "reviewed", policy, false, 1001)
 	require.NoError(t, err)
-	assert.Equal(t, 3, result.Score.Score)
+	assert.Equal(t, 40, result.Reputation.Score)
 	assert.Nil(t, result.Block, "disabled automation still computes the score")
 }
 
@@ -950,9 +948,9 @@ func TestRiskBehaviorDeduplicationAndConcurrentReview(t *testing.T) {
 	}
 	assert.Equal(t, 1, success)
 	assert.Equal(t, 1, conflicts)
-	score, err := GetRiskTokenBehaviorScore("ns", 7, 77, policy, now+3)
+	score, err := GetRiskUserReputation(7, now+3)
 	require.NoError(t, err)
-	assert.Equal(t, 3, score.Score)
+	assert.Equal(t, 80, score.Score)
 	assert.Equal(t, 1, score.ConfirmedEvents)
 	_, err = ResolveRiskReview(first.Id, 2, 99, "revoke", "", "false positive", policy, false, now+4)
 	require.NoError(t, err)
@@ -995,7 +993,8 @@ func TestRiskBehaviorDeduplicationAndConcurrentReview(t *testing.T) {
 }
 
 func TestRiskBehaviorDismissalAndReleaseAreDifferent(t *testing.T) {
-	useRiskDB(t)
+	db := useRiskDB(t)
+	seedHistoricalRiskReputation(t, db, 7, 80, 999)
 	require.NoError(t, ReconcileRiskGroupNamespaces([]string{"vip"}))
 	namespaces, err := ListRiskGroupNamespaces(true)
 	require.NoError(t, err)
@@ -1008,9 +1007,9 @@ func TestRiskBehaviorDismissalAndReleaseAreDifferent(t *testing.T) {
 	released, err := ReleaseRiskBlock(confirmed.Block.Id, 99, 1002)
 	require.NoError(t, err)
 	assert.True(t, released)
-	score, err := GetRiskTokenBehaviorScore(ns, 7, 77, policy, 1003)
+	score, err := GetRiskUserReputation(7, 1003)
 	require.NoError(t, err)
-	assert.Equal(t, 3, score.Score, "manual release does not withdraw the review decision")
+	assert.Equal(t, 0, score.Score, "manual release does not withdraw the review decision")
 	_, err = ResolveRiskReview(row.Id, 1, 99, "confirm", "nsfw", "reviewed", policy, true, 1004)
 	require.NoError(t, err)
 	block, err := GetActiveRiskBlock(ns, "token", "77", 1004)
@@ -1021,7 +1020,7 @@ func TestRiskBehaviorDismissalAndReleaseAreDifferent(t *testing.T) {
 	dismissed, err := ResolveRiskReview(other.Id, 1, 99, "dismiss", "", "benign quotation", policy, true, 1006)
 	require.NoError(t, err)
 	assert.Equal(t, RiskReviewDismissed, dismissed.Review.Status)
-	assert.Equal(t, 3, dismissed.Score.Score)
+	assert.Zero(t, dismissed.Reputation.Score)
 	refusal, err := GetRiskRefusal(ns, 7, "other-fp", 1006)
 	require.NoError(t, err)
 	assert.Nil(t, refusal)
@@ -1030,32 +1029,46 @@ func TestRiskBehaviorDismissalAndReleaseAreDifferent(t *testing.T) {
 }
 
 func TestRiskBehaviorMigration(t *testing.T) {
-	for _, scenario := range []string{"fresh", "upgrade-v1.0.0-nw.48"} {
+	for _, scenario := range []string{"fresh", "upgrade-v1.0.0-nw.48", "upgrade-b4a8322ee"} {
 		t.Run(scenario, func(t *testing.T) {
 			models := RiskModels()
 			if scenario != "fresh" {
 				models = nil
 				for _, row := range RiskModels() {
 					switch row.(type) {
-					case *RiskReview, *RiskSignal, *RiskSubjectBlock:
+					case *RiskReview, *RiskSignal, *RiskSubjectBlock, *RiskReputationEntry:
 					default:
 						models = append(models, row)
 					}
 				}
 			}
 			db := useRiskDB(t, models)
+			var previousReview riskReviewB4
 			var oldReview riskReviewNW48
 			var oldBlock riskBlockNW48
 			reviewTable, blockTable := &gorm.Statement{DB: db}, &gorm.Statement{DB: db}
 			require.NoError(t, reviewTable.Parse(&RiskReview{}))
 			require.NoError(t, blockTable.Parse(&RiskSubjectBlock{}))
 			if scenario != "fresh" {
-				require.NoError(t, db.Table(reviewTable.Table).AutoMigrate(&riskReviewNW48{}))
-				require.NoError(t, db.Table(blockTable.Table).AutoMigrate(&riskBlockNW48{}))
+				if scenario == "upgrade-b4a8322ee" {
+					require.NoError(t, db.Table(reviewTable.Table).AutoMigrate(&riskReviewB4{}))
+					require.NoError(t, db.AutoMigrate(&RiskSignal{}))
+				} else {
+					require.NoError(t, db.Table(reviewTable.Table).AutoMigrate(&riskReviewNW48{}))
+				}
+				if scenario == "upgrade-b4a8322ee" {
+					require.NoError(t, db.AutoMigrate(&RiskSubjectBlock{}))
+				} else {
+					require.NoError(t, db.Table(blockTable.Table).AutoMigrate(&riskBlockNW48{}))
+				}
 				oldReview = riskReviewNW48{RequestKey: "legacy-key", RequestId: "old-review", Namespace: "legacy-ns", UserId: 7, Mode: "enforce", Status: "confirmed", Points: 3, Revision: 2, Evidence: "保留旧版审核证据", History: "[]", CreatedAt: 1000}
 				oldBlock = riskBlockNW48{Namespace: "legacy-ns", SubjectType: "user", SubjectValue: "7", Reason: "legacy", FirstSeenAt: 1000, LastSeenAt: 1000, ExpiresAt: 2000}
 				require.NoError(t, db.Table(reviewTable.Table).Create(&oldReview).Error)
 				require.NoError(t, db.Table(blockTable.Table).Create(&oldBlock).Error)
+				if scenario == "upgrade-b4a8322ee" {
+					previousReview = riskReviewB4{RequestKey: "previous-key", RequestId: "previous-confirmed", Namespace: "legacy-ns", UserId: 7, TokenId: 77, Mode: "enforce", Status: "confirmed", Points: 3, Revision: 2, Evidence: "previous audit", OriginalRequest: "previous original", History: "[]", CreatedAt: 1000}
+					require.NoError(t, db.Table(reviewTable.Table).Create(&previousReview).Error)
+				}
 			}
 			require.NoError(t, InsertRiskEvents([]RiskEvent{{RequestId: "old-request", Preview: "保留历史事件", CreatedAt: 50}}))
 			var before []RiskEvent
@@ -1082,9 +1095,18 @@ func TestRiskBehaviorMigration(t *testing.T) {
 				require.NoError(t, db.Table(blockTable.Table).First(&blockAfter, oldBlock.Id).Error)
 				assert.Equal(t, oldReview, reviewAfter)
 				assert.Equal(t, oldBlock, blockAfter)
+				if scenario == "upgrade-b4a8322ee" {
+					var previousAfter riskReviewB4
+					require.NoError(t, db.Table(reviewTable.Table).First(&previousAfter, previousReview.Id).Error)
+					assert.Equal(t, previousReview, previousAfter)
+				}
+				reputation, err := GetRiskUserReputation(7, 1001)
+				require.NoError(t, err)
+				assert.Equal(t, 100, reputation.Score, "older confirmed points never backfill deductions")
+				assert.Zero(t, reputation.ConfirmedEvents)
 				score, err := GetRiskTokenBehaviorScore("legacy-ns", 7, 77, RiskBehaviorPolicy{}, 1001)
 				require.NoError(t, err)
-				assert.Zero(t, score.Score)
+				assert.Equal(t, map[bool]int{true: 3, false: 0}[scenario == "upgrade-b4a8322ee"], score.Score)
 			}
 			for i, row := range models {
 				var current []map[string]any
@@ -1118,6 +1140,7 @@ func TestRiskBehaviorMigration(t *testing.T) {
 
 func TestRiskBehaviorAtomicityAndRetention(t *testing.T) {
 	db := useRiskDB(t)
+	seedHistoricalRiskReputation(t, db, 7, 80, 999)
 	require.NoError(t, ReconcileRiskGroupNamespaces([]string{"vip"}))
 	namespaces, err := ListRiskGroupNamespaces(true)
 	require.NoError(t, err)
@@ -1143,6 +1166,9 @@ func TestRiskBehaviorAtomicityAndRetention(t *testing.T) {
 	assert.Equal(t, RiskReviewPending, saved.Status, "a failed block write rolls back confirmation and score")
 	assert.Equal(t, 1, saved.Revision)
 	assert.Equal(t, "[]", saved.History)
+	var entries int64
+	require.NoError(t, db.Model(&RiskReputationEntry{}).Count(&entries).Error)
+	assert.EqualValues(t, 1, entries, "failed punishment preserves only the pre-existing ledger entry")
 	result, err := ResolveRiskReview(row.Id, 1, 99, "confirm", "nsfw", "reviewed", policy, true, 1001)
 	require.NoError(t, err)
 	require.NotNil(t, result.Block)
@@ -1248,12 +1274,20 @@ func TestRiskScreeningLedger(t *testing.T) {
 	assert.EqualValues(t, 1, count)
 }
 
+// Historical deductions are immutable; use a pre-existing ledger balance when
+// a regression needs to exercise restriction transitions near the threshold.
+func seedHistoricalRiskReputation(t *testing.T, db *gorm.DB, userID, deduction int, at int64) {
+	t.Helper()
+	require.NoError(t, db.Create(&RiskReputationEntry{EventKey: fmt.Sprintf("historical-%d", userID), UserId: userID, TokenId: 999, Category: "cyber", Severity: "severe", Deduction: deduction, ConfirmedAt: at}).Error)
+}
+
 func tieredModelReview(namespace, request string, tokenID int) *RiskReview {
-	return &RiskReview{Namespace: namespace, GroupName: "vip", UserId: 7, TokenId: tokenID, RequestId: request, IncidentKey: request, Fingerprint: request, Mode: "enforce", Layer: "model", Category: "nsfw", ProviderModel: "jev-test", Scores: `{"nsfw":0.1}`, Coverage: "complete", Evidence: "actual model input", OriginalRequest: "original violating user request", ConfigRevision: 1}
+	return &RiskReview{Namespace: namespace, GroupName: "vip", UserId: 7, TokenId: tokenID, RequestId: request, IncidentKey: request, Fingerprint: request, Mode: "enforce", Layer: "model", Category: "nsfw", ProviderModel: "jev-test", Scores: `{"nsfw":0.1}`, Coverage: "complete", Evidence: "actual model input", OriginalRequest: "original violating user request", ConfigRevision: 1, Assessments: `[{"category":"nsfw","safety_score":0.1}]`, JudgmentVersion: RiskJudgmentVersion}
 }
 
 func TestRiskTieredTokenConfirmationAndManualBan(t *testing.T) {
 	db := useRiskDB(t)
+	seedHistoricalRiskReputation(t, db, 7, 80, 999)
 	require.NoError(t, ReconcileRiskGroupNamespaces([]string{"vip", "other"}))
 	namespaces, err := ListRiskGroupNamespaces(true)
 	require.NoError(t, err)
@@ -1268,14 +1302,14 @@ func TestRiskTieredTokenConfirmationAndManualBan(t *testing.T) {
 	assert.Equal(t, RiskReviewConfirmed, first.Review.Status)
 	assert.Equal(t, "model", first.Review.JudgmentSource)
 	assert.Zero(t, first.Review.ReviewedBy)
-	assert.Equal(t, 3, first.Score.Score)
-	assert.Nil(t, first.Block)
+	assert.Zero(t, first.Reputation.Score)
+	assert.NotNil(t, first.Block)
 	second, err := CreateRiskModelReview(tieredModelReview(ns, "two", 77), policy, true, true, 1001)
 	require.NoError(t, err)
 	require.NotNil(t, second.Block)
 	assert.Equal(t, "token", second.Block.SubjectType)
 	assert.Equal(t, "77", second.Block.SubjectValue)
-	assert.Equal(t, int64(2801), second.Block.ExpiresAt)
+	assert.Equal(t, int64(2800), second.Block.ExpiresAt)
 	after, err := GetRiskChangeRevision()
 	require.NoError(t, err)
 	assert.Equal(t, change, after, "model confirmations must not invalidate unrelated verdict caches")
@@ -1290,8 +1324,8 @@ func TestRiskTieredTokenConfirmationAndManualBan(t *testing.T) {
 	assert.Nil(t, active)
 	otherToken, err := CreateRiskModelReview(tieredModelReview(ns, "one", 78), policy, true, true, 1002)
 	require.NoError(t, err)
-	assert.Equal(t, 3, otherToken.Score.Score)
-	assert.Nil(t, otherToken.Block)
+	assert.Zero(t, otherToken.Reputation.Score)
+	assert.NotNil(t, otherToken.Block)
 	manual, err := CreateRiskModelReview(tieredModelReview(ns, "manual", 77), policy, false, false, 1003)
 	require.NoError(t, err)
 	assert.Equal(t, RiskReviewPending, manual.Review.Status)
@@ -1321,7 +1355,9 @@ func TestRiskTieredTokenConfirmationAndManualBan(t *testing.T) {
 	assert.Empty(t, ev.Preview)
 	active, err = GetActiveRiskTokenBlock(7, 77, 1007)
 	require.NoError(t, err)
-	assert.Nil(t, active)
+	require.NotNil(t, active, "independent automatic confirmations remain valid after the manual basis is revoked")
+	assert.Equal(t, "behavior_score", active.Reason)
+	assert.Equal(t, int64(2806), active.ExpiresAt, "the automatic fallback retains its own temporary expiry")
 	replayed, err := CreateRiskModelReview(tieredModelReview(ns, "manual", 77), policy, true, true, 1008)
 	require.NoError(t, err)
 	assert.Equal(t, RiskReviewRevoked, replayed.Review.Status)
@@ -1340,8 +1376,8 @@ func TestRiskTieredTokenConfirmationAndManualBan(t *testing.T) {
 	require.NoError(t, db.Create(&bypass).Error)
 	valid, err := CreateRiskModelReview(tieredModelReview(ns, "valid-after-bypass", 80), policy, true, true, 1009)
 	require.NoError(t, err)
-	assert.Equal(t, 3, valid.Score.Score, "incomplete saved confirmations cannot contribute punishment points")
-	assert.Nil(t, valid.Block)
+	assert.Equal(t, 6, valid.Reputation.ConfirmedEvents, "legacy saved confirmations cannot contribute reputation deductions")
+	assert.NotNil(t, valid.Block)
 	_, err = PublishRiskConfig(1, `{}`, 99)
 	require.NoError(t, err)
 	_, err = CreateRiskModelReview(tieredModelReview(ns, "stale-config", 77), policy, true, true, 1010)
@@ -1373,6 +1409,7 @@ func TestRiskTieredModelReviewRaceAndProviderRevision(t *testing.T) {
 	require.NoError(t, err)
 	a := *b
 	a.RequestId, a.Category, a.Scores = "original-a", "jailbreak", `{"jailbreak":0.05}`
+	a.Assessments = `[{"category":"jailbreak","severity":"fixed","severity_status":"fixed","safety_score":0.05}]`
 	a.ScreeningScore, a.ScreeningReason = 3, "user_rule"
 	confirmed, err := CreateRiskModelReview(&a, policy, true, true, 1001)
 	require.NoError(t, err)
@@ -1383,21 +1420,20 @@ func TestRiskTieredModelReviewRaceAndProviderRevision(t *testing.T) {
 	assert.Equal(t, a.Scores, confirmed.Review.Scores, "use the trusted result, not the faster replay's scores")
 	assert.Equal(t, a.Evidence, confirmed.Review.Evidence)
 	assert.Equal(t, a.OriginalRequest, confirmed.Review.OriginalRequest)
-	assert.Equal(t, 3, confirmed.Score.Score)
-	assert.Equal(t, 1, confirmed.Score.ConfirmedEvents)
-	require.NotNil(t, confirmed.Block)
-	assert.Equal(t, int64(2801), confirmed.Block.ExpiresAt, "automatic punishment remains temporary")
+	assert.Equal(t, 80, confirmed.Reputation.Score)
+	assert.Equal(t, 1, confirmed.Reputation.ConfirmedEvents)
+	assert.Nil(t, confirmed.Block, "one confirmed violation is below the punishment threshold")
 	replayed, err := CreateRiskModelReview(&a, policy, true, true, 1002)
 	require.NoError(t, err)
 	assert.Equal(t, confirmed.Review.History, replayed.Review.History)
-	assert.Equal(t, 3, replayed.Score.Score)
+	assert.Equal(t, 80, replayed.Reputation.Score)
 	_, err = ResolveRiskReview(confirmed.Review.Id, 2, 99, "revoke", "", "false positive", policy, false, 1003)
 	require.NoError(t, err)
 	a.RequestId = "late-after-revoke"
 	replayed, err = CreateRiskModelReview(&a, policy, true, true, 1004)
 	require.NoError(t, err)
 	assert.Equal(t, RiskReviewRevoked, replayed.Review.Status)
-	assert.Zero(t, replayed.Score.Score)
+	assert.Equal(t, 100, replayed.Reputation.Score)
 	assert.Empty(t, replayed.Review.OriginalRequest)
 	block, err := GetActiveRiskTokenBlock(7, 77, 1004)
 	require.NoError(t, err)
@@ -1414,7 +1450,7 @@ func TestRiskTieredModelReviewRaceAndProviderRevision(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, RiskReviewDismissed, replayed.Review.Status)
 	assert.Empty(t, replayed.Review.Evidence)
-	assert.Zero(t, replayed.Score.Score)
+	assert.Equal(t, 100, replayed.Reputation.Score)
 
 	for i, tc := range []struct {
 		name   string
@@ -1477,6 +1513,453 @@ func TestRiskTieredModelReviewRaceAndProviderRevision(t *testing.T) {
 	require.NoError(t, db.Delete(&provider).Error)
 	_, err = CreateRiskModelReview(tieredModelReview(ns, "provider-removed", 77), policy, true, true, 1022)
 	require.ErrorIs(t, err, ErrRiskRevisionConflict)
+}
+
+func TestRiskReputationDeductionAndRevocation(t *testing.T) {
+	db := useRiskDB(t)
+	require.NoError(t, ReconcileRiskGroupNamespaces([]string{"one", "two"}))
+	namespaces, err := ListRiskGroupNamespaces(true)
+	require.NoError(t, err)
+	// Old saved per-category settings are ignored, including zero and 100.
+	var policy RiskBehaviorPolicy
+	require.NoError(t, common.UnmarshalJsonStr(`{"deductions":{"cyber":{"mild":100,"moderate":100,"severe":100},"nsfw":{"mild":0,"moderate":0,"severe":0}},"manual_severity":"severe"}`, &policy))
+	var confirmed []*RiskReviewResult
+	for i, category := range []string{"cyber", "pentest", "reverse", "nsfw", "jailbreak"} {
+		input := tieredModelReview(namespaces[i%2].Namespace, fmt.Sprintf("violation-%d", i), 77+i)
+		input.Category = category
+		if i == 0 {
+			input.Severity, input.SeverityStatus = "severe", "confirmed"
+			input.Assessments = `[{"category":"reverse","safety_score":0.15,"applied_deduction":99},{"category":"cyber","safety_score":0.1,"applied_deduction":1}]`
+		} else {
+			raw, err := common.Marshal([]RiskAssessment{{Category: category, SafetyScore: 0.1, AppliedDeduction: 100}})
+			require.NoError(t, err)
+			input.Assessments = string(raw)
+		}
+		result, err := CreateRiskModelReview(input, policy, true, true, 1000+int64(i))
+		require.NoError(t, err)
+		assert.Equal(t, 100-20*(i+1), result.Reputation.Score)
+		assert.Equal(t, 20, result.Review.Deduction, "all categories deduct 20 once, including multi-category hits")
+		assert.Empty(t, result.Review.Severity)
+		assert.Empty(t, result.Review.SeverityStatus)
+		assert.Equal(t, 3, result.Review.JudgmentVersion)
+		var assessments []RiskAssessment
+		require.NoError(t, common.UnmarshalJsonStr(result.Review.Assessments, &assessments))
+		for _, assessment := range assessments {
+			assert.Equal(t, 20, assessment.AppliedDeduction)
+			assert.Empty(t, assessment.Severity)
+		}
+		if i < 4 {
+			assert.Nil(t, result.Block)
+		} else {
+			require.NotNil(t, result.Block)
+			assert.Equal(t, "81", result.Block.SubjectValue)
+			assert.Equal(t, int64(2804), result.Block.ExpiresAt)
+		}
+		confirmed = append(confirmed, result)
+	}
+	_, err = CleanupRiskRecords(1005, 1001, 1001)
+	require.NoError(t, err)
+	retained, err := GetRiskReview(confirmed[0].Review.Id)
+	require.NoError(t, err, "the other-group/token restriction retains its reputation dependencies")
+	assert.NotEmpty(t, retained.OriginalRequest)
+	retryInput := tieredModelReview(confirmed[4].Review.Namespace, "another-model-retry", 81)
+	retryInput.IncidentKey, retryInput.Category = confirmed[4].Review.IncidentKey, "jailbreak"
+	retryInput.Assessments = `[{"category":"jailbreak","safety_score":0.1}]`
+	retryInput.Model, retryInput.Fingerprint = "another-model", "another-fingerprint"
+	retry, err := CreateRiskModelReview(retryInput, policy, true, true, 1006)
+	require.NoError(t, err)
+	assert.Equal(t, confirmed[4].Review.Id, retry.Review.Id)
+	assert.Equal(t, 5, retry.Reputation.ConfirmedEvents)
+	revoked, err := ResolveRiskReview(confirmed[0].Review.Id, 2, 99, "revoke", "", "mistake", policy, false, 1007)
+	require.NoError(t, err)
+	assert.Equal(t, 20, revoked.Reputation.Score)
+	active, err := GetActiveRiskTokenBlock(7, 81, 1007)
+	require.NoError(t, err)
+	assert.Nil(t, active, "removing a contributing deduction releases the dependent restriction")
+
+	stale := tieredModelReview(namespaces[0].Namespace, "old-judgment", 77)
+	stale.JudgmentVersion = 2
+	pending, err := CreateRiskModelReview(stale, policy, true, true, 1008)
+	require.NoError(t, err)
+	assert.Equal(t, RiskReviewPending, pending.Review.Status, "an in-flight old judgment cannot auto-confirm under the new rules")
+	assert.Zero(t, pending.Review.Deduction)
+	manualInput := tieredModelReview(namespaces[0].Namespace, "manual", 77)
+	manualInput.Category = "cyber"
+	manualInput.Assessments = `[{"category":"cyber","safety_score":0.2,"severity":"unknown","severity_status":"missing"}]`
+	pending, err = CreateRiskModelReview(manualInput, policy, false, false, 1008)
+	require.NoError(t, err)
+	manual, err := ResolveRiskReview(pending.Review.Id, 1, 99, "confirm", "cyber", "reviewed", policy, false, 1009)
+	require.NoError(t, err)
+	assert.Zero(t, manual.Reputation.Score)
+	assert.Equal(t, 20, manual.Review.Deduction)
+	assert.Empty(t, manual.Review.Severity, "manual confirmation no longer requires a severity")
+	assert.Equal(t, manualInput.Assessments, manual.Review.Assessments, "manual decisions preserve original model evidence")
+	_, err = BanRiskReviewToken(manual.Review.Id, 2, 99, "nsfw", "manual restriction", 1, policy, 1010)
+	require.ErrorIs(t, err, ErrRiskReviewTransition, "a ban cannot rewrite an existing classification")
+	ban, err := BanRiskReviewToken(manual.Review.Id, 2, 99, "cyber", "manual restriction", 1, policy, 1010)
+	require.NoError(t, err)
+	require.NotNil(t, ban.Block)
+	replay, err := BanRiskReviewToken(manual.Review.Id, 2, 99, "cyber", "manual restriction", 1, policy, 1011)
+	require.NoError(t, err)
+	assert.Equal(t, ban.Review.History, replay.Review.History)
+	_, err = CleanupRiskRecords(3000, 2999, 2999)
+	require.NoError(t, err)
+	reputation, err := GetRiskUserReputation(7, 3000)
+	require.NoError(t, err)
+	assert.Zero(t, reputation.Score)
+	assert.Equal(t, 5, reputation.ConfirmedEvents)
+	var remaining int64
+	require.NoError(t, db.Model(&RiskReview{}).Count(&remaining).Error)
+	assert.Zero(t, remaining)
+	var ledger []RiskReputationEntry
+	require.NoError(t, db.Order("id").Find(&ledger).Error)
+	require.Len(t, ledger, 6)
+	duplicate := ledger[0]
+	duplicate.Id = 0
+	require.Error(t, db.Create(&duplicate).Error, "the durable event remains unique after evidence cleanup")
+
+	// A historical category-specific charge and its evidence remain unchanged
+	// when an administrator explicitly bans the token under the new version.
+	historical := tieredModelReview(namespaces[0].Namespace, "historical", 90)
+	historical.UserId, historical.RequestKey, historical.Status, historical.Revision = 8, "historical-key", RiskReviewConfirmed, 2
+	historical.Category, historical.Severity, historical.SeverityStatus, historical.Deduction, historical.JudgmentVersion = "cyber", "severe", "confirmed", 60, 2
+	historical.History = "[]"
+	require.NoError(t, db.Create(historical).Error)
+	oldEntry := RiskReputationEntry{EventKey: "historical-entry", UserId: 8, TokenId: 90, ReviewId: historical.Id, Category: "cyber", Severity: "severe", Deduction: 60, ConfirmedAt: 900}
+	require.NoError(t, db.Create(&oldEntry).Error)
+	require.NoError(t, db.Model(historical).Update("reputation_entry_id", oldEntry.Id).Error)
+	oldBan, err := BanRiskReviewToken(historical.Id, 2, 99, "cyber", "legacy manual ban", 1, policy, 3001)
+	require.NoError(t, err)
+	assert.Equal(t, 40, oldBan.Reputation.Score)
+	assert.Equal(t, 60, oldBan.Review.Deduction)
+	assert.Equal(t, "severe", oldBan.Review.Severity)
+	assert.Equal(t, 2, oldBan.Review.JudgmentVersion)
+	assert.Equal(t, 1, oldBan.Reputation.ConfirmedEvents)
+}
+
+func TestRiskReputationCrossGroupReplayAndLegacyRevocation(t *testing.T) {
+	db := useRiskDB(t)
+	seedHistoricalRiskReputation(t, db, 7, 80, 999)
+	require.NoError(t, ReconcileRiskGroupNamespaces([]string{"one", "two", "three"}))
+	namespaces, err := ListRiskGroupNamespaces(true)
+	require.NoError(t, err)
+	policy := RiskBehaviorPolicy{BlockTTLMinutes: 10}
+	input := tieredModelReview(namespaces[0].Namespace, "same-request", 77)
+	input.IncidentKey = "same-full-context"
+	first, err := CreateRiskModelReview(input, policy, true, true, 1000)
+	require.NoError(t, err)
+	require.NotNil(t, first.Block)
+	input.Namespace = namespaces[1].Namespace
+	second, err := CreateRiskModelReview(input, policy, true, true, 1001)
+	require.NoError(t, err)
+	assert.NotEqual(t, first.Review.Id, second.Review.Id, "review provenance stays group-specific")
+	assert.Equal(t, first.Review.ReputationEntryId, second.Review.ReputationEntryId)
+	assert.Zero(t, second.Review.Deduction)
+	assert.Equal(t, "skipped", second.Review.NotificationStatus)
+	assert.Equal(t, "duplicate_incident", second.Review.NotificationError)
+	assert.Nil(t, second.Block)
+	input.Namespace, input.RequestId = namespaces[2].Namespace, "new-request-same-context"
+	third, err := CreateRiskModelReview(input, policy, true, true, 1002)
+	require.NoError(t, err)
+	assert.Equal(t, first.Review.ReputationEntryId, third.Review.ReputationEntryId)
+	assert.Equal(t, 2, third.Reputation.ConfirmedEvents)
+	input.TokenId, input.RequestId = 78, "independent-token"
+	independent, err := CreateRiskModelReview(input, policy, true, true, 1003)
+	require.NoError(t, err)
+	assert.Equal(t, 3, independent.Reputation.ConfirmedEvents)
+	assert.NotEqual(t, first.Review.ReputationEntryId, independent.Review.ReputationEntryId)
+	require.NotNil(t, independent.Block)
+	active, err := GetActiveRiskTokenBlock(7, 77, 1003)
+	require.NoError(t, err)
+	require.NotNil(t, active)
+	assert.Equal(t, int64(1600), active.ExpiresAt, "configured TTL applies and cross-group replays never extend restrictions")
+	_, err = ResolveRiskReview(third.Review.Id, 2, 99, "revoke", "", "false positive", policy, false, 1004)
+	require.NoError(t, err)
+	for _, id := range []int{first.Review.Id, second.Review.Id, third.Review.Id} {
+		row, err := GetRiskReview(id)
+		require.NoError(t, err)
+		assert.Equal(t, RiskReviewRevoked, row.Status)
+		assert.Empty(t, row.OriginalRequest)
+		assert.Empty(t, row.Evidence)
+	}
+	active, err = GetActiveRiskTokenBlock(7, 77, 1004)
+	require.NoError(t, err)
+	assert.Nil(t, active)
+	active, err = GetActiveRiskTokenBlock(7, 78, 1004)
+	require.NoError(t, err)
+	require.NotNil(t, active, "an independently confirmed different token is not revoked")
+	unchanged, err := GetRiskReview(independent.Review.Id)
+	require.NoError(t, err)
+	assert.Equal(t, RiskReviewConfirmed, unchanged.Status)
+	assert.NotEmpty(t, unchanged.OriginalRequest)
+	_, err = CreateRiskModelReview(input, policy, true, true, 3000)
+	require.NoError(t, err)
+	active, err = GetActiveRiskTokenBlock(7, 78, 3000)
+	require.NoError(t, err)
+	assert.Nil(t, active, "reading/replaying after expiry cannot reapply an old low score")
+
+	legacy := tieredModelReview(namespaces[0].Namespace, "legacy-ban", 79)
+	legacy.RequestKey, legacy.Status, legacy.Points, legacy.Revision, legacy.History = "legacy-ban-key", RiskReviewConfirmed, 3, 2, "[]"
+	legacy.JudgmentVersion = 0
+	require.NoError(t, db.Create(legacy).Error)
+	ids, err := common.Marshal([]int{legacy.Id})
+	require.NoError(t, err)
+	require.NoError(t, db.Model(legacy).Update("block_review_ids", string(ids)).Error)
+	block := RiskSubjectBlock{Namespace: legacy.Namespace, UserId: 7, SubjectType: "token", SubjectValue: "79", Reason: "behavior_score", SourceRequestId: fmt.Sprintf("risk-review:%d", legacy.Id), ExpiresAt: 5000}
+	require.NoError(t, db.Create(&block).Error)
+	_, err = ResolveRiskReview(legacy.Id, 2, 99, "revoke", "", "legacy mistake", policy, false, 3001)
+	require.NoError(t, err)
+	active, err = GetActiveRiskTokenBlock(7, 79, 3001)
+	require.NoError(t, err)
+	assert.Nil(t, active, "legacy blocks still revoke without a reputation ledger entry")
+}
+
+func TestRiskReputationConfirmationOrder(t *testing.T) {
+	db := useRiskDB(t)
+	seedHistoricalRiskReputation(t, db, 7, 60, 998)
+	require.NoError(t, ReconcileRiskGroupNamespaces([]string{"ordered"}))
+	namespaces, err := ListRiskGroupNamespaces(true)
+	require.NoError(t, err)
+	policy := RiskBehaviorPolicy{}
+	firstInput := tieredModelReview(namespaces[0].Namespace, "finishes-first", 77)
+	firstInput.Category, firstInput.Severity, firstInput.SeverityStatus = "cyber", "severe", "confirmed"
+	firstInput.Assessments = `[{"category":"cyber","severity":"severe","severity_status":"confirmed"}]`
+	first, err := CreateRiskModelReview(firstInput, policy, true, true, 1001)
+	require.NoError(t, err)
+	assert.Equal(t, 20, first.Reputation.Score)
+	secondInput := *firstInput
+	secondInput.RequestId, secondInput.IncidentKey, secondInput.Fingerprint, secondInput.TokenId = "finishes-late", "late-context", "late-fingerprint", 78
+	second, err := CreateRiskModelReview(&secondInput, policy, true, true, 1000)
+	require.NoError(t, err)
+	assert.Zero(t, second.Reputation.Score, "a delayed confirmation includes the already committed deduction")
+	assert.Equal(t, int64(1001), second.Reputation.LastViolationAt)
+	require.NotNil(t, second.Block)
+	assert.Equal(t, "78", second.Block.SubjectValue)
+	var entries []RiskReputationEntry
+	require.NoError(t, db.Order("id asc").Find(&entries).Error)
+	require.Len(t, entries, 3)
+	assert.Equal(t, entries[1].ConfirmedAt, entries[2].ConfirmedAt)
+	_, err = ResolveRiskReview(first.Review.Id, 2, 99, "revoke", "", "mistake", policy, false, 1002)
+	require.NoError(t, err)
+	_, err = ResolveRiskReview(second.Review.Id, 2, 99, "revoke", "", "mistake", policy, false, 1003)
+	require.NoError(t, err)
+	thirdInput := tieredModelReview(namespaces[0].Namespace, "after-revocation", 79)
+	third, err := CreateRiskModelReview(thirdInput, policy, true, true, 999)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1001), third.Reputation.LastViolationAt, "revoked entries retain only the monotonic timestamp boundary")
+	assert.Equal(t, 2, third.Reputation.ConfirmedEvents)
+	assert.Equal(t, 80, third.Reputation.TotalDeducted)
+}
+
+func TestRiskReputationIndependentManualRestrictions(t *testing.T) {
+	db := useRiskDB(t)
+	require.NoError(t, ReconcileRiskGroupNamespaces([]string{"manual"}))
+	namespaces, err := ListRiskGroupNamespaces(true)
+	require.NoError(t, err)
+	ns := namespaces[0].Namespace
+	policy := RiskBehaviorPolicy{}
+	for index, tc := range []struct {
+		name          string
+		secondTTL     int
+		revoke        string
+		releaseAll    bool
+		legacyRelease bool
+		rearmExisting bool
+	}{
+		{name: "revoke weaker basis", revoke: "second"},
+		{name: "revoke primary basis", revoke: "first"},
+		{name: "fallback keeps original expiry", secondTTL: 5, revoke: "first"},
+		{name: "explicit release does not resurrect old bases", revoke: "release"},
+		{name: "clear does not resurrect old bases", revoke: "release", releaseAll: true},
+		{name: "legacy release does not resurrect old bases", revoke: "release", legacyRelease: true},
+		{name: "legacy release before rearming same review", revoke: "release", legacyRelease: true, rearmExisting: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tokenID := 100 + index
+			userID := 200 + index
+			createBan := func(request string, at int64, ttl int) *RiskReviewResult {
+				input := tieredModelReview(ns, fmt.Sprintf("%d-%s", tokenID, request), tokenID)
+				input.UserId = userID
+				pending, err := CreateRiskModelReview(input, policy, false, false, at)
+				require.NoError(t, err)
+				result, err := BanRiskReviewToken(pending.Review.Id, 1, 99, "nsfw", request, ttl, policy, at)
+				require.NoError(t, err)
+				require.NotNil(t, result.Block)
+				return result
+			}
+			first := createBan("first", 1000, 0)
+			second := createBan("second", 1001, tc.secondTTL)
+			assert.Equal(t, first.Block.SourceRequestId, second.Block.SourceRequestId, "an equal or stronger independent basis is preserved")
+			switch tc.revoke {
+			case "second":
+				_, err := ResolveRiskReview(second.Review.Id, 2, 99, "revoke", "", "mistake", policy, false, 1002)
+				require.NoError(t, err)
+				active, err := GetActiveRiskTokenBlock(userID, tokenID, 1002)
+				require.NoError(t, err)
+				require.NotNil(t, active)
+				assert.Equal(t, first.Block.SourceRequestId, active.SourceRequestId)
+			case "first":
+				_, err := ResolveRiskReview(first.Review.Id, 2, 99, "revoke", "", "mistake", policy, false, 1002)
+				require.NoError(t, err)
+				active, err := GetActiveRiskTokenBlock(userID, tokenID, 1002)
+				require.NoError(t, err)
+				require.NotNil(t, active)
+				assert.Equal(t, fmt.Sprintf("risk-review:%d", second.Review.Id), active.SourceRequestId)
+				if tc.secondTTL == 0 {
+					assert.Zero(t, active.ExpiresAt)
+				} else {
+					assert.Equal(t, int64(1001+tc.secondTTL*60), active.ExpiresAt)
+				}
+			case "release":
+				if tc.legacyRelease {
+					for _, previous := range []*RiskReview{first.Review, second.Review} {
+						var history []riskReviewHistory
+						require.NoError(t, common.UnmarshalJsonStr(previous.History, &history))
+						for i := range history {
+							history[i].BlockId, history[i].BlockExpiresAt = 0, 0
+						}
+						encoded, err := common.Marshal(history)
+						require.NoError(t, err)
+						require.NoError(t, db.Model(previous).Update("history", string(encoded)).Error)
+					}
+					require.NoError(t, db.Model(&RiskSubjectBlock{}).Where("id = ?", first.Block.Id).Updates(map[string]any{"released_at": 1002, "released_by": 99}).Error)
+				} else if tc.releaseAll {
+					changed, err := ClearRiskBlocks(ns, 99, 1002)
+					require.NoError(t, err)
+					assert.Positive(t, changed)
+				} else {
+					changed, err := ReleaseRiskBlock(first.Block.Id, 99, 1002)
+					require.NoError(t, err)
+					assert.True(t, changed)
+				}
+				var third *RiskReviewResult
+				if tc.rearmExisting {
+					third, err = BanRiskReviewToken(second.Review.Id, 2, 99, "nsfw", "third", 0, policy, 1010)
+					require.NoError(t, err)
+				} else {
+					third = createBan("third", 1010, 0)
+				}
+				_, err := ResolveRiskReview(third.Review.Id, third.Review.Revision, 99, "revoke", "", "mistake", policy, false, 1011)
+				require.NoError(t, err)
+				active, err := GetActiveRiskTokenBlock(userID, tokenID, 1011)
+				require.NoError(t, err)
+				assert.Nil(t, active, "an explicit release applies to all existing manual bases")
+			}
+		})
+	}
+}
+
+func TestRiskReputationIndependentAutomaticRestrictions(t *testing.T) {
+	db := useRiskDB(t)
+	require.NoError(t, ReconcileRiskGroupNamespaces([]string{"first", "second"}))
+	namespaces, err := ListRiskGroupNamespaces(true)
+	require.NoError(t, err)
+	for index, tc := range []struct {
+		name              string
+		manualFirst       bool
+		secondEnabled     bool
+		explicitlyRelease bool
+		releaseAll        bool
+		secondTTL         int
+		wantExpiry        int64
+	}{
+		{name: "independent confirmation survives revocation", secondEnabled: true, secondTTL: 30, wantExpiry: 2800},
+		{name: "disabled confirmation is not a restriction basis", secondTTL: 30},
+		{name: "shorter automatic basis keeps its own expiry", secondEnabled: true, secondTTL: 1, wantExpiry: 1061},
+		{name: "manual permanent never makes automatic permanent", manualFirst: true, secondEnabled: true, secondTTL: 30, wantExpiry: 2801},
+		{name: "explicit release suppresses automatic bases", secondEnabled: true, explicitlyRelease: true, secondTTL: 30},
+		{name: "clear suppresses automatic bases", secondEnabled: true, explicitlyRelease: true, releaseAll: true, secondTTL: 30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			userID, tokenID := 500+index, 600+index
+			seedHistoricalRiskReputation(t, db, userID, 80, 999)
+			policy := RiskBehaviorPolicy{}
+			input := tieredModelReview(namespaces[0].Namespace, fmt.Sprintf("%d-first", tokenID), tokenID)
+			input.UserId = userID
+			first, err := CreateRiskModelReview(input, policy, !tc.manualFirst, true, 1000)
+			if tc.manualFirst {
+				require.NoError(t, err)
+				first, err = BanRiskReviewToken(first.Review.Id, 1, 99, "nsfw", "permanent", 0, policy, 1000)
+			}
+			require.NoError(t, err)
+			require.NotNil(t, first.Block)
+			secondInput := tieredModelReview(namespaces[1].Namespace, fmt.Sprintf("%d-second", tokenID), tokenID)
+			secondInput.UserId = userID
+			secondPolicy := RiskBehaviorPolicy{BlockTTLMinutes: tc.secondTTL}
+			second, err := CreateRiskModelReview(secondInput, secondPolicy, true, tc.secondEnabled, 1001)
+			require.NoError(t, err)
+			assert.Equal(t, 3, second.Reputation.ConfirmedEvents)
+			if tc.manualFirst {
+				_, err := CleanupRiskRecords(1002, 1002, 1002)
+				require.NoError(t, err)
+				retained, err := GetRiskReview(second.Review.Id)
+				require.NoError(t, err, "manual restrictions retain another group's active automatic basis")
+				assert.NotEmpty(t, retained.OriginalRequest)
+			}
+			if tc.explicitlyRelease {
+				if tc.releaseAll {
+					changed, err := ClearRiskBlocks(first.Block.Namespace, 99, 1002)
+					require.NoError(t, err)
+					assert.Positive(t, changed)
+				} else {
+					changed, err := ReleaseRiskBlock(first.Block.Id, 99, 1002)
+					require.NoError(t, err)
+					assert.True(t, changed)
+				}
+				thirdInput := tieredModelReview(namespaces[0].Namespace, fmt.Sprintf("%d-third", tokenID), tokenID)
+				thirdInput.UserId = userID
+				third, err := CreateRiskModelReview(thirdInput, policy, true, true, 1003)
+				require.NoError(t, err)
+				require.NotNil(t, third.Block)
+				_, err = ResolveRiskReview(third.Review.Id, 2, 99, "revoke", "", "mistake", policy, false, 1004)
+				require.NoError(t, err)
+			} else {
+				_, err := ResolveRiskReview(first.Review.Id, 2, 99, "revoke", "", "mistake", policy, false, 1003)
+				require.NoError(t, err)
+			}
+			active, err := GetActiveRiskTokenBlock(userID, tokenID, 1004)
+			require.NoError(t, err)
+			if tc.wantExpiry == 0 {
+				assert.Nil(t, active, "only explicitly authorized and unreleased bases can survive")
+			} else {
+				require.NotNil(t, active)
+				assert.Equal(t, fmt.Sprintf("risk-review:%d", second.Review.Id), active.SourceRequestId)
+				assert.Equal(t, "behavior_score", active.Reason)
+				assert.Equal(t, tc.wantExpiry, active.ExpiresAt)
+			}
+		})
+	}
+}
+
+func TestRiskReputationRecovery(t *testing.T) {
+	const start int64 = 1000
+	entries := []RiskReputationEntry{{Id: 1, Deduction: 60, ConfirmedAt: start}}
+	for _, tc := range []struct {
+		name             string
+		at               int64
+		score, recovered int
+		next             int64
+	}{
+		{"before seven days", start + 7*86400 - 1, 40, 0, start + 7*86400},
+		{"first recovery", start + 7*86400, 45, 5, start + 8*86400},
+		{"next full day", start + 8*86400, 50, 10, start + 9*86400},
+		{"at ceiling", start + 18*86400, 100, 60, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			summary := replayRiskReputation(entries, tc.at)
+			assert.Equal(t, tc.score, summary.Score)
+			assert.Equal(t, tc.recovered, summary.RecoveredPoints)
+			assert.Equal(t, tc.next, summary.NextRecoveryAt)
+		})
+	}
+	entries = append(entries, RiskReputationEntry{Id: 2, Deduction: 20, ConfirmedAt: start + 8*86400})
+	summary := replayRiskReputation(entries, start+14*86400)
+	assert.Equal(t, 30, summary.Score)
+	assert.Equal(t, start+15*86400, summary.NextRecoveryAt, "a new confirmation restarts the seven-day clock")
+	entries[1].RevokedAt = start + 14*86400
+	summary = replayRiskReputation(entries, start+14*86400)
+	assert.Equal(t, 80, summary.Score, "revocation restores the recovery schedule of valid events")
+	assert.Equal(t, 40, summary.RecoveredPoints)
 }
 
 func TestRiskTieredNotifications(t *testing.T) {
@@ -1588,4 +2071,49 @@ type riskBlockNW48 struct {
 	ExpiresAt       int64  `json:"expires_at" gorm:"bigint"`
 	ReleasedAt      int64  `json:"released_at" gorm:"bigint"`
 	ReleasedBy      int    `json:"released_by"`
+}
+
+// Exact b4a8322ee review schema, before reputation fields.
+type riskReviewB4 struct {
+	Id                       int    `json:"id"`
+	RequestKey               string `json:"-" gorm:"type:varchar(64);uniqueIndex:idx_risk_review_request"`
+	DuplicateOf              int    `json:"-"`
+	RequestId                string `json:"request_id" gorm:"type:varchar(64)"`
+	CreatedAt                int64  `json:"created_at" gorm:"bigint;index:idx_risk_review_scope,priority:3"`
+	Namespace                string `json:"namespace" gorm:"type:varchar(32);index:idx_risk_review_scope,priority:1"`
+	GroupName                string `json:"group_name" gorm:"type:varchar(128)"`
+	UserId                   int    `json:"user_id" gorm:"index:idx_risk_review_scope,priority:2"`
+	TokenId                  int    `json:"token_id"`
+	JudgmentSource           string `json:"judgment_source" gorm:"type:varchar(12)"`
+	ScreeningScore           int    `json:"screening_score"`
+	ScreeningReason          string `json:"screening_reason" gorm:"type:varchar(64)"`
+	ConfigRevision           int64  `json:"config_revision" gorm:"bigint"`
+	OriginalRequest          string `json:"original_request" gorm:"size:1048576"`
+	OriginalRequestTruncated bool   `json:"original_request_truncated"`
+	OriginalRequestHash      string `json:"original_request_hash" gorm:"type:varchar(64)"`
+	NotificationStatus       string `json:"notification_status" gorm:"type:varchar(12);index:idx_risk_review_notification"`
+	NotificationAt           int64  `json:"notification_at" gorm:"bigint"`
+	NotificationError        string `json:"notification_error" gorm:"type:varchar(48)"`
+	Mode                     string `json:"mode" gorm:"type:varchar(12)"`
+	Layer                    string `json:"layer" gorm:"type:varchar(16)"`
+	Category                 string `json:"category" gorm:"type:varchar(32)"`
+	Reason                   string `json:"reason" gorm:"type:varchar(64)"`
+	Model                    string `json:"model" gorm:"type:varchar(128)"`
+	ProviderModel            string `json:"provider_model" gorm:"type:varchar(120)"`
+	Scores                   string `json:"scores" gorm:"type:text"`
+	PolicyKey                string `json:"policy_key" gorm:"type:varchar(64)"`
+	PolicyRevision           int    `json:"policy_revision"`
+	Fingerprint              string `json:"fingerprint" gorm:"type:varchar(64)"`
+	IncidentKey              string `json:"incident_key" gorm:"type:varchar(64)"`
+	Evidence                 string `json:"evidence" gorm:"size:131072"`
+	EvidenceTruncated        bool   `json:"evidence_truncated"`
+	Coverage                 string `json:"coverage" gorm:"type:varchar(16)"`
+	Status                   string `json:"status" gorm:"type:varchar(12);index:idx_risk_review_status"`
+	Points                   int    `json:"points"`
+	Revision                 int    `json:"revision"`
+	ReviewedAt               int64  `json:"reviewed_at" gorm:"bigint"`
+	ReviewedBy               int    `json:"reviewed_by"`
+	ReviewNote               string `json:"review_note" gorm:"type:varchar(500)"`
+	History                  string `json:"history" gorm:"type:text"`
+	BlockReviewIds           string `json:"-" gorm:"type:text"`
 }

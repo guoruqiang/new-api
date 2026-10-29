@@ -61,19 +61,26 @@ const candidate: RiskReviewDetail = {
     evidence_truncated: false,
     coverage: 'tail_window',
     status: 'pending',
-    points: 0,
+    deduction: 0,
+    severity: '',
+    severity_status: '',
+    assessments: '[{"category":"nsfw","safety_score":0.1}]',
+    judgment_version: 2,
     revision: 1,
     reviewed_at: 0,
     reviewed_by: 0,
     review_note: '',
     history: '[]',
   },
-  score: {
-    score: 3,
+  reputation: {
+    score: 80,
+    initial_score: 100,
+    ban_threshold: 0,
     confirmed_events: 1,
-    window_minutes: 10,
-    threshold: 6,
-    block_ttl_minutes: 30,
+    total_deducted: 20,
+    recovered_points: 0,
+    last_violation_at: 1760000000,
+    next_recovery_at: 1760604800,
   },
   behavior_enabled: true,
   auto_block_enabled: false,
@@ -82,11 +89,33 @@ const candidate: RiskReviewDetail = {
 }
 
 it.each([
-  { minutes: 30, status: 'pending' as const },
-  { minutes: 0, status: 'confirmed' as const },
+  {
+    minutes: 30,
+    status: 'pending' as const,
+    category: 'nsfw',
+    severity: 'fixed',
+  },
+  {
+    minutes: 0,
+    status: 'confirmed' as const,
+    category: 'nsfw',
+    severity: 'fixed',
+  },
+  {
+    minutes: 30,
+    status: 'confirmed' as const,
+    category: 'cyber',
+    severity: 'moderate',
+  },
+  {
+    minutes: 30,
+    status: 'confirmed' as const,
+    category: 'cyber',
+    severity: '',
+  },
 ])(
-  'bans the $status incident token for $minutes minutes even when current scoring is disabled',
-  async ({ minutes, status }) => {
+  'bans the $status $category/$severity incident token for $minutes minutes while preserving its confirmation',
+  async ({ minutes, status, category, severity }) => {
     vi.spyOn(api, 'get').mockResolvedValue({
       data: {
         success: true,
@@ -94,7 +123,7 @@ it.each([
           ...candidate,
           mode: 'observe',
           behavior_enabled: false,
-          review: { ...candidate.review, status },
+          review: { ...candidate.review, status, category, severity },
         },
       },
     })
@@ -114,6 +143,15 @@ it.each([
     ).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Ban this API token' }))
     const dialog = screen.getByRole('alertdialog')
+    const categoryInput = within(dialog).getByRole('combobox', {
+      name: 'Category',
+    })
+    expect(categoryInput).toHaveValue(category)
+    if (status === 'confirmed') expect(categoryInput).toBeDisabled()
+    else expect(categoryInput).toBeEnabled()
+    expect(
+      within(dialog).queryByRole('combobox', { name: 'Severity' })
+    ).not.toBeInTheDocument()
     expect(
       within(dialog).getByRole('button', { name: 'Ban this API token' })
     ).toBeDisabled()
@@ -137,7 +175,7 @@ it.each([
         data: {
           revision: 1,
           action: 'ban',
-          category: 'nsfw',
+          category,
           note: 'Verified the original role content',
           ttl_minutes: minutes,
         },
@@ -343,6 +381,44 @@ it('shows an empty candidate list after retrying a failed load', async () => {
   expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
 })
 
+it('distinguishes a duplicate incident with zero actual deduction from its original model assessment', async () => {
+  const assessments = '[{"category":"nsfw","applied_deduction":100}]'
+  vi.spyOn(api, 'get').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        ...candidate,
+        review: {
+          ...candidate.review,
+          status: 'confirmed',
+          deduction: 0,
+          assessments,
+          notification_status: 'skipped',
+          notification_error: 'duplicate_incident',
+        },
+      },
+    },
+  })
+  renderRisk(<ReviewDetail id={7} canWrite canUnblock onClose={() => {}} />)
+  expect(
+    await screen.findByRole('definition', {
+      name: 'Actual reputation deduction',
+    })
+  ).toHaveTextContent(/^0$/)
+  const assessment = screen.getByRole('region', {
+    name: 'Model category assessments',
+  })
+  expect(assessment).toHaveTextContent(assessments)
+  expect(assessment).toHaveTextContent(
+    'Saved model assessments are shown as recorded. Historical severity or deduction values may differ from the actual reputation deduction above.'
+  )
+  expect(
+    screen.getByText(
+      'This violation was already processed. This duplicate does not deduct reputation or send another email.'
+    )
+  ).toBeVisible()
+})
+
 it('validates review notes and optional integer token restriction duration', () => {
   for (const note of ['', '   ', '😀'.repeat(501)]) {
     expect(
@@ -412,8 +488,18 @@ it('filters pending candidates by namespace and loads evidence only when details
     await within(detail).findByText(candidate.review.evidence)
   ).toBeVisible()
   expect(within(detail).getByText('Tail window reviewed')).toBeVisible()
-  expect(within(detail).getByText('Confirmed score: 3 / 6')).toBeVisible()
+  expect(within(detail).getByText('User reputation: 80 / 100')).toBeVisible()
+  expect(within(detail).getByText(/Next reputation recovery/)).toBeVisible()
+  expect(
+    within(detail).getByRole('region', { name: 'Model category assessments' })
+  ).toHaveTextContent(candidate.review.assessments)
   expect(within(detail).getByText('Record only')).toBeVisible()
+  expect(
+    within(detail).queryByText('Severity assessment')
+  ).not.toBeInTheDocument()
+  expect(
+    within(detail).queryByText('Needs manual severity')
+  ).not.toBeInTheDocument()
 })
 
 it('requires a note before confirming and submits the selected category with the candidate revision', async () => {
@@ -428,14 +514,21 @@ it('requires a note before confirming and submits the selected category with the
         review: {
           ...candidate.review,
           status: 'confirmed',
-          points: 1,
+          deduction: 20,
+          severity: '',
+          severity_status: '',
           category: 'cyber',
           revision: 2,
           review_note: 'Confirmed from submitted evidence',
           reviewed_at: 1760000001,
           reviewed_by: 1,
         },
-        score: { ...candidate.score, score: 4, confirmed_events: 2 },
+        reputation: {
+          ...candidate.reputation,
+          score: 60,
+          confirmed_events: 2,
+          total_deducted: 40,
+        },
       },
     },
   })
@@ -446,8 +539,8 @@ it('requires a note before confirming and submits the selected category with the
   )
   const confirmation = screen.getByRole('alertdialog')
   expect(
-    within(confirmation).getByText('Points on confirmation: 3')
-  ).toBeVisible()
+    within(confirmation).queryByRole('combobox', { name: 'Severity' })
+  ).not.toBeInTheDocument()
   expect(
     within(confirmation).getByRole('button', { name: 'Confirm violation' })
   ).toBeDisabled()
@@ -455,9 +548,6 @@ it('requires a note before confirming and submits the selected category with the
     within(confirmation).getByLabelText('Category'),
     'cyber'
   )
-  expect(
-    within(confirmation).getByText('Points on confirmation: 1')
-  ).toBeVisible()
   await user.type(
     within(confirmation).getByLabelText('Review note'),
     'Confirmed from submitted evidence'
@@ -477,13 +567,13 @@ it('requires a note before confirming and submits the selected category with the
       },
     })
   )
-  expect(await screen.findByText('Confirmed score: 4 / 6')).toBeVisible()
+  expect(await screen.findByText('User reputation: 60 / 100')).toBeVisible()
   expect(
     screen.getByRole('button', { name: 'Revoke confirmation' })
   ).toBeEnabled()
 })
 
-it('keeps an observation confirmation at zero points and shows that it cannot block', async () => {
+it('keeps observation confirmation from deducting reputation or suspending tokens', async () => {
   const observed = {
     ...candidate,
     review: { ...candidate.review, mode: 'observe' as const },
@@ -508,7 +598,9 @@ it('keeps an observation confirmation at zero points and shows that it cannot bl
   await user.click(screen.getByRole('button', { name: 'Confirm violation' }))
   const confirmation = screen.getByRole('alertdialog')
   expect(
-    within(confirmation).getByText('Points on confirmation: 0')
+    within(confirmation).getByText(
+      'Each distinct confirmed violation deducts 20 reputation points. Observation confirmations do not change reputation.'
+    )
   ).toBeVisible()
   await user.type(
     within(confirmation).getByLabelText('Review note'),
@@ -621,7 +713,11 @@ it.each([
         data: {
           ...candidate,
           review: { ...current.review, status: input.result, revision: 5 },
-          score: { ...candidate.score, score: 0 },
+          reputation: {
+            ...candidate.reputation,
+            score: 100,
+            total_deducted: 0,
+          },
         },
       },
     })
@@ -652,7 +748,7 @@ it.each([
         })
       )
     )
-    expect(await screen.findByText('Confirmed score: 0 / 6')).toBeVisible()
+    expect(await screen.findByText('User reputation: 100 / 100')).toBeVisible()
     expect(
       screen.queryByRole('button', { name: input.label })
     ).not.toBeInTheDocument()

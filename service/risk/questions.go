@@ -44,6 +44,7 @@ var BuiltinQuestions = []Question{
 	{ID: "reverse", Label: "逆向", Summary: "软件逆向、破解授权、提取密钥", Instructions: "当前用户是否没有真实要求破解第三方付费授权、盗取密钥或绕过无权访问的软件保护？这些越权目标给低安全分；对自己或已获授权的软件做调试、兼容性分析、逆向研究、恶意样本防御分析可以。仅出现逆向、脱壳、密钥等词，引用操作记录或讨论防护不算违规；结合具体目标和操作判断，不能只凭声称授权豁免实际盗用。", Enabled: true, Builtin: true},
 	{ID: "pentest", Label: "渗透", Summary: "未授权渗透、漏洞利用、提权", Instructions: "当前用户是否没有真实要求入侵未经授权的目标？未授权漏洞利用、提权、横向移动或窃取数据给低安全分。自有系统或明确授权范围内的测试、靶场、漏洞修复与防御分析可以；提到渗透、ssh或漏洞本身不算违规。结合目标、操作和上下文判断实际意图，引用攻击样本或否定攻击不等于执行，声称授权也不能掩盖明显越权行为。", Enabled: true, Builtin: true},
 	{ID: "cyber", Label: "网络攻击", Summary: "恶意软件、钓鱼、拒绝服务、窃取凭据", Instructions: "当前用户是否没有真实要求实施恶意网络行为？部署恶意软件、诈骗钓鱼、拒绝服务、窃取凭据或破坏第三方系统给低安全分。恶意样本分析、钓鱼识别教育、日志排错、漏洞修复和授权防御可以。不要把被分析的代码、工具输出、引用或否定句当成用户要执行的指令；根据实际用途判断，不能仅凭教育或测试标签放过恶意操作。", Enabled: true, Builtin: true},
+	{ID: "distill", Label: "蒸馏", Summary: "未经许可套取非公开训练或推理样本", Instructions: "当前用户是否没有明确违反本站规则、未经许可套取非公开训练材料或受保护推理样本？只有能从当前请求和上下文确认此类越权提取目的时给低安全分。普通JSON/XML输出格式、数学boxed、分步解题、整理用户自有资料、公开知识与蒸馏原理讨论、获准生成训练数据本身都可以。不得仅凭关键词、批量格式或公开学习目的判违规；引用、否定、检测越权样本不等于请求执行。", Enabled: true, Builtin: true},
 }
 
 var legacyQuestionInstructions = map[string][]string{
@@ -85,6 +86,7 @@ func builtinQuestionIDs() map[string]bool {
 type askedQuestion struct {
 	id           string
 	instructions string
+	category     string
 }
 
 // askedQuestions lists the enabled questions in order, then the custom
@@ -106,14 +108,21 @@ func askedQuestions(cfg ModelConfig) []askedQuestion {
 			if hasSpecialist && q.ID == "safety" && q.Instructions == SafetyInstruction {
 				continue
 			}
-			asked = append(asked, askedQuestion{id: q.ID, instructions: q.Instructions})
+			category := "custom"
+			for _, builtin := range BuiltinQuestions {
+				if q.ID == builtin.ID && q.Instructions == builtin.Instructions {
+					category = builtin.ID
+					break
+				}
+			}
+			asked = append(asked, askedQuestion{id: q.ID, instructions: q.Instructions, category: category})
 		}
 	}
 	if cfg.CustomInstruction != "" && cfg.CustomInstruction != SafetyInstruction {
-		asked = append(asked, askedQuestion{id: "custom", instructions: cfg.CustomInstruction})
+		asked = append(asked, askedQuestion{id: "custom", instructions: cfg.CustomInstruction, category: "custom"})
 	}
 	if len(asked) == 0 {
-		asked = append(asked, askedQuestion{id: "safety", instructions: SafetyInstruction})
+		asked = append(asked, askedQuestion{id: "safety", instructions: SafetyInstruction, category: "safety"})
 	}
 	return asked
 }

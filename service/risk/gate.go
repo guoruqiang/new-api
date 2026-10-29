@@ -82,6 +82,8 @@ func existingRequestState(c *gin.Context) *requestState {
 
 var classifierFor = func(cfg ProviderConfig) Classifier { return runtimeFor(cfg) }
 
+var attemptTime = time.Now
+
 type evaluation struct {
 	snapshot   *Snapshot
 	binding    ResolvedBinding
@@ -150,6 +152,7 @@ func verdictKey(ev evaluation, provider ProviderConfig, modelName, document stri
 		Revision   int64    `json:"revision"`
 		Namespace  string   `json:"ns"`
 		User       int      `json:"u"`
+		Token      int      `json:"token"`
 		Provider   string   `json:"p"`
 		Model      string   `json:"m"`
 		Questions  []string `json:"q"`
@@ -158,14 +161,16 @@ func verdictKey(ev evaluation, provider ProviderConfig, modelName, document stri
 		Preprocess string   `json:"pp"`
 		Document   string   `json:"d"`
 		Context    string   `json:"context"`
+		Policy     string   `json:"policy"`
 	}{
 		ev.snapshot.ChangeRevision,
-		ev.attempt.Namespace, ev.attempt.UserID,
+		ev.attempt.Namespace, ev.attempt.UserID, ev.attempt.TokenID,
 		providerFingerprint(ProviderConfig{Type: provider.Type, BaseURL: provider.BaseURL, KeyLines: endpointLines(provider)}),
 		modelName, asked, p.Threshold, p.NearMissBand,
-		fmt.Sprintf("%d:%t:%t", PreprocessVersion, ev.binding.Policy.Payload.HardRegex.StripReminders, ev.binding.Policy.Payload.HardRegex.ExpandBase64),
+		fmt.Sprintf("%d:%d:%t:%t", model.RiskJudgmentVersion, PreprocessVersion, ev.binding.Policy.Payload.HardRegex.StripReminders, ev.binding.Policy.Payload.HardRegex.ExpandBase64),
 		document,
 		ev.input.ContextDigest,
+		ev.binding.Policy.Fingerprint,
 	})
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])
@@ -230,7 +235,7 @@ func evaluate(ctx context.Context, ev evaluation) (d Decision) {
 			}
 			continue
 		}
-		return blockDecision(d, LayerDistill, hit.Rule, "distill", hit.Evidence, hit.Rule)
+		points, screeningReason = 1, "distill_signal"
 	}
 
 	ruleIncomplete := userIncomplete || contextIncomplete
@@ -244,21 +249,9 @@ func evaluate(ctx context.Context, ev evaluation) (d Decision) {
 		return payload.HardRegex.Enabled
 	}
 	scanned := slices.ContainsFunc(p.hardRules, func(r compiledRule) bool { return allow(r.category) })
-	// A block-tier hit in the user's own text stops the request. Review-tier
-	// hits, and every hit in system, assistant or tool text, go to the model.
+	// Legacy block-tier rules are signals too. Only the decision model may
+	// establish a content violation.
 	if hit, ok := matchHardRules(currentDoc, p.hardRules, allow); ok {
-		if hit.Action == RuleActionBlock {
-			d.JudgmentSource = "rule"
-			d.ScreeningScore, d.ScreeningReason = 3, "user_rule"
-			if payload.Evidence.StoreReviewEvidence {
-				documents, _, _, _ := in.ModelDocuments(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64, payload.Model.MaxAuditChars, &hit)
-				d.ReviewEvidence = strings.Join(documents, "\n\n--- audit document ---\n\n")
-			}
-			if hit.Category == "distill" {
-				return blockDecision(d, LayerDistill, "distill_regex", "distill", hit.Keyword, hit.Rule)
-			}
-			return blockDecision(d, LayerHardRegex, hit.Category, hit.Category, hit.Keyword, hit.Rule)
-		}
 		review = &hit
 		points, screeningReason = 3, "user_rule"
 	}
@@ -284,9 +277,10 @@ func evaluate(ctx context.Context, ev evaluation) (d Decision) {
 			return storeFailure(d, err)
 		}
 		if rec != nil {
-			hit := blockDecision(d, LayerRefusal, ReasonExact, "refusal", ReasonExact, "")
-			hit.RefusalID = rec.Id
-			return hit
+			d.RefusalID, d.Reviewed = rec.Id, true
+			if points == 0 {
+				points, screeningReason = 1, "exact_refusal"
+			}
 		}
 		if cfg.SimilarityEnabled {
 			if sig := Signature(in.SimilarityDocument()); sig != nil {
@@ -337,41 +331,8 @@ func evaluate(ctx context.Context, ev evaluation) (d Decision) {
 		d.Reason = ReasonModelNotTriggered
 		return d
 	}
-	// The incident omits volatile tool output and the routed model: agent
-	// loops and alternate upstream retries do not add new suspicion points.
-	signalRule := ""
-	if review != nil {
-		signalRule = review.Rule
-	} else if signal != nil {
-		signalRule = signal.Rule
+	if signal != nil && review == nil {
 		d.Category = signal.Category
-	}
-	incident, _ := common.Marshal(struct{ User, Reason, Rule string }{currentDoc, screeningReason, signalRule})
-	incidentHash := sha256.Sum256(incident)
-	screen := model.RiskScreeningResult{Score: points, DistinctSignals: 1, ShouldAudit: points >= payload.Screening.Threshold}
-	// Session-authenticated playground requests have no persistent API token.
-	// They can trigger a review themselves, but never share a token ledger.
-	if store, ok := ev.store.(ScreeningStore); ok && ev.attempt.TokenID > 0 {
-		var err error
-		screen, err = store.ScreenSignal(&model.RiskSignal{
-			Namespace: ev.attempt.Namespace, UserId: ev.attempt.UserID, TokenId: ev.attempt.TokenID,
-			RequestId: ev.attempt.RequestID, IncidentKey: hex.EncodeToString(incidentHash[:]),
-			PolicyKey: p.Key, PolicyRevision: p.Revision, Points: points, Reason: screeningReason, Category: d.Category,
-		}, payload.Screening.Policy(), now)
-		if err != nil {
-			return failureDecision(d, payload, LayerGate, ReasonScreeningUnavailable, "screening storage unavailable")
-		}
-	}
-	d.ScreeningScore = screen.Score
-	if screen.PreviouslyAudited {
-		d.ScreeningReason = "previously_audited"
-	}
-	if !screen.ShouldAudit {
-		d.Reason = ReasonScreeningBelowThreshold
-		if screen.Score == 0 {
-			d.Reason = ReasonScreeningRepeated
-		}
-		return d
 	}
 	d.ModelTriggered = true
 	provider, ok := ev.snapshot.Providers[m.ProviderID]
@@ -397,7 +358,6 @@ func evaluate(ctx context.Context, ev evaluation) (d Decision) {
 	modelName := provider.ResolvedModel(m.Model)
 	d.ProviderModel = modelName
 	var failure error
-	var worst *modelHit
 	merged := map[string]float64{}
 	allCached := true
 	freshJudgments := true
@@ -416,19 +376,34 @@ func evaluate(ctx context.Context, ev evaluation) (d Decision) {
 				merged[id] = score
 			}
 		}
-		if hits := judgeScores(v.scores, p.asked, m.Threshold, m.NearMissBand); len(hits) > 0 && (worst == nil || hits[0].score < worst.score) {
-			worst = &hits[0]
-			d.Scores = v.scores
-		}
-	}
-	if worst != nil {
-		d.JudgmentSource = "model"
-		d.AutoConfirm = ev.attempt.TokenID > 0 && payload.Behavior.Enabled && payload.Behavior.AutoConfirmEnabled && !screen.PreviouslyAudited && failure == nil && freshJudgments &&
-			reviewCovered && d.Coverage != CoverageIncomplete && worst.score < m.AutoConfirmThreshold &&
-			payload.Evidence.StoreReviewEvidence && d.ReviewEvidence != "" && in.OriginalRequest != "" && !in.OriginalRequestTruncated
-		return blockDecision(d, LayerModel, "model", worst.category, worst.category, d.Rule)
 	}
 	d.Scores = merged
+	if hits := judgeScores(merged, p.asked, m.Threshold, m.NearMissBand); len(hits) > 0 {
+		d.JudgmentSource = "model"
+		d.JudgmentVersion = model.RiskJudgmentVersion
+		d.Deduction = model.RiskViolationDeduction
+		// Preserve each violated category's lowest safety score. Correlated
+		// questions and multiple audit documents still form one incident.
+		seen := make(map[string]bool, len(hits))
+		for _, hit := range hits {
+			category := "custom"
+			for _, question := range p.asked {
+				if question.id == hit.category {
+					category = question.category
+					break
+				}
+			}
+			if !seen[category] {
+				seen[category] = true
+				d.Assessments = append(d.Assessments, model.RiskAssessment{Category: category, SafetyScore: hit.score, AppliedDeduction: model.RiskViolationDeduction})
+			}
+		}
+		d.AutoConfirm = ev.attempt.TokenID > 0 && payload.Behavior.Enabled && payload.Behavior.AutoConfirmEnabled && failure == nil && freshJudgments &&
+			reviewCovered && d.Coverage != CoverageIncomplete && hits[0].score < m.AutoConfirmThreshold &&
+			payload.Evidence.StoreReviewEvidence && d.ReviewEvidence != "" && in.OriginalRequest != "" && !in.OriginalRequestTruncated
+		category := d.Assessments[0].Category
+		return blockDecision(d, LayerModel, "model", category, category, d.Rule)
+	}
 	if failure != nil {
 		detail := failure.Error()
 		if unavail, ok := failure.(*ErrModelUnavailable); ok {
@@ -475,7 +450,8 @@ func classifyDocuments(ctx context.Context, ev evaluation, provider ProviderConf
 					return
 				}
 			}
-			result, err := classifier.Classify(callCtx, ClassifyRequest{State: document, Questions: ev.binding.Policy.asked, Model: modelName, MaxAttempts: m.MaxAttempts})
+			req := ClassifyRequest{State: document, Questions: ev.binding.Policy.asked, Model: modelName, MaxAttempts: m.MaxAttempts}
+			result, err := classifier.Classify(callCtx, req)
 			if err != nil {
 				verdicts[i] = documentVerdict{err: err}
 				return
@@ -505,7 +481,7 @@ func applyMode(d Decision, mode string) Decision {
 }
 
 // commit preserves violating evidence before an eligible fresh model verdict
-// can add points. Local rules always leave the decision to human review.
+// can affect reputation. Local rules only trigger the model's review.
 func commit(ev evaluation, d Decision) {
 	if d.Outcome == OutcomeBlock || d.Outcome == OutcomeWouldBlock {
 		if d.Layer == LayerDistill || d.Layer == LayerHardRegex || d.Layer == LayerModel {
@@ -549,6 +525,7 @@ func recordReviewCandidate(ev evaluation, d Decision) {
 		encoded, _ := common.Marshal(d.Scores)
 		scores = string(encoded)
 	}
+	assessments, _ := common.Marshal(d.Assessments)
 	// A model switch is still the same incident for behavior scoring. The
 	// original fingerprint is retained to clear the corresponding refusal.
 	incidentInput := *ev.input
@@ -561,6 +538,7 @@ func recordReviewCandidate(ev evaluation, d Decision) {
 		Fingerprint: d.Fingerprint, IncidentKey: Fingerprint(&incidentInput), Evidence: evidence, Coverage: d.Coverage,
 		TokenId: ev.attempt.TokenID, JudgmentSource: d.JudgmentSource,
 		ScreeningScore: d.ScreeningScore, ScreeningReason: d.ScreeningReason, ConfigRevision: d.ConfigRevision,
+		Assessments: string(assessments), Deduction: d.Deduction, JudgmentVersion: d.JudgmentVersion,
 	}
 	if payload.Evidence.StoreReviewEvidence {
 		rec.OriginalRequest = ev.input.OriginalRequest
@@ -705,7 +683,7 @@ func CheckAttempt(c *gin.Context, info *relaycommon.RelayInfo, in AttemptInput) 
 	// the previous attempt's group or policy.
 	st.last = nil
 
-	now := time.Now()
+	now := attemptTime()
 	isFirst := !st.countedFirst
 	st.countedFirst = true
 	route := attemptRoute(c, info, in)
@@ -772,6 +750,7 @@ func CheckAttempt(c *gin.Context, info *relaycommon.RelayInfo, in AttemptInput) 
 		key := fmt.Sprintf("%s|%d|%d|%d|%s|%s|%s", attempt.Namespace, attempt.UserID, snap.ConfigRevision, snap.ChangeRevision, binding.Policy.Fingerprint, providerFingerprint(provider), st.input.Digest)
 		if prev, ok := st.reuse[key]; ok && prev.Blocks() {
 			raw = prev
+			raw.AutoConfirm = false
 		} else {
 			ctx := context.Background()
 			if c.Request != nil {
@@ -789,6 +768,9 @@ func CheckAttempt(c *gin.Context, info *relaycommon.RelayInfo, in AttemptInput) 
 		d.Code = riskErr.GetErrorCode()
 	}
 	if st.input != nil {
+		// Concurrent model calls can finish out of request-start order. Score
+		// against confirmation time so already committed violations are visible.
+		ev.now = attemptTime()
 		commit(ev, d)
 	}
 	rec := Record{Counter: counterKey(attempt, d, isFirst, now)}
