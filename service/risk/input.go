@@ -4,34 +4,19 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"maps"
 	"math"
 	"net/http"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 )
 
-const (
-	deviceIDMin = 8
-	deviceIDMax = 200
-)
-
-type textMode int
-
-const (
-	// textDistill drops tool_result parts inside content arrays, like the
-	// vm2api distill extractor.
-	textDistill textMode = iota
-	// textAll keeps tool payloads; refusal similarity reads them.
-	textAll
-	// textAuthored drops every tool payload; hard rules and the model read it.
-	textAuthored
-)
-
+// Attachments are never audited: images, audio and files are skipped when
+// reading text and replaced by a placeholder in stored evidence.
 var mediaPartTypes = map[string]bool{
 	"image_url": true, "image": true, "input_image": true, "input_file": true,
 	"file": true, "document": true, "input_audio": true, "audio": true,
@@ -42,38 +27,35 @@ func isToolPayload(obj map[string]any) bool {
 	return kind == "tool_result" || kind == "function_call_output" || strings.HasSuffix(kind, "_tool_result")
 }
 
-func contentText(content any, mode textMode) string {
+// contentText returns the authored text of a content value. Tool payloads
+// and attachments contribute nothing.
+func contentText(content any) string {
 	switch v := content.(type) {
 	case string:
 		return v
 	case []any:
 		parts := make([]string, 0, len(v))
 		for _, part := range v {
-			if obj, ok := part.(map[string]any); ok && mode == textDistill && obj["type"] == "tool_result" {
-				continue
-			}
-			if text := contentText(part, mode); text != "" {
+			if text := contentText(part); text != "" {
 				parts = append(parts, text)
 			}
 		}
 		return strings.Join(parts, "\n")
 	case map[string]any:
-		if mode != textAll && isToolPayload(v) {
+		if isToolPayload(v) {
+			return ""
+		}
+		if kind, _ := v["type"].(string); mediaPartTypes[kind] {
 			return ""
 		}
 		if text, ok := v["text"].(string); ok {
 			return text
 		}
-		if mode == textAll && isToolPayload(v) {
-			if output, exists := v["output"]; exists {
-				return contentText(output, mode)
-			}
-		}
 		switch inner := v["content"].(type) {
 		case string:
 			return inner
 		case []any:
-			return contentText(inner, mode)
+			return contentText(inner)
 		}
 	}
 	return ""
@@ -81,7 +63,7 @@ func contentText(content any, mode textMode) string {
 
 // responsesInputTexts reads the Responses input items of one role; items
 // without a role count as user input.
-func responsesInputTexts(input any, mode textMode, role string) []string {
+func responsesInputTexts(input any, role string) []string {
 	switch v := input.(type) {
 	case string:
 		if v == "" || role != "user" {
@@ -98,10 +80,7 @@ func responsesInputTexts(input any, mode textMode, role string) []string {
 				continue
 			}
 			obj, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			if mode != textAll && isToolPayload(obj) {
+			if !ok || isToolPayload(obj) {
 				continue
 			}
 			itemRole, _ := obj["role"].(string)
@@ -115,7 +94,7 @@ func responsesInputTexts(input any, mode textMode, role string) []string {
 			if c, exists := obj["content"]; exists {
 				source = c
 			}
-			if text := contentText(source, mode); text != "" {
+			if text := contentText(source); text != "" {
 				out = append(out, text)
 			}
 		}
@@ -124,7 +103,7 @@ func responsesInputTexts(input any, mode textMode, role string) []string {
 	return nil
 }
 
-func roleTexts(messages []any, roles []string, mode textMode) []string {
+func roleTexts(messages []any, roles ...string) []string {
 	out := make([]string, 0, len(messages))
 	for _, m := range messages {
 		obj, ok := m.(map[string]any)
@@ -135,7 +114,7 @@ func roleTexts(messages []any, roles []string, mode textMode) []string {
 		if !slices.Contains(roles, role) {
 			continue
 		}
-		if text := contentText(obj["content"], mode); text != "" {
+		if text := contentText(obj["content"]); text != "" {
 			out = append(out, text)
 		}
 	}
@@ -143,7 +122,8 @@ func roleTexts(messages []any, roles []string, mode textMode) []string {
 }
 
 // legacyPrompt reads the completions prompt; token arrays cannot be audited.
-func legacyPrompt(prompt any) (texts []string, tokenOnly bool) {
+func legacyPrompt(prompt any) []string {
+	var texts []string
 	switch v := prompt.(type) {
 	case string:
 		if v != "" {
@@ -151,61 +131,12 @@ func legacyPrompt(prompt any) (texts []string, tokenOnly bool) {
 		}
 	case []any:
 		for _, item := range v {
-			switch p := item.(type) {
-			case string:
-				if p != "" {
-					texts = append(texts, p)
-				}
-			default:
-				tokenOnly = true
+			if p, ok := item.(string); ok && p != "" {
+				texts = append(texts, p)
 			}
 		}
 	}
-	return texts, tokenOnly
-}
-
-func userTexts(body map[string]any, messages []any, mode textMode, prompt []string) []string {
-	out := roleTexts(messages, []string{"user"}, mode)
-	out = append(out, responsesInputTexts(body["input"], mode, "user")...)
-	return append(out, prompt...)
-}
-
-// trailingToolOutputs returns the tool results that answer the latest tool
-// call. Agent sessions resend their whole history, so earlier results were
-// already audited with the request that first carried them.
-func trailingToolOutputs(messages []any, input any) []string {
-	var out []string
-	for i := len(messages) - 1; i >= 0; i-- {
-		obj, _ := messages[i].(map[string]any)
-		role, _ := obj["role"].(string)
-		if role == "tool" {
-			if text := contentText(obj["content"], textAll); text != "" {
-				out = append(out, text)
-			}
-			continue
-		}
-		if parts, ok := obj["content"].([]any); ok && role == "user" {
-			for _, part := range parts {
-				if p, ok := part.(map[string]any); ok && isToolPayload(p) {
-					if text := contentText(p, textAll); text != "" {
-						out = append(out, text)
-					}
-				}
-			}
-		}
-		break
-	}
-	items, _ := input.([]any)
-	for i := len(items) - 1; i >= 0; i-- {
-		obj, ok := items[i].(map[string]any)
-		if !ok || !isToolPayload(obj) {
-			break
-		}
-		if text := contentText(obj, textAll); text != "" {
-			out = append(out, text)
-		}
-	}
-	return out
+	return texts
 }
 
 func systemFieldTexts(value any) []string {
@@ -215,33 +146,16 @@ func systemFieldTexts(value any) []string {
 			return []string{v}
 		}
 	case []any:
-		if text := contentText(v, textDistill); text != "" {
+		if text := contentText(v); text != "" {
 			return []string{text}
 		}
 	}
 	return nil
 }
 
-func hasMedia(value any) bool {
-	switch v := value.(type) {
-	case []any:
-		return slices.ContainsFunc(v, hasMedia)
-	case map[string]any:
-		if kind, _ := v["type"].(string); mediaPartTypes[kind] {
-			return true
-		}
-		for _, inner := range v {
-			if hasMedia(inner) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func intField(body map[string]any, keys ...string) *int {
 	for _, key := range keys {
-		if n, ok := body[key].(float64); ok && !math.IsNaN(n) && !math.IsInf(n, 0) {
+		if n, ok := body[key].(float64); ok {
 			value := int(math.Min(math.Max(n, math.MinInt32), math.MaxInt32))
 			return &value
 		}
@@ -269,6 +183,238 @@ func toolNames(tools []any) []string {
 	}
 	slices.Sort(names)
 	return names
+}
+
+// auditTextBudget bounds, in runes, the system and user text the audit reads,
+// so a padded request costs a bounded amount of CPU before billing.
+const auditTextBudget = 256 * 1024
+
+// tailRunes keeps the last limit Unicode code points without splitting UTF-8.
+func tailRunes(text string, limit int) (string, bool) {
+	start := len(text)
+	for start > 0 && limit > 0 {
+		_, size := utf8.DecodeLastRuneInString(text[:start])
+		start -= size
+		limit--
+	}
+	return text[start:], start > 0
+}
+
+// boundText keeps the first and the last runes of a text longer than limit.
+func boundText(text string, limit int) (string, bool) {
+	if len(text) <= limit || utf8.RuneCountInString(text) <= limit {
+		return text, false
+	}
+	if limit <= 1 {
+		return "", true
+	}
+	head := (limit - 1) / 2
+	start := 0
+	for range head {
+		_, size := utf8.DecodeRuneInString(text[start:])
+		start += size
+	}
+	end := len(text)
+	for range limit - 1 - head {
+		_, size := utf8.DecodeLastRuneInString(text[:end])
+		end -= size
+	}
+	return text[:start] + "\n" + text[end:], true
+}
+
+// ExtractInput builds the audit view of a raw request body: chat completions,
+// completions, Claude messages, Responses, or a Responses WebSocket
+// response.create payload.
+func ExtractInput(body []byte, headers http.Header) (*Input, error) {
+	var doc map[string]any
+	if err := common.Unmarshal(body, &doc); err != nil {
+		return nil, err
+	}
+	if doc == nil {
+		return nil, errors.New("request body is not a JSON object")
+	}
+	messages, _ := doc["messages"].([]any)
+	systems := make([]string, 0, 4)
+	for _, text := range slices.Concat(systemFieldTexts(doc["system"]), systemFieldTexts(doc["instructions"]), roleTexts(messages, "system", "developer")) {
+		if !slices.Contains(systems, text) {
+			systems = append(systems, text)
+		}
+	}
+	users := slices.Concat(roleTexts(messages, "user"), responsesInputTexts(doc["input"], "user"), legacyPrompt(doc["prompt"]))
+	in := &Input{
+		Raw:       body,
+		Official:  isOfficialClaudeCodeTraffic(doc, headers),
+		MaxTokens: intField(doc, "max_tokens", "max_output_tokens", "max_completion_tokens", "max_new_tokens"),
+	}
+	in.Model, _ = doc["model"].(string)
+	system, _ := boundText(strings.Join(systems, "\n"), auditTextBudget)
+	if system != "" {
+		in.Systems = []string{system}
+	}
+	if len(users) > 0 {
+		in.LatestUser, _ = boundText(users[len(users)-1], auditTextBudget)
+	}
+	switch {
+	case messages != nil:
+		in.MessageCount = len(messages)
+	case doc["input"] != nil || doc["prompt"] != nil:
+		in.MessageCount = 1
+	}
+	tools, _ := doc["tools"].([]any)
+	in.ToolCount = len(tools)
+	in.ToolNames = toolNames(tools)
+	if thinking, ok := doc["thinking"].(map[string]any); ok {
+		in.Thinking.Type, _ = thinking["type"].(string)
+		in.Thinking.Display, _ = thinking["display"].(string)
+		if budget := intField(thinking, "budget_tokens"); budget != nil {
+			in.Thinking.BudgetTokens = *budget
+		}
+	}
+	in.Thinking.ReasoningEffort, _ = doc["reasoning_effort"].(string)
+	if reasoning, ok := doc["reasoning"].(map[string]any); ok && in.Thinking.ReasoningEffort == "" {
+		in.Thinking.ReasoningEffort, _ = reasoning["effort"].(string)
+	}
+	if n := intField(doc, "n", "num_generations"); n != nil {
+		in.Thinking.N = *n
+	}
+	sum := sha256.Sum256([]byte(NormalizeText(in.distillJoined())))
+	in.ContentHash = hex.EncodeToString(sum[:])
+	return in, nil
+}
+
+// distillJoined is the system text plus the latest user text.
+func (in *Input) distillJoined() string {
+	parts := slices.Clone(in.Systems)
+	if in.LatestUser != "" {
+		parts = append(parts, in.LatestUser)
+	}
+	return strings.Join(parts, "\n")
+}
+
+// auditTexts are the prepared system and latest-user texts that keyword rules
+// scan and the decision model reads.
+type auditTexts struct {
+	system string
+	user   string
+}
+
+func (in *Input) auditTexts(stripReminders, expandBase64 bool) auditTexts {
+	var t auditTexts
+	t.system, _ = PrepareText(strings.Join(in.Systems, "\n"), false, expandBase64)
+	t.user, _ = PrepareText(in.LatestUser, stripReminders, expandBase64)
+	t.system, t.user = NormalizeText(t.system), NormalizeText(t.user)
+	return t
+}
+
+// scan is the text keyword rules match: system first, then the user.
+func (t auditTexts) scan() string {
+	if t.system == "" || t.user == "" {
+		return t.system + t.user
+	}
+	return t.system + "\n" + t.user
+}
+
+const reviewExcerptRunes = 1000
+
+// modelDocument is what the decision model reads: the newest current-user
+// text and as much system context as fits in size runes, labelled by role.
+// A keyword match outside that window is added as a bounded excerpt.
+// OpenAI Moderation classifies content only, so it gets the user text and,
+// for a match in the system text, that excerpt.
+func (t auditTexts) modelDocument(size int, hit keywordHit, moderation bool) string {
+	userStart := len(t.scan()) - len(t.user)
+	part := keywordHit{Text: t.system, Start: hit.Start, End: hit.End}
+	if hit.Start >= userStart {
+		part = keywordHit{Text: t.user, Start: hit.Start - userStart, End: hit.End - userStart}
+	}
+	userTail, _ := tailRunes(t.user, size)
+	if moderation {
+		if part.Text == t.user && part.Start >= len(t.user)-len(userTail) {
+			return userTail
+		}
+		return strings.TrimSpace(part.excerpt(reviewExcerptRunes) + "\n\n" + userTail)
+	}
+	room := size - utf8.RuneCountInString(userTail)
+	systemTail, _ := tailRunes(t.system, max(room, 0))
+	excerpt := ""
+	switch {
+	case part.Text == t.user && part.Start >= len(t.user)-len(userTail):
+	case part.Text == t.system && part.Text != "" && part.Start >= len(t.system)-len(systemTail):
+	default:
+		excerpt = part.excerpt(reviewExcerptRunes)
+		systemTail, _ = tailRunes(t.system, max(room-utf8.RuneCountInString(excerpt), 0))
+	}
+	var b strings.Builder
+	if excerpt != "" {
+		b.WriteString("[review_context]\n" + excerpt + "\n[/review_context]\n")
+	}
+	if systemTail != "" {
+		b.WriteString("[system_context]\n" + systemTail + "\n[/system_context]\n")
+	}
+	b.WriteString("[current_user]\n" + userTail + "\n[/current_user]")
+	return b.String()
+}
+
+// evidenceLimit stays below MySQL 5.7's default 4 MB max_allowed_packet.
+const evidenceLimit = 3 << 20
+
+var dataURLPattern = regexp.MustCompile(`^data:[^,]{0,128},`)
+
+// EvidenceBody returns the request JSON kept with a violation. Attachments
+// are replaced by a size placeholder; everything else is kept as submitted.
+// The result is cut at evidenceLimit bytes, and the original size returned.
+func EvidenceBody(raw []byte) (string, int, bool) {
+	var doc any
+	text := string(raw)
+	if common.Unmarshal(raw, &doc) == nil && omitAttachments(&doc) {
+		if encoded, err := common.Marshal(doc); err == nil {
+			text = string(encoded)
+		}
+	}
+	if len(text) <= evidenceLimit {
+		return text, len(raw), false
+	}
+	cut := evidenceLimit
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut], len(raw), true
+}
+
+func attachmentPlaceholder(size int) string {
+	return "[attachment omitted: " + strconv.Itoa(size) + " bytes]"
+}
+
+// omitAttachments replaces attachment parts and data URLs in place and
+// reports whether anything changed.
+func omitAttachments(value *any) bool {
+	changed := false
+	switch v := (*value).(type) {
+	case string:
+		if len(v) > 256 && dataURLPattern.MatchString(v) {
+			*value, changed = attachmentPlaceholder(len(v)), true
+		}
+	case []any:
+		for i := range v {
+			changed = omitAttachments(&v[i]) || changed
+		}
+	case map[string]any:
+		if kind, _ := v["type"].(string); mediaPartTypes[kind] {
+			encoded, _ := common.Marshal(v)
+			*value = map[string]any{"type": kind, "omitted": attachmentPlaceholder(len(encoded))}
+			return true
+		}
+		for key, inner := range v {
+			if key == "inline_data" || key == "inlineData" {
+				encoded, _ := common.Marshal(inner)
+				v[key], changed = attachmentPlaceholder(len(encoded)), true
+				continue
+			}
+			changed = omitAttachments(&inner) || changed
+			v[key] = inner
+		}
+	}
+	return changed
 }
 
 var legacyUserIDPattern = regexp.MustCompile(`^user_(.*?)_account_(.*?)_session_(.*)$`)
@@ -306,507 +452,6 @@ func parseUserID(raw any) (deviceID, sessionID string, ok bool) {
 		}
 	}
 	return "", "", false
-}
-
-func inboundDeviceID(body map[string]any, headers http.Header) string {
-	var id string
-	if metadata, ok := body["metadata"].(map[string]any); ok {
-		id, _, _ = parseUserID(metadata["user_id"])
-	}
-	if id == "" {
-		if explicit, ok := body["device_id"].(string); ok {
-			id = strings.TrimSpace(explicit)
-		}
-	}
-	if id == "" && headers != nil {
-		id = strings.TrimSpace(headers.Get("X-Kin-Device-Id"))
-	}
-	if n := len([]rune(id)); n < deviceIDMin || n > deviceIDMax {
-		return ""
-	}
-	return id
-}
-
-// auditTextBudget bounds, in runes, each list of texts the audit reads, so a
-// padded request costs a bounded amount of CPU before billing. It exceeds
-// the largest allowed decision model tail window.
-const auditTextBudget = 256 * 1024
-
-// recentTexts keeps the newest texts that fit in budget runes. Local rules and
-// refusal fingerprints retain their existing head-and-tail view; the model
-// uses a true tail, so an old head cannot be spliced into its newest window.
-func recentTexts(texts []string, budget int, tailOnly bool) ([]string, bool) {
-	room := budget
-	for i := len(texts) - 1; i >= 0; i-- {
-		n := utf8.RuneCountInString(texts[i])
-		if n <= room {
-			room -= n
-			continue
-		}
-		kept := slices.Clone(texts[i+1:])
-		if room > 0 {
-			var cut string
-			if tailOnly {
-				cut, _ = tailRunes(texts[i], room)
-			} else {
-				cut, _ = boundText(texts[i], room)
-			}
-			kept = slices.Insert(kept, 0, cut)
-		}
-		return kept, true
-	}
-	return texts, false
-}
-
-// tailRunes keeps the last limit Unicode code points without splitting UTF-8.
-func tailRunes(text string, limit int) (string, bool) {
-	start := len(text)
-	for start > 0 && limit > 0 {
-		_, size := utf8.DecodeLastRuneInString(text[:start])
-		start -= size
-		limit--
-	}
-	return text[start:], start > 0
-}
-
-// boundText keeps the first and the last runes of a text longer than limit.
-func boundText(text string, limit int) (string, bool) {
-	if len(text) <= limit || utf8.RuneCountInString(text) <= limit {
-		return text, false
-	}
-	if limit <= 0 {
-		return "", true
-	}
-	if limit == 1 {
-		_, size := utf8.DecodeRuneInString(text)
-		return text[:size], true
-	}
-	// The separator is part of the budget too.
-	head := (limit - 1) / 2
-	start := 0
-	for range head {
-		_, size := utf8.DecodeRuneInString(text[start:])
-		start += size
-	}
-	end := len(text)
-	for range limit - 1 - head {
-		_, size := utf8.DecodeLastRuneInString(text[:end])
-		end -= size
-	}
-	return text[:start] + "\n" + text[end:], true
-}
-
-// ExtractInput builds the audit view of a raw request body. The body is the
-// client JSON for chat completions, completions, Claude messages, Responses,
-// or a Responses WebSocket response.create payload.
-func ExtractInput(body []byte, headers http.Header) (*Input, error) {
-	var doc map[string]any
-	if err := common.Unmarshal(body, &doc); err != nil {
-		return nil, err
-	}
-	if doc == nil {
-		return nil, errors.New("request body is not a JSON object")
-	}
-	messages, _ := doc["messages"].([]any)
-	prompt, tokenOnly := legacyPrompt(doc["prompt"])
-
-	systems := make([]string, 0, 4)
-	for _, text := range append(append(systemFieldTexts(doc["system"]), systemFieldTexts(doc["instructions"])...),
-		roleTexts(messages, []string{"system", "developer"}, textDistill)...) {
-		if !slices.Contains(systems, text) {
-			systems = append(systems, text)
-		}
-	}
-
-	in := &Input{
-		Systems:           systems,
-		DistillUsers:      userTexts(doc, messages, textDistill, prompt),
-		UserTurns:         userTexts(doc, messages, textAll, prompt),
-		UserAuthored:      userTexts(doc, messages, textAuthored, prompt),
-		Assistants:        append(roleTexts(messages, []string{"assistant"}, textAuthored), responsesInputTexts(doc["input"], textAuthored, "assistant")...),
-		RecentToolOutputs: trailingToolOutputs(messages, doc["input"]),
-		PromptTokenOnly:   tokenOnly,
-		HasMedia:          hasMedia(messages) || hasMedia(doc["input"]) || hasMedia(doc["system"]),
-		DeviceID:          inboundDeviceID(doc, headers),
-		Official:          isOfficialClaudeCodeTraffic(doc, headers),
-		MaxTokens:         intField(doc, "max_tokens", "max_output_tokens", "max_completion_tokens", "max_new_tokens"),
-	}
-	contextHash := sha256.Sum256(body)
-	in.ContextDigest = hex.EncodeToString(contextHash[:])
-	// Punishment identity retains the complete submitted context but not
-	// the routed business model. Switching models is a retry of the same
-	// incident, while changed assistant/tool content remains a new context.
-	incidentContext := maps.Clone(doc)
-	delete(incidentContext, "model")
-	canonicalContext, err := common.Marshal(incidentContext)
-	if err != nil {
-		return nil, err
-	}
-	incidentHash := sha256.Sum256(canonicalContext)
-	in.IncidentContextDigest = hex.EncodeToString(incidentHash[:])
-	in.OriginalRequest, in.OriginalRequestHash, in.OriginalRequestTruncated = originalRoleText(doc)
-	in.Model, _ = doc["model"].(string)
-	if len(in.UserAuthored) > 0 {
-		in.currentUserTruncated = utf8.RuneCountInString(in.UserAuthored[len(in.UserAuthored)-1]) > auditTextBudget
-	}
-	if tail, cut := recentTexts(in.Systems, auditTextBudget, true); cut {
-		in.modelSystems = tail
-	}
-	if tail, cut := recentTexts(in.UserAuthored, auditTextBudget, true); cut {
-		in.modelUsers = tail
-	}
-	if tail, cut := recentTexts(in.Assistants, auditTextBudget, true); cut {
-		in.modelAssistants = tail
-	}
-	if tail, cut := recentTexts(in.RecentToolOutputs, auditTextBudget, true); cut {
-		in.modelTools = tail
-	}
-	for _, list := range []*[]string{&in.Systems, &in.DistillUsers, &in.UserTurns, &in.UserAuthored, &in.Assistants, &in.RecentToolOutputs} {
-		var cut bool
-		*list, cut = recentTexts(*list, auditTextBudget, false)
-		in.Truncated = in.Truncated || cut
-	}
-	if len(in.DistillUsers) > 0 {
-		in.LatestUser = in.DistillUsers[len(in.DistillUsers)-1]
-	}
-	switch {
-	case messages != nil:
-		in.MessageCount = len(messages)
-	case doc["input"] != nil || doc["prompt"] != nil:
-		in.MessageCount = 1
-	}
-	tools, _ := doc["tools"].([]any)
-	in.ToolCount = len(tools)
-	in.ToolNames = toolNames(tools)
-	if previous, _ := doc["previous_response_id"].(string); previous != "" {
-		in.RefsHistory = true
-	}
-	if doc["conversation"] != nil {
-		in.RefsHistory = true
-	}
-	if thinking, ok := doc["thinking"].(map[string]any); ok {
-		in.Thinking.Type, _ = thinking["type"].(string)
-		in.Thinking.Display, _ = thinking["display"].(string)
-		if budget := intField(thinking, "budget_tokens"); budget != nil {
-			in.Thinking.BudgetTokens = *budget
-		}
-	}
-	in.Thinking.ReasoningEffort, _ = doc["reasoning_effort"].(string)
-	if reasoning, ok := doc["reasoning"].(map[string]any); ok && in.Thinking.ReasoningEffort == "" {
-		in.Thinking.ReasoningEffort, _ = reasoning["effort"].(string)
-	}
-	if n := intField(doc, "n", "num_generations"); n != nil {
-		in.Thinking.N = *n
-	}
-
-	digest, err := common.Marshal(struct {
-		Systems []string `json:"s"`
-		Users   []string `json:"u"`
-		Tools   []string `json:"t"`
-	}{in.Systems, in.UserTurns, in.ToolNames})
-	if err != nil {
-		return nil, err
-	}
-	sum := sha256.Sum256(digest)
-	in.Digest = hex.EncodeToString(sum[:])
-	return in, nil
-}
-
-// originalRoleText preserves only submitted textual role content, not HTTP
-// headers, metadata, credentials, tool definitions or transport settings.
-// It remains request-local unless a rule or model actually blocks the text.
-func originalRoleText(doc map[string]any) (string, string, bool) {
-	var out strings.Builder
-	appendText := func(role, text string) {
-		if text == "" {
-			return
-		}
-		out.WriteString("[" + role + "]\n")
-		out.WriteString(text)
-		out.WriteString("\n[/" + role + "]\n")
-	}
-	for _, field := range []string{"system", "instructions"} {
-		for _, text := range systemFieldTexts(doc[field]) {
-			appendText("system", text)
-		}
-	}
-	for _, field := range []string{"messages", "input"} {
-		if text, ok := doc[field].(string); ok {
-			appendText("user", text)
-			continue
-		}
-		items, _ := doc[field].([]any)
-		for _, item := range items {
-			if text, ok := item.(string); ok {
-				appendText("user", text)
-				continue
-			}
-			obj, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			role, _ := obj["role"].(string)
-			if isToolPayload(obj) {
-				appendText("tool", contentText(obj, textAll))
-				continue
-			}
-			if role == "" && field == "input" {
-				role = "user"
-			}
-			if !slices.Contains([]string{"system", "developer", "user", "assistant", "tool"}, role) {
-				continue
-			}
-			content := obj["content"]
-			appendText(role, contentText(content, textAuthored))
-			if parts, ok := content.([]any); ok {
-				for _, part := range parts {
-					if payload, ok := part.(map[string]any); ok && isToolPayload(payload) {
-						appendText("tool", contentText(payload, textAll))
-					}
-				}
-			}
-		}
-	}
-	texts, _ := legacyPrompt(doc["prompt"])
-	for _, text := range texts {
-		appendText("user", text)
-	}
-	text := out.String()
-	hash := sha256.Sum256([]byte(text))
-	kept, cut := tailRunes(text, 32768)
-	return kept, hex.EncodeToString(hash[:]), cut
-}
-
-// distillJoined is the system text plus the latest user text.
-func (in *Input) distillJoined() string {
-	parts := slices.Clone(in.Systems)
-	if in.LatestUser != "" {
-		parts = append(parts, in.LatestUser)
-	}
-	return strings.Join(parts, "\n")
-}
-
-// fingerprintPrompt is the system text plus every user text.
-func (in *Input) fingerprintPrompt() string {
-	return strings.Join(append(slices.Clone(in.Systems), in.DistillUsers...), "\n")
-}
-
-func normalizedDocument(texts []string) string {
-	seen := make(map[string]bool, len(texts))
-	parts := make([]string, 0, len(texts))
-	for _, text := range texts {
-		norm := NormalizeText(text)
-		if norm == "" || seen[norm] {
-			continue
-		}
-		seen[norm] = true
-		parts = append(parts, norm)
-	}
-	return strings.Join(parts, "\n")
-}
-
-// preparedDocument strips reminders and expands base64 on the raw text before
-// normalizing; normalizing first would lowercase base64 and break decoding.
-func preparedDocument(texts []string, stripReminders, expand bool, decodedTotal *int) (string, bool) {
-	prepared := make([]string, 0, len(texts))
-	incomplete := false
-	for _, text := range texts {
-		out := text
-		if stripReminders {
-			out = StripReminders(out)
-		}
-		partial := false
-		if expand {
-			out, partial = expandBase64(out, decodedTotal)
-		}
-		incomplete = incomplete || partial
-		prepared = append(prepared, out)
-	}
-	return normalizedDocument(prepared), incomplete
-}
-
-// RuleDocument is the user-authored text that local rules scan with their
-// own tier; the flag reports base64 left undecoded.
-func (in *Input) RuleDocument(stripReminders, expandBase64 bool) (string, bool) {
-	decodedTotal := 0
-	return preparedDocument(in.UserAuthored, stripReminders, expandBase64, &decodedTotal)
-}
-
-// CurrentUserDocument excludes earlier turns and tool payloads. Repeated
-// agent tool calls therefore cannot turn a historical keyword into a new
-// current-user signal.
-func (in *Input) CurrentUserDocument(stripReminders, expand bool) (string, bool) {
-	users := in.UserAuthored
-	if in.modelUsers != nil {
-		users = in.modelUsers
-	}
-	if len(users) == 0 {
-		return "", false
-	}
-	decodedTotal := 0
-	return preparedDocument(users[len(users)-1:], stripReminders, expand, &decodedTotal)
-}
-
-// ContextDocument is the other client-controlled text: system and developer
-// prompts, assistant turns, the latest tool results and the content of
-// reminder blocks stripped from user turns. A rule hit here is always
-// reviewed by the decision model and never blocks on its own, so this text
-// keeps its reminders.
-func (in *Input) ContextDocument(stripReminders, expandBase64 bool) (string, bool) {
-	texts := slices.Concat(in.Systems, in.Assistants, in.RecentToolOutputs)
-	if stripReminders {
-		for _, text := range in.UserAuthored {
-			_, inside := splitReminders(text)
-			texts = append(texts, inside...)
-		}
-	}
-	decodedTotal := 0
-	return preparedDocument(texts, false, expandBase64, &decodedTotal)
-}
-
-// ModelDocuments prioritizes the current user's text, then recent tool and
-// conversation context, within one Unicode window. Explicit role labels keep
-// a quoted assistant/tool instruction distinct from the current user intent.
-// A review hit outside the window gets at most one complete bounded excerpt.
-func (in *Input) ModelDocuments(stripReminders, expandBase64 bool, size int, hit *hardHit) (documents []string, tailWindow, incomplete, reviewCovered bool) {
-	decodedTotal := 0
-	systemTexts, userTexts := in.Systems, in.UserAuthored
-	assistantTexts, toolTexts := in.Assistants, in.RecentToolOutputs
-	if in.modelSystems != nil {
-		systemTexts = in.modelSystems
-	}
-	if in.modelUsers != nil {
-		userTexts = in.modelUsers
-	}
-	if in.modelAssistants != nil {
-		assistantTexts = in.modelAssistants
-	}
-	if in.modelTools != nil {
-		toolTexts = in.modelTools
-	}
-	historyCut := in.modelSystems != nil || in.modelUsers != nil || in.modelAssistants != nil || in.modelTools != nil
-	tailWindow = historyCut
-	var currentTexts, previousTexts []string
-	if len(userTexts) > 0 {
-		currentTexts, previousTexts = userTexts[len(userTexts)-1:], userTexts[:len(userTexts)-1]
-	}
-	// The current user gets both the decoding budget and text budget first.
-	current, partial := preparedDocument(currentTexts, stripReminders, expandBase64, &decodedTotal)
-	incomplete = partial
-	type contextPart struct {
-		role     string
-		texts    []string
-		text     string
-		selected string
-	}
-	parts := []contextPart{
-		{role: "current_user", texts: []string{current}},
-		{role: "tool_context", texts: toolTexts},
-		{role: "assistant_context", texts: assistantTexts},
-		{role: "previous_user_context", texts: previousTexts},
-		{role: "system_context", texts: systemTexts},
-	}
-	room := size
-	var sections []string
-	for i, part := range parts {
-		text := current
-		if i > 0 {
-			text, partial = preparedDocument(part.texts, stripReminders, expandBase64, &decodedTotal)
-			incomplete = incomplete || partial
-		}
-		if text == "" {
-			continue
-		}
-		open, close := "["+part.role+"]\n", "\n[/"+part.role+"]"
-		overhead := len(open) + len(close)
-		if len(sections) > 0 {
-			overhead++
-		}
-		selected, cut := tailRunes(text, max(0, room-overhead))
-		tailWindow = tailWindow || cut
-		parts[i].text, parts[i].selected = text, selected
-		if selected != "" {
-			sections = append(sections, open+selected+close)
-			room -= overhead + utf8.RuneCountInString(selected)
-		}
-	}
-	// Context precedes the current user so the final task stays the most recent.
-	slices.Reverse(sections)
-	if len(sections) > 0 {
-		documents = append(documents, strings.Join(sections, "\n"))
-	} else if historyCut {
-		incomplete = true
-	}
-	if hit == nil {
-		return documents, tailWindow, incomplete, true
-	}
-	// Reconstruct the known rule sources before mapping byte offsets: user
-	// turns, other context, and the distill system/current-user source. An
-	// identical short phrase elsewhere cannot stand in for the matched source.
-	reviewRole := "review_context"
-	for _, sourceParts := range [][]int{{3, 0}, {4, 2, 1}, {4, 0}, {0}, {1}, {2}, {3}, {4}} {
-		var source strings.Builder
-		for _, i := range sourceParts {
-			if parts[i].text != "" {
-				if source.Len() > 0 {
-					source.WriteByte('\n')
-				}
-				source.WriteString(parts[i].text)
-			}
-		}
-		if source.String() != hit.Text {
-			continue
-		}
-		base := 0
-		for _, i := range sourceParts {
-			part := parts[i]
-			if part.text == "" {
-				continue
-			}
-			if hit.Start >= base && hit.End <= base+len(part.text) {
-				reviewRole = "review_" + part.role
-				if hit.Start >= base+len(part.text)-len(part.selected) {
-					return documents, tailWindow, incomplete, true
-				}
-			}
-			base += len(part.text) + 1
-		}
-	}
-	reviewOpen, reviewClose := "["+reviewRole+"]\n", "\n[/"+reviewRole+"]"
-	const currentOpen, currentClose = "[current_user]\n", "\n[/current_user]"
-	excerptBudget := size - len(reviewOpen) - len(reviewClose)
-	currentRoom := min(size/4, excerptBudget-utf8.RuneCountInString(hit.Text[hit.Start:hit.End])-len(currentOpen)-len(currentClose)-1)
-	currentTail, _ := tailRunes(current, max(0, currentRoom))
-	currentSection := ""
-	if currentTail != "" {
-		currentSection = "\n" + currentOpen + currentTail + currentClose
-		excerptBudget -= utf8.RuneCountInString(currentSection)
-	}
-	excerpt, covered := hit.excerpt(excerptBudget)
-	if !covered {
-		return documents, tailWindow, true, false
-	}
-	documents = append(documents, reviewOpen+excerpt+reviewClose+currentSection)
-	return documents, tailWindow, incomplete, true
-}
-
-// SimilarityDocument is the user text, tool payloads included, that the
-// near-duplicate refusal signature hashes.
-func (in *Input) SimilarityDocument() string {
-	return normalizedDocument(in.UserTurns)
-}
-
-// Preview is a short single-line excerpt for administrators.
-func (in *Input) Preview() string {
-	text := in.LatestUser
-	if text == "" {
-		text = strings.Join(in.DistillUsers, " ")
-	}
-	text = strings.Join(strings.Fields(text), " ")
-	if runes := []rune(text); len(runes) > 240 {
-		text = string(runes[:240])
-	}
-	return text
 }
 
 var (

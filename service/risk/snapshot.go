@@ -33,30 +33,52 @@ type GroupBinding struct {
 	Mode           string `json:"mode"`
 }
 
-// Retention bounds how long events and counters are kept.
+// Retention bounds how long events, counters and reviewed violations are kept.
 type Retention struct {
-	EventsDays   int `json:"events_days"`
-	CountersDays int `json:"counters_days"`
+	EventsDays     int `json:"events_days"`
+	CountersDays   int `json:"counters_days"`
+	ViolationsDays int `json:"violations_days"`
 }
 
+// ScoreConfig is the user reputation policy. Every user starts at 100; each
+// confirmed violation deducts its category's points, and a violation while
+// the score is already zero bans the account when AutoBan is on.
+type ScoreConfig struct {
+	AutoBan     bool           `json:"auto_ban"`
+	EmailNotify bool           `json:"email_notify"`
+	Default     int            `json:"default"`
+	Deductions  map[string]int `json:"deductions"`
+}
+
+// Deduction is the points a violation of category costs.
+func (s ScoreConfig) Deduction(category string) int {
+	if points, ok := s.Deductions[category]; ok {
+		return points
+	}
+	return s.Default
+}
+
+// ScoreCategories are the violation categories the decision model reports.
+var ScoreCategories = []string{"nsfw", "jailbreak", "reverse", "pentest", "cyber", "distill", "safety", "custom"}
+
 // ConfigPayload is one published configuration revision. Exempt groups are
-// counted but not audited; bypassed groups never enter the audit at all.
+// counted but not audited.
 type ConfigPayload struct {
 	Enabled          bool           `json:"enabled"`
 	ExemptNamespaces []string       `json:"exempt_namespaces"`
-	BypassNamespaces []string       `json:"bypass_namespaces"`
 	DefaultBinding   Binding        `json:"default_binding"`
 	GroupBindings    []GroupBinding `json:"group_bindings"`
 	Retention        Retention      `json:"retention"`
+	Score            ScoreConfig    `json:"score"`
 }
 
 func DefaultConfigPayload() ConfigPayload {
 	return ConfigPayload{
 		ExemptNamespaces: []string{},
-		BypassNamespaces: []string{},
 		DefaultBinding:   Binding{PolicyKey: BaselinePolicyKey, PolicyRevision: 1, Mode: ModeObserve},
 		GroupBindings:    []GroupBinding{},
-		Retention:        Retention{EventsDays: 30, CountersDays: 90},
+		Retention:        Retention{EventsDays: 30, CountersDays: 90, ViolationsDays: 180},
+		Score:            ScoreConfig{EmailNotify: true, Default: 20, Deductions: map[string]int{"nsfw": 100, "jailbreak": 100}},
 	}
 }
 
@@ -65,14 +87,30 @@ func ParseConfigPayload(raw []byte) (ConfigPayload, error) {
 	if len(raw) == 0 {
 		return cfg, nil
 	}
+	var legacy struct {
+		BypassNamespaces []string `json:"bypass_namespaces"`
+	}
+	// Stored deductions replace the defaults rather than merging into them,
+	// so a category reset to the default stays reset.
+	defaults := cfg.Score.Deductions
+	cfg.Score.Deductions = nil
 	if err := common.Unmarshal(raw, &cfg); err != nil {
 		return ConfigPayload{}, err
 	}
+	if cfg.Score.Deductions == nil {
+		cfg.Score.Deductions = defaults
+	}
+	if err := common.Unmarshal(raw, &legacy); err != nil {
+		return ConfigPayload{}, err
+	}
+	// Bypassed groups from earlier revisions are exempt groups now.
+	for _, ns := range legacy.BypassNamespaces {
+		if !slices.Contains(cfg.ExemptNamespaces, ns) {
+			cfg.ExemptNamespaces = append(cfg.ExemptNamespaces, ns)
+		}
+	}
 	if cfg.ExemptNamespaces == nil {
 		cfg.ExemptNamespaces = []string{}
-	}
-	if cfg.BypassNamespaces == nil {
-		cfg.BypassNamespaces = []string{}
 	}
 	if cfg.GroupBindings == nil {
 		cfg.GroupBindings = []GroupBinding{}
@@ -98,6 +136,7 @@ type Snapshot struct {
 	Groups         map[string]ResolvedBinding
 	Providers      map[int]ProviderConfig
 	Retention      Retention
+	Score          ScoreConfig
 	InvalidRefs    []string
 	NamespaceGroup map[string]string
 
@@ -182,7 +221,7 @@ func buildSnapshotOnce() (*Snapshot, error) {
 		return nil, err
 	}
 	snap := &Snapshot{Available: true, Groups: map[string]ResolvedBinding{}, Providers: map[int]ProviderConfig{}, NamespaceGroup: map[string]string{}}
-	snap.Scope = ExemptionScope{GroupNamespaces: map[string]string{}, Exempt: map[string]bool{}, Bypass: map[string]bool{}}
+	snap.Scope = ExemptionScope{GroupNamespaces: map[string]string{}, Exempt: map[string]bool{}}
 	if row == nil {
 		return snap, nil
 	}
@@ -193,6 +232,7 @@ func buildSnapshotOnce() (*Snapshot, error) {
 	snap.Enabled = cfg.Enabled
 	snap.ConfigRevision = row.Revision
 	snap.Retention = cfg.Retention
+	snap.Score = cfg.Score
 
 	namespaces, err := model.ListRiskGroupNamespaces(false)
 	if err != nil {
@@ -212,13 +252,6 @@ func buildSnapshotOnce() (*Snapshot, error) {
 			continue
 		}
 		snap.Scope.Exempt[ns] = true
-	}
-	for _, ns := range cfg.BypassNamespaces {
-		if !active[ns] {
-			snap.InvalidRefs = append(snap.InvalidRefs, ns)
-			continue
-		}
-		snap.Scope.Bypass[ns] = true
 	}
 
 	providers, err := model.ListRiskProviders()
@@ -253,7 +286,7 @@ func buildSnapshotOnce() (*Snapshot, error) {
 			snap.InvalidRefs = append(snap.InvalidRefs, gb.Namespace)
 			continue
 		}
-		if snap.Scope.Exempt[gb.Namespace] || snap.Scope.Bypass[gb.Namespace] {
+		if snap.Scope.Exempt[gb.Namespace] {
 			continue
 		}
 		b, err := resolve(gb.PolicyKey, gb.PolicyRevision, gb.Mode, "group")
@@ -386,20 +419,6 @@ func ValidateConfigPayload(cfg ConfigPayload) []*common.Message {
 		}
 		seen[ns] = true
 	}
-	bypassed := map[string]bool{}
-	for _, ns := range cfg.BypassNamespaces {
-		switch {
-		case ns == ReservedAutoNamespace:
-			problems = append(problems, common.NewMessage("Auto cannot be bypassed; auto requests are always audited"))
-		case bypassed[ns]:
-			problems = append(problems, common.NewMessage("Bypassed group {{namespace}} is listed twice", map[string]any{"namespace": ns}))
-		case seen[ns]:
-			problems = append(problems, common.NewMessage("Group {{namespace}} cannot be both exempt and bypassed", map[string]any{"namespace": ns}))
-		case !active[ns]:
-			problems = append(problems, common.NewMessage("Group namespace {{namespace}} does not exist or was retired", map[string]any{"namespace": ns}))
-		}
-		bypassed[ns] = true
-	}
 	checkBinding := func(label, key string, revision int, mode string) {
 		if mode != ModeObserve && mode != ModeEnforce {
 			problems = append(problems, common.NewMessage("{{binding}}: mode must be observe or enforce", map[string]any{"binding": label}))
@@ -427,8 +446,6 @@ func ValidateConfigPayload(cfg ConfigPayload) []*common.Message {
 			problems = append(problems, common.NewMessage("Group {{namespace}} can have only one binding", map[string]any{"namespace": gb.Namespace}))
 		case slices.Contains(cfg.ExemptNamespaces, gb.Namespace):
 			problems = append(problems, common.NewMessage("Exempt group {{namespace}} cannot have a binding", map[string]any{"namespace": gb.Namespace}))
-		case bypassed[gb.Namespace]:
-			problems = append(problems, common.NewMessage("Bypassed group {{namespace}} cannot have a binding", map[string]any{"namespace": gb.Namespace}))
 		}
 		bound[gb.Namespace] = true
 		checkBinding(label, gb.PolicyKey, gb.PolicyRevision, gb.Mode)
@@ -438,6 +455,20 @@ func ValidateConfigPayload(cfg ConfigPayload) []*common.Message {
 	}
 	if cfg.Retention.CountersDays < 1 || cfg.Retention.CountersDays > 3650 {
 		problems = append(problems, common.NewMessage("{{field}} must be between {{min}} and {{max}}", map[string]any{"field": "retention.counters_days", "min": 1, "max": 3650}))
+	}
+	if cfg.Retention.ViolationsDays < 1 || cfg.Retention.ViolationsDays > 3650 {
+		problems = append(problems, common.NewMessage("{{field}} must be between {{min}} and {{max}}", map[string]any{"field": "retention.violations_days", "min": 1, "max": 3650}))
+	}
+	if cfg.Score.Default < 1 || cfg.Score.Default > 100 {
+		problems = append(problems, common.NewMessage("{{field}} must be between {{min}} and {{max}}", map[string]any{"field": "score.default", "min": 1, "max": 100}))
+	}
+	for category, points := range cfg.Score.Deductions {
+		if !slices.Contains(ScoreCategories, category) {
+			problems = append(problems, common.NewMessage("Unknown risk violation category {{category}}", map[string]any{"category": category}))
+		}
+		if points < 1 || points > 100 {
+			problems = append(problems, common.NewMessage("{{field}} must be between {{min}} and {{max}}", map[string]any{"field": "score.deductions." + category, "min": 1, "max": 100}))
+		}
 	}
 	return problems
 }

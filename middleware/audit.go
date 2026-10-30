@@ -98,16 +98,14 @@ var auditRouteActions = map[string]string{
 	"POST /api/system-task/log-cleanup": "log.cleanup_start",
 
 	// Risk management records operation names and route parameters only.
-	"PUT /api/risk/config":              "risk.config_publish",
-	"POST /api/risk/policies":           "risk.policy_publish",
-	"POST /api/risk/providers":          "risk.provider_create",
-	"PUT /api/risk/providers/:id":       "risk.provider_update",
-	"DELETE /api/risk/refusals/:id":     "risk.refusal_delete",
-	"POST /api/risk/refusals/clear":     "risk.refusals_clear",
-	"POST /api/risk/blocks/:id/release": "risk.block_release",
-	"POST /api/risk/blocks/clear":       "risk.blocks_clear",
-	"POST /api/risk/preview":            "risk.preview",
-	"POST /api/risk/providers/models":   "risk.provider_probe",
+	"PUT /api/risk/config":                  "risk.config_publish",
+	"POST /api/risk/policies":               "risk.policy_publish",
+	"POST /api/risk/providers":              "risk.provider_create",
+	"PUT /api/risk/providers/:id":           "risk.provider_update",
+	"POST /api/risk/violations/:id/resolve": "risk.violation_resolve",
+	"POST /api/risk/users/:id/ban":          "risk.user_ban",
+	"POST /api/risk/preview":                "risk.preview",
+	"POST /api/risk/providers/models":       "risk.provider_probe",
 }
 
 // beginAdminAudit 在管理/root 写操作进入 handler 前包装 ResponseWriter，

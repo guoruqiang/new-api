@@ -91,9 +91,7 @@ func setupResponsesWSRequestTest(t *testing.T) (*model.User, *model.Token) {
 		setting.ModelRequestRateLimitMutex.Unlock()
 		require.NoError(t, sqlDB.Close())
 	})
-	// Token restrictions are checked by authentication even when content
-	// auditing is disabled, so every relay fixture needs their table.
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.RiskSubjectBlock{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}))
 	// The shared in-memory limiter outlives each database fixture. Give every
 	// user a separate quota bucket, including when the tests run with -count.
 	user := &model.User{Id: 5062000 + int(responsesWSTestUserSequence.Add(1)), Username: "responses-ws-user", Status: common.UserStatusEnabled, Group: "default", Quota: 1000, AuthVersion: 1}
@@ -201,7 +199,7 @@ func TestResponsesWebSocketRiskRechecksEveryMessageAndKeepsAuthenticationBoundar
 	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default","auto":"Auto"}`))
 	require.NoError(t, model.DB.Model(fixture.token).Updates(map[string]any{"group": "auto", "auto_groups": `["default"]`}).Error)
 	payload := risk.DefaultPolicyPayload()
-	payload.Distill.Enabled, payload.Refusal.Enabled, payload.Model.Enabled = false, false, false
+	payload.Distill.Enabled, payload.Model.Enabled = false, false
 	payload.HardRegex.Rules = []risk.HardRule{{Category: "custom", Source: "riskblock", Enabled: true}}
 	payload = installRelayRiskPolicy(t, payload, risk.ModeEnforce, true)
 	for _, tc := range []struct {
@@ -249,26 +247,20 @@ func TestHTTPRiskGateRunsBeforeReservation(t *testing.T) {
 	for _, tc := range []struct {
 		name, mode       string
 		exempt, disabled bool
-		refusal          bool
 		status           int
 	}{
-		{"enforce", risk.ModeEnforce, false, false, false, http.StatusForbidden},
-		{"observe", risk.ModeObserve, false, false, false, http.StatusOK},
-		{"exempt", risk.ModeEnforce, true, false, false, http.StatusOK},
-		{"disabled", risk.ModeEnforce, false, true, false, http.StatusOK},
-		{"upstream refusal preserves settlement", risk.ModeEnforce, false, false, true, http.StatusOK},
+		{"enforce", risk.ModeEnforce, false, false, http.StatusForbidden},
+		{"observe", risk.ModeObserve, false, false, http.StatusOK},
+		{"exempt", risk.ModeEnforce, true, false, http.StatusOK},
+		{"disabled", risk.ModeEnforce, false, true, http.StatusOK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			previous := risk.CurrentSnapshot()
 			t.Cleanup(func() { risk.InstallSnapshot(previous) })
 			fixture := newResponsesWSBillingTest(t, `tier("request", fixed(0.002))`, func(*websocket.Conn, *http.Request) {})
 			payload := risk.DefaultPolicyPayload()
-			payload.Distill.Enabled, payload.Refusal.Enabled, payload.Model.Enabled = false, false, false
+			payload.Distill.Enabled, payload.Model.Enabled = false, false
 			payload.HardRegex.Rules = []risk.HardRule{{Category: "custom", Source: "riskblock", Enabled: true}}
-			if tc.refusal {
-				payload.HardRegex.Enabled, payload.Refusal.Enabled = false, true
-				payload.Refusal.SubjectBlockEnabled = false
-			}
 			payload = installRelayRiskPolicy(t, payload, tc.mode, tc.exempt)
 			if tc.disabled {
 				view, err := risk.LatestConfig()
@@ -282,11 +274,7 @@ func TestHTTPRiskGateRunsBeforeReservation(t *testing.T) {
 			fixture.httpUpstream = func(w http.ResponseWriter, _ *http.Request) {
 				upstreamCalls.Add(1)
 				w.Header().Set("Content-Type", "application/json")
-				if tc.refusal {
-					_, _ = io.WriteString(w, `{"id":"risk-refusal","status":"incomplete","incomplete_details":{"reason":"content_filter"},"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}`)
-				} else {
-					_, _ = io.WriteString(w, `{"id":"risk-pass","status":"completed","model":"gpt-4o","usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}`)
-				}
+				_, _ = io.WriteString(w, `{"id":"risk-pass","status":"completed","model":"gpt-4o","usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}`)
 			}
 			var quotaWrites atomic.Int32
 			callback := "test:risk-first-quota"
@@ -320,14 +308,6 @@ func TestHTTPRiskGateRunsBeforeReservation(t *testing.T) {
 			} else {
 				assert.Equal(t, int32(1), upstreamCalls.Load())
 				assertResponsesWSAccounting(t, fixture, []int{1000})
-				if tc.refusal {
-					var records []model.RiskRefusal
-					require.NoError(t, model.DB.Find(&records).Error)
-					require.Len(t, records, 1)
-					assert.Equal(t, fixture.user.Id, records[0].UserId)
-					assert.Contains(t, string(body), `"reason":"content_filter"`)
-					assert.Contains(t, string(body), `"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}`)
-				}
 			}
 		})
 	}
@@ -357,16 +337,12 @@ func TestRiskAutoGroupRetryRejectsBeforeNextUpstreamAndRefunds(t *testing.T) {
 			require.NoError(t, model.DB.Create(channelB).Error)
 			require.NoError(t, model.DB.Create(&model.Ability{ChannelId: channelB.Id, Model: "ws-billing", Group: "group-b", Enabled: true}).Error)
 			payload := risk.DefaultPolicyPayload()
-			payload.Distill.Enabled, payload.Refusal.Enabled, payload.Model.Enabled, payload.HardRegex.Enabled = false, false, false, false
+			payload.Distill.Enabled, payload.Model.Enabled, payload.HardRegex.Enabled = false, false, false
 			payload = installRelayRiskPolicy(t, payload, risk.ModeEnforce, true)
 			payload.Distill.Enabled = true
 			payload.Distill.SkipGPTModels = false
 			payload.Distill.HardNeedles = []string{"riskblock"}
-			// A deliberately configured hard rule tests the relay rejection
-			// contract; built-in distill hints now require contextual review.
-			payload.HardRegex.Rules = []risk.HardRule{{Category: "distill", Source: "riskblock", Enabled: true, Action: risk.RuleActionBlock}}
-			// A local model rejection must never trigger the upstream violation fee.
-			payload.Distill.Error = risk.DistillError{Status: http.StatusForbidden, Message: service.CSAMViolationMarker}
+			payload.HardRegex.Rules = []risk.HardRule{{Category: "distill", Source: "riskblock", Enabled: true}}
 			policy, problems, err := risk.CreatePolicyRevision("retry-block", "Retry block", 0, payload, 1)
 			require.NoError(t, err)
 			require.Empty(t, problems)

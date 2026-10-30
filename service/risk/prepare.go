@@ -10,11 +10,6 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-// PreprocessVersion changes whenever NormalizeText, StripReminders or
-// ExpandBase64 change their output; it is part of every cache key and stored
-// record so older entries never match newer semantics.
-const PreprocessVersion = 1
-
 const (
 	reminderOpen  = "<system-reminder>"
 	reminderClose = "</system-reminder>"

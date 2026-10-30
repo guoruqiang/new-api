@@ -22,13 +22,23 @@ export type Binding = {
   policy_revision: number
   mode: Mode
 }
+export type ScoreConfig = {
+  auto_ban: boolean
+  email_notify: boolean
+  default: number
+  deductions: Record<string, number>
+}
 export type Config = {
   enabled: boolean
   exempt_namespaces: string[]
-  bypass_namespaces: string[]
   default_binding: Binding
   group_bindings: (Binding & { namespace: string })[]
-  retention: { events_days: number; counters_days: number }
+  retention: {
+    events_days: number
+    counters_days: number
+    violations_days: number
+  }
+  score: ScoreConfig
 }
 export type ConfigView = { revision: number; payload: Config }
 export type Group = Binding & {
@@ -36,8 +46,7 @@ export type Group = Binding & {
   namespace: string
   generation: number
   exempt: boolean
-  bypassed: boolean
-  binding_source: string
+  binding_source: 'exempt' | 'group' | 'default'
 }
 export type Directory = {
   groups: Group[]
@@ -56,7 +65,6 @@ export type HardRule = {
   category: string
   source: string
   enabled: boolean
-  action?: 'block' | 'review' | 'signal'
 }
 export type Policy = import('zod').infer<
   typeof import('./lib/schema').policySchema
@@ -87,6 +95,8 @@ export type Defaults = {
   policy: Policy
   config: Config
   builtin_rules: HardRule[]
+  rule_categories: string[]
+  score_categories: string[]
   builtin_questions: Question[]
   providers: {
     id: string
@@ -117,6 +127,7 @@ export type Overview = {
   passes: Counter[]
   keywords: { layer: string; keyword: string; count: number }[]
   stages: Record<string, string>
+  pending_reviews: number
   uncovered_routes: string[]
 }
 export type RiskEvent = {
@@ -147,24 +158,7 @@ export type RiskEvent = {
   scores: string
   provider_model: string
   latency_ms: number
-  coverage: string
   error_code: string
-  preview: string
-}
-export type MemoryRow = {
-  id: number
-  namespace: string
-  user_id: number
-  model: string
-  preview: string
-  error_message: string
-  subject_type: string
-  subject_value: string
-  reason: string
-  hit_count: number
-  expires_at: number
-  released_at: number
-  source_request_id: string
 }
 export type Page<T> = {
   items: T[]
@@ -172,88 +166,65 @@ export type Page<T> = {
   page: number
   page_size: number
 }
-export type RiskReview = {
+export type ViolationStatus = 'pending' | 'upheld' | 'revoked'
+export type Violation = {
   id: number
   request_id: string
-  created_at: number
-  namespace: string
-  group_name: string
+  content_hash: string
   user_id: number
   token_id: number
-  judgment_source: string
-  screening_score: number
-  screening_reason: string
-  config_revision: number
-  original_request: string
-  original_request_truncated: boolean
-  original_request_hash: string
-  notification_status: string
-  notification_error: string
+  group_name: string
+  namespace: string
   mode: Mode
-  layer: string
-  category: string
-  reason: string
   model: string
+  category: string
+  keyword: string
+  rule: string
   provider_model: string
   scores: string
-  policy_key: string
-  policy_revision: number
-  fingerprint: string
-  evidence: string
-  evidence_truncated: boolean
-  coverage: string
-  status: 'pending' | 'confirmed' | 'dismissed' | 'revoked'
   deduction: number
-  severity: string
-  severity_status: string
-  assessments: string
-  judgment_version: number
-  revision: number
-  reviewed_at: number
+  score_before: number
+  score_after: number
+  action: 'observed' | 'rejected' | 'ban_suggested' | 'auto_banned'
+  duplicate_of: number
+  status: ViolationStatus
   reviewed_by: number
+  reviewed_at: number
   review_note: string
-  history: string
+  notification_status: '' | 'pending' | 'sent' | 'failed' | 'skipped'
+  request_body?: string
+  request_body_bytes: number
+  request_body_truncated: boolean
+  created_at: number
 }
-export type RiskReviewDetail = {
-  review: RiskReview
-  reputation: {
-    score: number
-    initial_score: number
-    ban_threshold: number
-    confirmed_events: number
-    total_deducted: number
-    recovered_points: number
-    last_violation_at: number
-    next_recovery_at: number
-  }
-  block?: MemoryRow | null
-  behavior_enabled: boolean
-  auto_block_enabled: boolean
-  auto_confirm_enabled: boolean
-  mode: Mode
+export type ViolationDetail = {
+  violation: Violation
+  score: number
+  user_status: number
 }
 export type PreviewResult = {
   enabled: boolean
   audited: boolean
   exempt: boolean
-  bypassed: boolean
   namespace: string
   binding_source: string
   policy_key: string
   policy_revision: number
   mode: string
   model_run: boolean
+  deduction: number
   decision: {
-    screening_score?: number
-    screening_reason?: string
-    model_triggered?: boolean
-    judgment_source?: string
     outcome: string
     layer: string
     reason: string
-    coverage: string
-    scores: Record<string, number>
+    category: string
     keyword: string
     rule: string
+    scores?: Record<string, number>
+    policy_key: string
+    policy_revision: number
+    config_revision: number
+    provider_model?: string
+    latency_ms: number
   }
 }

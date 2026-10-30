@@ -853,6 +853,8 @@
   "zhipu_image_missing_url": "智谱图片接口没有返回 URL",
   "¥%.6f quota": "¥%.6f 额度",
   "＄%.6f quota": "＄%.6f 额度",
-  "risk review email notification processing failed": "风险审核邮件通知处理失败",
-  "risk review email notification shutdown failed": "风险审核邮件通知服务停止超时"
+  "risk violation email notification processing failed": "风险违规邮件通知处理失败",
+  "risk violation email notification shutdown failed": "风险违规邮件通知服务停止超时",
+  "risk violation write failed: %s": "风险违规记录写入失败: %s",
+  "risk ban failed for user %d: %s": "风险封禁用户 %d 失败: %s"
 }

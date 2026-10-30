@@ -2,6 +2,7 @@ package controller
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"slices"
 	"strconv"
@@ -11,7 +12,6 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/QuantumNous/new-api/service/risk"
 
 	"github.com/gin-gonic/gin"
@@ -64,6 +64,7 @@ func GetRiskDefaults(c *gin.Context) {
 		"config":                 risk.DefaultConfigPayload(),
 		"builtin_rules":          risk.BuiltinHardRules,
 		"rule_categories":        risk.HardRuleCategories,
+		"score_categories":       risk.ScoreCategories,
 		"builtin_questions":      risk.BuiltinQuestions,
 		"providers":              risk.ProviderPresets,
 		"covered_routes":         risk.CoveredRoutes,
@@ -82,16 +83,20 @@ func GetRiskConfig(c *gin.Context) {
 }
 
 func UpdateRiskConfig(c *gin.Context) {
-	var body struct {
-		ExpectedRevision int64 `json:"expected_revision"`
-		risk.ConfigPayload
-	}
-	body.ConfigPayload = risk.DefaultConfigPayload()
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
+	raw, err := io.ReadAll(c.Request.Body)
+	if err != nil {
 		common.ApiErrorT(c, "Invalid request body")
 		return
 	}
-	revision, problems, err := risk.PublishConfig(body.ExpectedRevision, body.ConfigPayload, c.GetInt("id"))
+	var body struct {
+		ExpectedRevision int64 `json:"expected_revision"`
+	}
+	cfg, parseErr := risk.ParseConfigPayload(raw)
+	if parseErr != nil || common.Unmarshal(raw, &body) != nil {
+		common.ApiErrorT(c, "Invalid request body")
+		return
+	}
+	revision, problems, err := risk.PublishConfig(body.ExpectedRevision, cfg, c.GetInt("id"))
 	if len(problems) > 0 {
 		riskProblems(c, problems)
 		return
@@ -255,17 +260,14 @@ func riskListFilter(c *gin.Context) model.RiskListFilter {
 	start, _ := strconv.ParseInt(c.Query("start"), 10, 64)
 	end, _ := strconv.ParseInt(c.Query("end"), 10, 64)
 	return model.RiskListFilter{
-		Namespace:   strings.TrimSpace(c.Query("namespace")),
-		GroupName:   strings.TrimSpace(c.Query("group")),
-		UserId:      userID,
-		Model:       strings.TrimSpace(c.Query("model")),
-		SubjectType: strings.TrimSpace(c.Query("subject_type")),
-		ActiveOnly:  c.Query("active") == "true",
-		Layer:       strings.TrimSpace(c.Query("layer")),
-		Outcome:     strings.TrimSpace(c.Query("outcome")),
-		RequestId:   strings.TrimSpace(c.Query("request_id")),
-		Start:       start,
-		End:         end,
+		Namespace: strings.TrimSpace(c.Query("namespace")),
+		GroupName: strings.TrimSpace(c.Query("group")),
+		UserId:    userID,
+		Layer:     strings.TrimSpace(c.Query("layer")),
+		Outcome:   strings.TrimSpace(c.Query("outcome")),
+		RequestId: strings.TrimSpace(c.Query("request_id")),
+		Start:     start,
+		End:       end,
 	}
 }
 
@@ -279,195 +281,6 @@ func GetRiskEvents(c *gin.Context) {
 	page.SetTotal(int(total))
 	page.SetItems(rows)
 	common.ApiSuccess(c, page)
-}
-
-func GetRiskReviews(c *gin.Context) {
-	filter := riskListFilter(c)
-	status := strings.TrimSpace(c.Query("status"))
-	if status != "" && !slices.Contains([]string{model.RiskReviewPending, model.RiskReviewConfirmed, model.RiskReviewDismissed, model.RiskReviewRevoked}, status) {
-		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid risk review status"))
-		return
-	}
-	page := common.GetPageQuery(c)
-	rows, total, err := model.ListRiskReviews(model.RiskReviewFilter{Namespace: filter.Namespace, UserId: filter.UserId, Status: status, RequestId: filter.RequestId}, page.GetStartIdx(), page.GetPageSize())
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	page.SetTotal(int(total))
-	page.SetItems(rows)
-	common.ApiSuccess(c, page)
-}
-
-// Review evidence is administrator-only. Restrictions affect the recorded
-// API token; a permanent restriction always requires an administrator.
-func GetRiskReview(c *gin.Context) {
-	row, ok := readRiskReview(c)
-	if !ok {
-		return
-	}
-	snap, err := risk.BuildSnapshot()
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	payload := risk.DefaultPolicyPayload()
-	binding := snap.BindingFor(row.Namespace)
-	if binding.Policy != nil {
-		payload = binding.Policy.Payload
-	}
-	reputation, err := model.GetRiskUserReputation(row.UserId, common.GetTimestamp())
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	block, err := model.GetActiveRiskTokenBlock(row.UserId, row.TokenId, common.GetTimestamp())
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	c.Header("Cache-Control", "no-store")
-	common.ApiSuccess(c, gin.H{"review": row, "reputation": reputation, "block": block, "behavior_enabled": payload.Behavior.Enabled, "auto_block_enabled": payload.Behavior.AutoBlockEnabled, "auto_confirm_enabled": payload.Behavior.AutoConfirmEnabled, "mode": binding.Mode})
-}
-
-func readRiskReview(c *gin.Context) (*model.RiskReview, bool) {
-	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil || id <= 0 {
-		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid record id"))
-		return nil, false
-	}
-	row, err := model.GetRiskReview(id)
-	if errors.Is(err, gorm.ErrRecordNotFound) || err == nil && row.DuplicateOf != 0 {
-		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Risk review not found"))
-		return nil, false
-	}
-	if err != nil {
-		common.ApiError(c, err)
-		return nil, false
-	}
-	return row, true
-}
-
-func ResolveRiskReview(c *gin.Context) {
-	row, ok := readRiskReview(c)
-	if !ok {
-		return
-	}
-	var body struct {
-		Revision   int    `json:"revision"`
-		Action     string `json:"action"`
-		Category   string `json:"category"`
-		Note       string `json:"note"`
-		TTLMinutes *int   `json:"ttl_minutes"`
-	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
-		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid request body"))
-		return
-	}
-	body.Note, body.Category = strings.TrimSpace(body.Note), strings.TrimSpace(body.Category)
-	if body.Revision <= 0 || body.Note == "" || len([]rune(body.Note)) > 500 || !slices.Contains([]string{"confirm", "dismiss", "revoke", "ban"}, body.Action) {
-		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("A review action, revision and note of at most 500 characters are required"))
-		return
-	}
-	if body.Action == "revoke" || body.Action == "ban" {
-		// Revocation can release a derived restriction, so configuration
-		// permission alone is insufficient. PAT scopes also constrain root.
-		scope := service.AccessTokenScopeOf(authz.RiskUnblock)
-		if c.GetBool("use_access_token") && !c.GetBool("access_token_legacy") &&
-			!service.AccessTokenScopeGranted(c.GetStringSlice("access_token_scopes"), scope) {
-			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("The access token lacks the required permission: {{scope}}", map[string]any{"scope": scope}), gin.H{"code": "ACCESS_TOKEN_SCOPE_DENIED"})
-			c.Abort()
-			return
-		}
-		if !authz.Can(c.GetInt("id"), c.GetInt("role"), authz.RiskUnblock) {
-			common.ApiErrorStatus(c, http.StatusForbidden, common.NewMessage("Unauthorized, insufficient privileges"))
-			c.Abort()
-			return
-		}
-	}
-	if body.Action == "confirm" || body.Action == "ban" {
-		if row.Revision != body.Revision && (row.Status == model.RiskReviewDismissed || row.Status == model.RiskReviewRevoked) {
-			riskWriteError(c, model.ErrRiskRevisionConflict)
-			return
-		}
-		if !slices.Contains([]string{"nsfw", "jailbreak", "reverse", "pentest", "cyber", "distill", "custom", "safety", "crack"}, body.Category) {
-			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid risk review category"))
-			return
-		}
-		if strings.TrimSpace(row.Evidence) == "" {
-			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Review evidence is unavailable; this incident cannot be confirmed"))
-			return
-		}
-		if row.EvidenceTruncated {
-			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Stored review evidence is truncated; this incident cannot be confirmed"))
-			return
-		}
-		if body.Action == "confirm" && row.TokenId > 0 && (strings.TrimSpace(row.OriginalRequest) == "" || row.OriginalRequestTruncated) {
-			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Complete request evidence is required to confirm this violation"))
-			return
-		}
-	}
-	if body.Action == "ban" {
-		if row.TokenId <= 0 || row.Mode != risk.ModeEnforce {
-			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Only an enforcement-mode violation with an API token can be restricted"))
-			return
-		}
-		if strings.TrimSpace(row.OriginalRequest) == "" || row.OriginalRequestTruncated {
-			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Complete request evidence is required to restrict an API token"))
-			return
-		}
-		if body.TTLMinutes == nil || *body.TTLMinutes < 0 || *body.TTLMinutes > 1440 {
-			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Token restriction duration must be 0 for permanent or 1 to 1440 minutes"))
-			return
-		}
-	}
-	snap, err := risk.BuildSnapshot()
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	binding := snap.BindingFor(row.Namespace)
-	payload := risk.DefaultPolicyPayload()
-	if binding.Policy != nil {
-		payload = binding.Policy.Payload
-	}
-	if body.Action == "confirm" && !payload.Behavior.Enabled {
-		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Behavior scoring is disabled for this group"))
-		return
-	}
-	policy := payload.Behavior.Policy()
-	policy.ExpectedChangeRevision = snap.ChangeRevision
-	policy.ExpectedConfigRevision = snap.ConfigRevision
-	group, active := snap.NamespaceGroup[row.Namespace]
-	active = active && snap.Scope.GroupNamespaces[group] == row.Namespace
-	allowBlock := active && snap.Enabled && binding.Mode == risk.ModeEnforce && !snap.Scope.Exempt[row.Namespace] && !snap.Scope.Bypass[row.Namespace] && payload.Behavior.Enabled && payload.Behavior.AutoBlockEnabled
-	var result *model.RiskReviewResult
-	if body.Action == "ban" {
-		result, err = model.BanRiskReviewToken(row.Id, body.Revision, c.GetInt("id"), body.Category, body.Note, *body.TTLMinutes, policy, common.GetTimestamp())
-	} else {
-		result, err = model.ResolveRiskReview(row.Id, body.Revision, c.GetInt("id"), body.Action, body.Category, body.Note, policy, allowBlock, common.GetTimestamp())
-	}
-	if errors.Is(err, model.ErrRiskReviewTransition) {
-		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("This risk review action is no longer available"))
-		return
-	}
-	if err != nil {
-		riskWriteError(c, err)
-		return
-	}
-	// Clear this node's stale verdicts and refresh the revision immediately.
-	// Other nodes follow the shared change revision through their poll loop.
-	if err := risk.RefreshNow(); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	result.Block, err = model.GetActiveRiskTokenBlock(row.UserId, row.TokenId, common.GetTimestamp())
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	c.Header("Cache-Control", "no-store")
-	common.ApiSuccess(c, gin.H{"review": result.Review, "reputation": result.Reputation, "block": result.Block, "behavior_enabled": payload.Behavior.Enabled, "auto_block_enabled": payload.Behavior.AutoBlockEnabled, "auto_confirm_enabled": payload.Behavior.AutoConfirmEnabled, "mode": binding.Mode})
 }
 
 func GetRiskEvent(c *gin.Context) {
@@ -488,14 +301,17 @@ func GetRiskEvent(c *gin.Context) {
 	common.ApiSuccess(c, row)
 }
 
-func GetRiskRefusals(c *gin.Context) {
-	filter := riskListFilter(c)
-	if filter.Namespace == "" {
-		common.ApiErrorT(c, "A group namespace is required")
+func GetRiskViolations(c *gin.Context) {
+	userID, _ := strconv.Atoi(c.Query("user_id"))
+	status := strings.TrimSpace(c.Query("status"))
+	if status != "" && !slices.Contains([]string{model.RiskViolationPending, model.RiskViolationUpheld, model.RiskViolationRevoked}, status) {
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid risk review status"))
 		return
 	}
 	page := common.GetPageQuery(c)
-	rows, total, err := model.ListRiskRefusals(filter, page.GetStartIdx(), page.GetPageSize())
+	rows, total, err := model.ListRiskViolations(model.RiskViolationFilter{
+		Status: status, UserId: userID, RequestId: strings.TrimSpace(c.Query("request_id")), Namespace: strings.TrimSpace(c.Query("namespace")),
+	}, page.GetStartIdx(), page.GetPageSize())
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -505,104 +321,116 @@ func GetRiskRefusals(c *gin.Context) {
 	common.ApiSuccess(c, page)
 }
 
-func DeleteRiskRefusal(c *gin.Context) {
-	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil || id <= 0 {
-		common.ApiErrorT(c, "Invalid record id")
-		return
-	}
-	removed, err := model.DeleteRiskRefusal(id)
+// riskViolationView is a violation with its user's current score and status.
+func riskViolationView(c *gin.Context, row *model.RiskViolation) {
+	score, _, err := model.GetRiskUserScore(row.UserId, common.GetTimestamp())
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	if !removed {
-		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Refusal record not found"))
+	user, err := model.GetUserById(row.UserId, false)
+	userStatus := 0
+	if err == nil {
+		userStatus = user.Status
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"removed": 1})
+	c.Header("Cache-Control", "no-store")
+	common.ApiSuccess(c, gin.H{"violation": row, "score": score, "user_status": userStatus})
 }
 
-type riskClearRequest struct {
-	Namespace string `json:"namespace"`
-	UserID    int    `json:"user_id"`
-	Confirm   bool   `json:"confirm"`
+func GetRiskViolation(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	row, err := model.GetRiskViolation(id)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Risk violation not found"))
+		return
+	}
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	riskViolationView(c, row)
 }
 
-func readRiskClearRequest(c *gin.Context) (riskClearRequest, bool) {
-	var body riskClearRequest
+func readRiskNote(c *gin.Context) (string, string, bool) {
+	var body struct {
+		Action string `json:"action"`
+		Note   string `json:"note"`
+	}
 	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
 		common.ApiErrorT(c, "Invalid request body")
-		return body, false
+		return "", "", false
 	}
-	body.Namespace = strings.TrimSpace(body.Namespace)
-	if body.Namespace == "" || !body.Confirm {
-		common.ApiErrorT(c, "Clearing requires a group namespace and confirm: true")
-		return body, false
+	body.Note = strings.TrimSpace(body.Note)
+	if body.Note == "" || len([]rune(body.Note)) > 500 {
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("A note of at most 500 characters is required"))
+		return "", "", false
 	}
-	if body.UserID < 0 {
-		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid user ID"))
-		return body, false
-	}
-	return body, true
+	return body.Action, body.Note, true
 }
 
-func ClearRiskRefusals(c *gin.Context) {
-	body, ok := readRiskClearRequest(c)
-	if !ok {
-		return
-	}
-	removed, err := model.ClearRiskRefusals(body.Namespace, body.UserID)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	common.ApiSuccess(c, gin.H{"removed": removed})
-}
-
-func GetRiskBlocks(c *gin.Context) {
-	page := common.GetPageQuery(c)
-	rows, total, err := model.ListRiskBlocks(riskListFilter(c), common.GetTimestamp(), page.GetStartIdx(), page.GetPageSize())
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	page.SetTotal(int(total))
-	page.SetItems(rows)
-	common.ApiSuccess(c, page)
-}
-
-func ReleaseRiskBlock(c *gin.Context) {
+// ResolveRiskViolation upholds a violation or revokes it, which returns its
+// deduction to the user's score.
+func ResolveRiskViolation(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil || id <= 0 {
-		common.ApiErrorT(c, "Invalid record id")
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	released, err := model.ReleaseRiskBlock(id, c.GetInt("id"), common.GetTimestamp())
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	if !released {
-		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Active block not found"))
-		return
-	}
-	common.ApiSuccess(c, gin.H{"released": 1})
-}
-
-func ClearRiskBlocks(c *gin.Context) {
-	body, ok := readRiskClearRequest(c)
+	action, note, ok := readRiskNote(c)
 	if !ok {
 		return
 	}
-	if body.UserID != 0 {
-		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid user ID"))
+	if action != "uphold" && action != "revoke" {
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	released, err := model.ClearRiskBlocks(body.Namespace, c.GetInt("id"), common.GetTimestamp())
+	row, err := model.ResolveRiskViolation(id, c.GetInt("id"), action, note, common.GetTimestamp())
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Risk violation not found"))
+	case errors.Is(err, model.ErrRiskViolationTransition):
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("This risk review action is no longer available"))
+	case err != nil:
+		common.ApiError(c, err)
+	default:
+		riskViolationView(c, row)
+	}
+}
+
+// SetRiskUserBan disables or enables the account of a violation's user.
+func SetRiskUserBan(c *gin.Context) {
+	userID, err := strconv.Atoi(c.Param("id"))
+	if err != nil || userID <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	action, _, ok := readRiskNote(c)
+	if !ok {
+		return
+	}
+	if action != "ban" && action != "unban" {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	changed, err := service.SetUserEnabledForRisk(userID, action == "unban")
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		common.ApiErrorT(c, "User does not exist")
+		return
+	}
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"released": released})
+	if !changed {
+		common.ApiErrorT(c, "No permission to update users of same or higher permission level")
+		return
+	}
+	common.ApiSuccess(c, nil)
 }

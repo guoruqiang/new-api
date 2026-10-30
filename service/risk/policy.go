@@ -5,22 +5,15 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"fmt"
-	"math"
 	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/model"
 )
 
 //go:embed defaults/distill_rules.json
 var defaultDistillJSON []byte
-
-type DistillError struct {
-	Status  int    `json:"status"`
-	Message string `json:"message"`
-}
 
 type DistillStructure struct {
 	MinMaxTokens      int    `json:"min_max_tokens"`
@@ -33,7 +26,6 @@ type DistillRules struct {
 	Enabled       bool             `json:"enabled"`
 	SkipOfficial  bool             `json:"skip_official"`
 	SkipGPTModels bool             `json:"skip_gpt_models"`
-	Error         DistillError     `json:"error"`
 	Structure     DistillStructure `json:"structure"`
 	HardNeedles   []string         `json:"hard_needles"`
 	Needles       []string         `json:"needles"`
@@ -45,7 +37,6 @@ type HardRule struct {
 	Category string `json:"category"`
 	Source   string `json:"source"`
 	Enabled  bool   `json:"enabled"`
-	Action   string `json:"action"`
 }
 
 // UnmarshalJSON makes an omitted enabled flag true without losing false.
@@ -68,59 +59,21 @@ type HardRegexConfig struct {
 }
 
 const (
-	BlockSubjectUser       = "user"
-	BlockSubjectUserDevice = "user_device"
-	FailActionPass         = "pass"
-	FailActionBlock        = "block"
+	FailActionPass  = "pass"
+	FailActionBlock = "block"
 )
 
-type RefusalConfig struct {
-	Enabled             bool   `json:"enabled"`
-	SimilarityEnabled   bool   `json:"similarity_enabled"`
-	Similarity          int    `json:"similarity"`
-	SubjectBlockEnabled bool   `json:"subject_block_enabled"`
-	BlockSubject        string `json:"block_subject"`
-	BlockTTLMinutes     int    `json:"block_ttl_minutes"`
-	// Legacy fields remain readable for stored policies. Only Behavior and
-	// independently confirmed reviews now control new subject restrictions.
-	BlockAfterHits       int `json:"block_after_hits"`
-	BlockWindowMinutes   int `json:"block_window_minutes"`
-	MemoryTTLDays        int `json:"memory_ttl_days"`
-	MaxSimilarCandidates int `json:"max_similar_candidates"`
-}
-
 type ModelConfig struct {
-	Enabled              bool       `json:"enabled"`
-	ProviderID           int        `json:"provider_id"`
-	Model                string     `json:"model"`
-	Questions            []Question `json:"questions"`
-	CustomInstruction    string     `json:"custom_instruction"`
-	Threshold            float64    `json:"threshold"`
-	NearMissBand         float64    `json:"near_miss_band"`
-	FailAction           string     `json:"fail_action"`
-	BudgetMS             int        `json:"budget_ms"`
-	MaxAttempts          int        `json:"max_attempts"`
-	DedupSec             int        `json:"dedup_sec"`
-	MaxAuditChars        int        `json:"max_audit_chars"`
-	AutoConfirmThreshold float64    `json:"auto_confirm_threshold"`
-}
-
-type EvidenceConfig struct {
-	StorePreview        bool `json:"store_preview"`
-	StoreReviewEvidence bool `json:"store_review_evidence"`
-}
-
-// BehaviorConfig only counts independently confirmed incidents. Automatic
-// restrictions are opt-in and always expire; raw detections never add points.
-type BehaviorConfig struct {
-	Enabled            bool `json:"enabled"`
-	AutoConfirmEnabled bool `json:"auto_confirm_enabled"`
-	AutoBlockEnabled   bool `json:"auto_block_enabled"`
-	BlockTTLMinutes    int  `json:"block_ttl_minutes"`
-}
-
-func (b BehaviorConfig) Policy() model.RiskBehaviorPolicy {
-	return model.RiskBehaviorPolicy{BlockTTLMinutes: b.BlockTTLMinutes}
+	Enabled       bool       `json:"enabled"`
+	ProviderID    int        `json:"provider_id"`
+	Model         string     `json:"model"`
+	Questions     []Question `json:"questions"`
+	Threshold     float64    `json:"threshold"`
+	FailAction    string     `json:"fail_action"`
+	BudgetMS      int        `json:"budget_ms"`
+	MaxAttempts   int        `json:"max_attempts"`
+	DedupSec      int        `json:"dedup_sec"`
+	MaxAuditChars int        `json:"max_audit_chars"`
 }
 
 // PolicyPayload is one immutable policy revision as stored and edited.
@@ -128,10 +81,7 @@ type PolicyPayload struct {
 	SkipGPTModels bool            `json:"skip_gpt_models"`
 	Distill       DistillRules    `json:"distill"`
 	HardRegex     HardRegexConfig `json:"hard_regex"`
-	Refusal       RefusalConfig   `json:"refusal"`
 	Model         ModelConfig     `json:"model"`
-	Evidence      EvidenceConfig  `json:"evidence"`
-	Behavior      BehaviorConfig  `json:"behavior"`
 }
 
 // DefaultDistillRules returns the shipped vm2api distill rule set.
@@ -154,30 +104,14 @@ func DefaultPolicyPayload() PolicyPayload {
 			ExpandBase64:   true,
 			Patterns:       []string{},
 		},
-		Refusal: RefusalConfig{
-			Enabled:              true,
-			SimilarityEnabled:    true,
-			Similarity:           90,
-			SubjectBlockEnabled:  true,
-			BlockSubject:         BlockSubjectUser,
-			BlockTTLMinutes:      30,
-			BlockAfterHits:       3,
-			BlockWindowMinutes:   10,
-			MemoryTTLDays:        7,
-			MaxSimilarCandidates: 2000,
-		},
 		Model: ModelConfig{
-			Threshold:            0.5,
-			NearMissBand:         0.08,
-			FailAction:           FailActionPass,
-			BudgetMS:             2000,
-			MaxAttempts:          2,
-			DedupSec:             60,
-			MaxAuditChars:        16000,
-			AutoConfirmThreshold: 0.15,
+			Threshold:     0.5,
+			FailAction:    FailActionPass,
+			BudgetMS:      2000,
+			MaxAttempts:   2,
+			DedupSec:      600,
+			MaxAuditChars: 16000,
 		},
-		Evidence: EvidenceConfig{StorePreview: true, StoreReviewEvidence: true},
-		Behavior: BehaviorConfig{Enabled: true, BlockTTLMinutes: 30},
 	}
 }
 
@@ -191,31 +125,8 @@ func ParsePolicyPayload(raw []byte) (PolicyPayload, error) {
 	if err := common.Unmarshal(raw, &payload); err != nil {
 		return PolicyPayload{}, err
 	}
-	var fields struct {
-		Model map[string]any `json:"model"`
-	}
-	if err := common.Unmarshal(raw, &fields); err != nil {
-		return PolicyPayload{}, err
-	}
-	if _, supplied := fields.Model["auto_confirm_threshold"]; !supplied {
-		payload.Model.AutoConfirmThreshold = min(payload.Model.AutoConfirmThreshold, payload.Model.Threshold)
-	}
 	NormalizePolicyPayload(&payload)
 	return payload, nil
-}
-
-// effectiveAction preserves legacy matching priority. Every matching action
-// now only triggers model review; it never blocks a request by itself.
-func effectiveAction(rule HardRule) string {
-	if rule.Action != "" {
-		return rule.Action
-	}
-	for _, b := range BuiltinHardRules {
-		if b.Source == rule.Source && b.Category == rule.Category {
-			return b.Action
-		}
-	}
-	return RuleActionBlock
 }
 
 func cleanList(items []string) []string {
@@ -241,7 +152,6 @@ func NormalizePolicyPayload(p *PolicyPayload) {
 	p.Distill.Needles = slices.DeleteFunc(p.Distill.Needles, func(n string) bool { return hard[strings.ToLower(n)] })
 	p.Distill.Patterns = cleanList(p.Distill.Patterns)
 	p.Distill.Fingerprints = cleanList(p.Distill.Fingerprints)
-	p.Distill.Error.Message = strings.TrimSpace(p.Distill.Error.Message)
 	p.Distill.Structure.ContestPattern = strings.TrimSpace(p.Distill.Structure.ContestPattern)
 	builtin := make(map[string]bool, len(BuiltinHardRules))
 	for _, r := range BuiltinHardRules {
@@ -251,63 +161,19 @@ func NormalizePolicyPayload(p *PolicyPayload) {
 	if p.HardRegex.Rules != nil {
 		seen := make(map[string]bool, len(p.HardRegex.Rules))
 		rules := make([]HardRule, 0, len(p.HardRegex.Rules))
-		for i := range p.HardRegex.Rules {
-			rule := &p.HardRegex.Rules[i]
+		for _, rule := range p.HardRegex.Rules {
 			rule.Source = strings.TrimSpace(rule.Source)
-			// Upgrade only recognizable pre-action builtins. Explicit actions
-			// and customized categories keep the administrator's saved pattern.
-			if rule.Action == "" {
-				switch {
-				case rule.Category == "jailbreak" && rule.Source == `(?:解除|关闭|绕过|无视)(?:你的|所有|全部)?(?:安全|内容)?(?:限制|审查|过滤|策略)`:
-					rule.Source = jailbreakControlPattern
-				case rule.Category == "crack" && rule.Source == `(?:破解补丁|注册机|激活码生成器)`:
-					rule.Source = crackToolPattern
-				}
-			}
-			rule.Action = effectiveAction(*rule)
-			// Published builtins used to block quoted or negated phrases.
-			// Upgrade only the exact builtin category and source; custom
-			// patterns and custom categories keep their explicit action.
-			for _, builtin := range BuiltinHardRules {
-				if rule.Category == builtin.Category && rule.Source == builtin.Source {
-					rule.Action = builtin.Action
-					break
-				}
-			}
 			if !seen[rule.Source] {
-				rules = append(rules, *rule)
+				rules = append(rules, rule)
 				seen[rule.Source] = true
 			}
 		}
 		p.HardRegex.Rules = rules
-		// An untouched pre-screening builtin list receives the new weak
-		// signals. A customized list stays exactly the administrator's list.
-		legacySources := make(map[string]bool)
-		for _, rule := range BuiltinHardRules {
-			if rule.Action != RuleActionSignal {
-				legacySources[rule.Category+"\x00"+rule.Source] = true
-			}
-		}
-		legacyOnly := len(rules) == len(legacySources)
-		for _, rule := range rules {
-			legacyOnly = legacyOnly && legacySources[rule.Category+"\x00"+rule.Source]
-		}
-		if legacyOnly {
-			for _, rule := range BuiltinHardRules {
-				if rule.Action == RuleActionSignal {
-					p.HardRegex.Rules = append(p.HardRegex.Rules, rule)
-				}
-			}
-		}
-		if len(p.HardRegex.Rules) == 0 {
+		if len(rules) == 0 {
 			p.HardRegex.Rules = nil
 		}
 	}
 	p.Model.Model = strings.TrimSpace(p.Model.Model)
-	p.Model.CustomInstruction = strings.TrimSpace(p.Model.CustomInstruction)
-	if slices.Contains(legacyQuestionInstructions["safety"], p.Model.CustomInstruction) {
-		p.Model.CustomInstruction = ""
-	}
 	for i := range p.Model.Questions {
 		q := &p.Model.Questions[i]
 		q.ID = strings.ToLower(strings.TrimSpace(q.ID))
@@ -315,32 +181,8 @@ func NormalizePolicyPayload(p *PolicyPayload) {
 		q.Summary = strings.TrimSpace(q.Summary)
 		q.Instructions = strings.TrimSpace(q.Instructions)
 		q.Builtin = builtinQuestionIDs()[q.ID]
-		if slices.Contains(legacyQuestionInstructions[q.ID], q.Instructions) {
-			for _, builtin := range BuiltinQuestions {
-				if builtin.ID == q.ID {
-					q.Instructions = builtin.Instructions
-					break
-				}
-			}
-		}
 		if q.Label == "" {
 			q.Label = q.ID
-		}
-	}
-	// Only the complete, enabled former default set receives the new topic.
-	// Customized instructions or disabled topics remain the administrator's choice.
-	if len(p.Model.Questions) == len(BuiltinQuestions)-1 {
-		oldDefaults := true
-		seen := map[string]bool{}
-		for _, q := range p.Model.Questions {
-			match := slices.ContainsFunc(BuiltinQuestions, func(b Question) bool {
-				return b.ID != "distill" && b.ID == q.ID && b.Instructions == q.Instructions && q.Enabled
-			})
-			oldDefaults = oldDefaults && match && !seen[q.ID]
-			seen[q.ID] = true
-		}
-		if oldDefaults {
-			p.Model.Questions = append(p.Model.Questions, BuiltinQuestions[len(BuiltinQuestions)-1])
 		}
 	}
 }
@@ -385,10 +227,6 @@ func ValidatePolicyPayload(p PolicyPayload) []*common.Message {
 	for _, source := range d.Patterns {
 		checkPattern("distill.patterns", source, &problems)
 	}
-	checkRange(&problems, "distill.error.status", d.Error.Status, 400, 599)
-	if len([]rune(d.Error.Message)) > 200 {
-		problems = append(problems, common.NewMessage("{{field}} allows at most {{max}} characters", map[string]any{"field": "distill.error.message", "max": 200}))
-	}
 	if d.Structure.MinMaxTokens <= 0 {
 		problems = append(problems, common.NewMessage("{{field}} must be positive", map[string]any{"field": "distill.structure.min_max_tokens"}))
 	}
@@ -404,9 +242,6 @@ func ValidatePolicyPayload(p PolicyPayload) []*common.Message {
 		if !slices.Contains(HardRuleCategories, rule.Category) {
 			problems = append(problems, common.NewMessage("Unknown risk rule category {{category}}", map[string]any{"category": rule.Category}))
 		}
-		if rule.Action != "" && rule.Action != RuleActionBlock && rule.Action != RuleActionReview && rule.Action != RuleActionSignal {
-			problems = append(problems, common.NewMessage("Risk rule action must be block, review or signal"))
-		}
 		if rule.Source == "" {
 			problems = append(problems, common.NewMessage("Every risk rule needs a pattern"))
 			continue
@@ -420,32 +255,12 @@ func ValidatePolicyPayload(p PolicyPayload) []*common.Message {
 		checkPattern("hard_regex.patterns", source, &problems)
 	}
 
-	r := p.Refusal
-	if !slices.Contains([]int{80, 85, 90, 95}, r.Similarity) {
-		problems = append(problems, common.NewMessage("Refusal similarity must be 80, 85, 90 or 95"))
-	}
-	if r.BlockSubject != BlockSubjectUser && r.BlockSubject != BlockSubjectUserDevice {
-		problems = append(problems, common.NewMessage("Block subject must be user or user_device"))
-	}
-	checkRange(&problems, "refusal.block_ttl_minutes", r.BlockTTLMinutes, 0, 525600)
-	checkRange(&problems, "refusal.block_after_hits", r.BlockAfterHits, 1, 20)
-	checkRange(&problems, "refusal.block_window_minutes", r.BlockWindowMinutes, 1, 1440)
-	checkRange(&problems, "refusal.memory_ttl_days", r.MemoryTTLDays, 0, 3650)
-	checkRange(&problems, "refusal.max_similar_candidates", r.MaxSimilarCandidates, 1, 10000)
-
 	m := p.Model
-	checkRange(&problems, "behavior.block_ttl_minutes", p.Behavior.BlockTTLMinutes, 1, 1440)
 	if m.Enabled && m.ProviderID <= 0 {
 		problems = append(problems, common.NewMessage("A provider is required when the model layer is enabled"))
 	}
-	if math.IsNaN(m.Threshold) || m.Threshold < 0 || m.Threshold > 1 {
+	if m.Threshold < 0 || m.Threshold > 1 {
 		problems = append(problems, common.NewMessage("{{field}} must be between {{min}} and {{max}}", map[string]any{"field": "model.threshold", "min": 0, "max": 1}))
-	}
-	if math.IsNaN(m.AutoConfirmThreshold) || m.AutoConfirmThreshold < 0 || m.AutoConfirmThreshold > m.Threshold {
-		problems = append(problems, common.NewMessage("{{field}} must be between {{min}} and {{max}}", map[string]any{"field": "model.auto_confirm_threshold", "min": 0, "max": m.Threshold}))
-	}
-	if math.IsNaN(m.NearMissBand) || m.NearMissBand < 0 || m.NearMissBand > 1 {
-		problems = append(problems, common.NewMessage("{{field}} must be between {{min}} and {{max}}", map[string]any{"field": "model.near_miss_band", "min": 0, "max": 1}))
 	}
 	if m.FailAction != FailActionPass && m.FailAction != FailActionBlock {
 		problems = append(problems, common.NewMessage("Model failure action must be pass or block"))
@@ -454,9 +269,6 @@ func ValidatePolicyPayload(p PolicyPayload) []*common.Message {
 	checkRange(&problems, "model.max_attempts", m.MaxAttempts, 1, 10)
 	checkRange(&problems, "model.dedup_sec", m.DedupSec, 0, 3600)
 	checkRange(&problems, "model.max_audit_chars", m.MaxAuditChars, 256, 64000)
-	if len([]rune(m.CustomInstruction)) > 500 {
-		problems = append(problems, common.NewMessage("{{field}} allows at most {{max}} characters", map[string]any{"field": "model.custom_instruction", "max": 500}))
-	}
 	if len(m.Questions) > questionMax {
 		problems = append(problems, common.NewMessage("{{field}} allows at most {{max}} entries", map[string]any{"field": "model.questions", "max": questionMax}))
 	}
@@ -482,8 +294,7 @@ type CompiledPolicy struct {
 
 	distillPatterns []*regexp.Regexp
 	contest         *regexp.Regexp
-	hardRules       []compiledRule
-	signalRules     []compiledRule
+	rules           []compiledRule
 	asked           []askedQuestion
 }
 
@@ -526,19 +337,14 @@ func CompilePolicy(key string, revision int, p PolicyPayload) (*CompiledPolicy, 
 		if err != nil {
 			return nil, err
 		}
-		compiled := compiledRule{category: rule.Category, source: rule.Source, action: effectiveAction(rule), re: re}
-		if compiled.action == RuleActionSignal {
-			cp.signalRules = append(cp.signalRules, compiled)
-		} else {
-			cp.hardRules = append(cp.hardRules, compiled)
-		}
+		cp.rules = append(cp.rules, compiledRule{category: rule.Category, source: rule.Source, re: re})
 	}
 	for _, source := range p.HardRegex.Patterns {
 		re, err := compileCaseless(source)
 		if err != nil {
 			return nil, err
 		}
-		cp.hardRules = append(cp.hardRules, compiledRule{category: "custom", source: source, action: RuleActionBlock, re: re})
+		cp.rules = append(cp.rules, compiledRule{category: "custom", source: source, re: re})
 	}
 	return cp, nil
 }

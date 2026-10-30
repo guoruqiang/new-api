@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -94,7 +93,6 @@ func setupRelayRouterTestDB(t *testing.T) {
 	t.Helper()
 
 	gin.SetMode(gin.TestMode)
-	require.NoError(t, i18n.Init())
 	originalIsMasterNode := common.IsMasterNode
 	originalRedisEnabled := common.RedisEnabled
 	originalSQLitePath := common.SQLitePath
@@ -109,7 +107,7 @@ func setupRelayRouterTestDB(t *testing.T) {
 	require.NoError(t, os.Setenv("SQL_DSN", "local"))
 	require.NoError(t, model.InitDB())
 	model.LOG_DB = model.DB
-	require.NoError(t, model.DB.AutoMigrate(&model.User{}, &model.Token{}, &model.Ability{}, &model.RiskSubjectBlock{}))
+	require.NoError(t, model.DB.AutoMigrate(&model.User{}, &model.Token{}, &model.Ability{}))
 
 	t.Cleanup(func() {
 		if sqlDB, err := model.DB.DB(); err == nil {

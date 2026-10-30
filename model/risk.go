@@ -86,39 +86,35 @@ type RiskGroupNamespace struct {
 }
 
 type RiskEvent struct {
-	Id             int     `json:"id"`
-	RequestId      string  `json:"request_id" gorm:"type:varchar(64);index:idx_risk_evt_request"`
-	Attempt        int     `json:"attempt"`
-	CreatedAt      int64   `json:"created_at" gorm:"bigint;index:idx_risk_evt_time;index:idx_risk_evt_ns_time,priority:2;index:idx_risk_evt_user_time,priority:2"`
-	UserId         int     `json:"user_id" gorm:"index:idx_risk_evt_user_time,priority:1"`
-	TokenId        int     `json:"token_id"`
-	UserGroup      string  `json:"user_group" gorm:"type:varchar(64)"`
-	TokenGroup     string  `json:"token_group" gorm:"type:varchar(64)"`
-	EffectiveGroup string  `json:"effective_group" gorm:"type:varchar(64)"`
-	Namespace      string  `json:"namespace" gorm:"type:varchar(32);index:idx_risk_evt_ns_time,priority:1"`
-	GroupSource    string  `json:"group_source" gorm:"type:varchar(24)"`
-	ChannelId      int     `json:"channel_id"`
-	Model          string  `json:"model" gorm:"type:varchar(128)"`
-	Route          string  `json:"route" gorm:"type:varchar(32)"`
-	Mode           string  `json:"mode" gorm:"type:varchar(12)"`
-	ConfigRevision int64   `json:"config_revision" gorm:"bigint"`
-	PolicyKey      string  `json:"policy_key" gorm:"type:varchar(64)"`
-	PolicyRevision int     `json:"policy_revision"`
-	Layer          string  `json:"layer" gorm:"type:varchar(16)"`
-	Outcome        string  `json:"outcome" gorm:"type:varchar(16)"`
-	Reason         string  `json:"reason" gorm:"type:varchar(64)"`
-	Category       string  `json:"category" gorm:"type:varchar(32)"`
-	Keyword        string  `json:"keyword" gorm:"type:varchar(64)"`
-	Rule           string  `json:"rule" gorm:"type:varchar(160)"`
-	Scores         string  `json:"scores" gorm:"type:text"`
-	ProviderModel  string  `json:"provider_model" gorm:"type:varchar(120)"`
-	LatencyMs      int     `json:"latency_ms"`
-	Coverage       string  `json:"coverage" gorm:"type:varchar(16)"`
-	ErrorCode      string  `json:"error_code" gorm:"type:varchar(48)"`
-	Preview        string  `json:"preview" gorm:"type:varchar(240)"`
-	Fingerprint    string  `json:"fingerprint" gorm:"type:varchar(64)"`
-	DeviceHash     string  `json:"device_hash" gorm:"type:varchar(64)"`
-	Similarity     float64 `json:"similarity"`
+	Id             int    `json:"id"`
+	RequestId      string `json:"request_id" gorm:"type:varchar(64);index:idx_risk_evt_request"`
+	Attempt        int    `json:"attempt"`
+	CreatedAt      int64  `json:"created_at" gorm:"bigint;index:idx_risk_evt_time;index:idx_risk_evt_ns_time,priority:2;index:idx_risk_evt_user_time,priority:2"`
+	UserId         int    `json:"user_id" gorm:"index:idx_risk_evt_user_time,priority:1"`
+	TokenId        int    `json:"token_id"`
+	UserGroup      string `json:"user_group" gorm:"type:varchar(64)"`
+	TokenGroup     string `json:"token_group" gorm:"type:varchar(64)"`
+	EffectiveGroup string `json:"effective_group" gorm:"type:varchar(64)"`
+	Namespace      string `json:"namespace" gorm:"type:varchar(32);index:idx_risk_evt_ns_time,priority:1"`
+	GroupSource    string `json:"group_source" gorm:"type:varchar(24)"`
+	ChannelId      int    `json:"channel_id"`
+	Model          string `json:"model" gorm:"type:varchar(128)"`
+	Route          string `json:"route" gorm:"type:varchar(32)"`
+	Mode           string `json:"mode" gorm:"type:varchar(12)"`
+	ConfigRevision int64  `json:"config_revision" gorm:"bigint"`
+	PolicyKey      string `json:"policy_key" gorm:"type:varchar(64)"`
+	PolicyRevision int    `json:"policy_revision"`
+	Layer          string `json:"layer" gorm:"type:varchar(16)"`
+	Outcome        string `json:"outcome" gorm:"type:varchar(16)"`
+	Reason         string `json:"reason" gorm:"type:varchar(64)"`
+	Category       string `json:"category" gorm:"type:varchar(32)"`
+	Keyword        string `json:"keyword" gorm:"type:varchar(64)"`
+	Rule           string `json:"rule" gorm:"type:varchar(160)"`
+	Scores         string `json:"scores" gorm:"type:text"`
+	ProviderModel  string `json:"provider_model" gorm:"type:varchar(120)"`
+	LatencyMs      int    `json:"latency_ms"`
+	ErrorCode      string `json:"error_code" gorm:"type:varchar(48)"`
+	Fingerprint    string `json:"fingerprint" gorm:"type:varchar(64)"`
 }
 
 type RiskCounter struct {
@@ -134,49 +130,33 @@ type RiskCounter struct {
 	Hits      int64  `json:"hits" gorm:"bigint"`
 }
 
-type RiskRefusal struct {
-	Id                 int    `json:"id"`
-	Namespace          string `json:"namespace" gorm:"type:varchar(32);uniqueIndex:idx_risk_refusal_key,priority:1;index:idx_risk_refusal_cand,priority:1"`
-	UserId             int    `json:"user_id" gorm:"uniqueIndex:idx_risk_refusal_key,priority:2;index:idx_risk_refusal_cand,priority:2"`
-	Model              string `json:"model" gorm:"type:varchar(128);index:idx_risk_refusal_cand,priority:3"`
-	Fingerprint        string `json:"fingerprint" gorm:"type:varchar(64);uniqueIndex:idx_risk_refusal_key,priority:3"`
-	FingerprintVersion int    `json:"fingerprint_version"`
-	Signature          string `json:"-" gorm:"type:text"`
-	SignatureVersion   int    `json:"signature_version"`
-	Preview            string `json:"preview" gorm:"type:varchar(240)"`
-	ErrorMessage       string `json:"error_message" gorm:"type:varchar(500)"`
-	SourceRequestId    string `json:"source_request_id" gorm:"type:varchar(64)"`
-	PolicyKey          string `json:"policy_key" gorm:"type:varchar(64)"`
-	PolicyRevision     int    `json:"policy_revision"`
-	HitCount           int    `json:"hit_count"`
-	FirstSeenAt        int64  `json:"first_seen_at" gorm:"bigint"`
-	LastSeenAt         int64  `json:"last_seen_at" gorm:"bigint;index:idx_risk_refusal_cand,priority:4"`
-	ExpiresAt          int64  `json:"expires_at" gorm:"bigint"`
-}
-
-type RiskSubjectBlock struct {
-	Id              int    `json:"id"`
-	UserId          int    `json:"user_id" gorm:"index:idx_risk_block_owner"`
-	Namespace       string `json:"namespace" gorm:"type:varchar(32);uniqueIndex:idx_risk_block_key,priority:1"`
-	SubjectType     string `json:"subject_type" gorm:"type:varchar(12);uniqueIndex:idx_risk_block_key,priority:2"`
-	SubjectValue    string `json:"subject_value" gorm:"type:varchar(80);uniqueIndex:idx_risk_block_key,priority:3"`
-	Reason          string `json:"reason" gorm:"type:varchar(80)"`
-	Fingerprint     string `json:"fingerprint" gorm:"type:varchar(64)"`
-	SourceRequestId string `json:"source_request_id" gorm:"type:varchar(64)"`
-	HitCount        int    `json:"hit_count"`
-	FirstSeenAt     int64  `json:"first_seen_at" gorm:"bigint"`
-	LastSeenAt      int64  `json:"last_seen_at" gorm:"bigint"`
-	ExpiresAt       int64  `json:"expires_at" gorm:"bigint"`
-	ReleasedAt      int64  `json:"released_at" gorm:"bigint"`
-	ReleasedBy      int    `json:"released_by"`
-}
-
 // RiskModels lists every risk table for AutoMigrate.
 func RiskModels() []any {
 	return []any{
 		&RiskState{}, &RiskConfig{}, &RiskPolicy{}, &RiskProvider{}, &RiskGroupNamespace{},
-		&RiskEvent{}, &RiskCounter{}, &RiskRefusal{}, &RiskSubjectBlock{}, &RiskReview{}, &RiskSignal{}, &RiskReputationEntry{},
+		&RiskEvent{}, &RiskCounter{}, &RiskViolation{}, &RiskUserScore{},
 	}
+}
+
+// retiredRiskModels name the tables of removed risk features: refusal memory,
+// subject and token blocks, review candidates, screening signals and the
+// reputation ledger. The current audit neither reads nor writes them.
+var retiredRiskModels = []string{"RiskRefusal", "RiskSubjectBlock", "RiskReview", "RiskSignal", "RiskReputationEntry"}
+
+// DropRetiredRiskTables removes the tables of removed risk features. It is
+// idempotent: tables that do not exist are skipped.
+func DropRetiredRiskTables() error {
+	migrator := DB.Migrator()
+	for _, name := range retiredRiskModels {
+		table := DB.NamingStrategy.TableName(name)
+		if !migrator.HasTable(table) {
+			continue
+		}
+		if err := migrator.DropTable(table); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func isRiskUniqueViolation(err error) bool {
@@ -622,263 +602,16 @@ func SaveRiskProvider(provider *RiskProvider, keys []string) error {
 	return err
 }
 
-// GetRiskRefusal returns the unexpired exact refusal record, or nil.
-func GetRiskRefusal(namespace string, userID int, fingerprint string, now int64) (*RiskRefusal, error) {
-	var row RiskRefusal
-	err := DB.Where("namespace = ? AND user_id = ? AND fingerprint = ?", namespace, userID, fingerprint).
-		Where("expires_at = 0 OR expires_at > ?", now).First(&row).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &row, nil
-}
-
-// ListRiskRefusalCandidates returns the most recent signed refusals of one
-// user and model in a namespace for near-duplicate comparison.
-func ListRiskRefusalCandidates(namespace string, userID int, model string, signatureVersion, limit int, now int64) ([]RiskRefusal, error) {
-	var rows []RiskRefusal
-	err := DB.Select("id", "fingerprint", "signature", "signature_version", "source_request_id").
-		Where("namespace = ? AND user_id = ? AND model = ?", namespace, userID, model).
-		Where("signature_version = ? AND signature <> ''", signatureVersion).
-		Where("expires_at = 0 OR expires_at > ?", now).
-		Order("last_seen_at desc").Limit(limit).Find(&rows).Error
-	return rows, err
-}
-
-// RememberRiskRefusal upserts an upstream refusal. A permanent record stays
-// permanent; non-empty new details replace old ones.
-func RememberRiskRefusal(rec *RiskRefusal) error {
-	return riskTransaction(func(tx *gorm.DB) error {
-		if _, err := lockRiskState(tx); err != nil {
-			return err
-		}
-		// A delayed upstream callback must not recreate a refusal removed by
-		// manual review. The request alias survives fingerprint deduplication.
-		var rejected RiskReview
-		query := tx.Where("namespace = ? AND user_id = ?", rec.Namespace, rec.UserId).
-			Where("status IN ?", []string{RiskReviewDismissed, RiskReviewRevoked}).
-			Where("request_id = ? OR (fingerprint = ? AND created_at <= ? AND reviewed_at >= ?)", rec.SourceRequestId, rec.Fingerprint, rec.LastSeenAt, rec.LastSeenAt)
-		err := query.First(&rejected).Error
-		if err == nil {
-			return nil
-		}
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
-		var alias RiskReview
-		err = tx.Where("namespace = ? AND user_id = ? AND request_id = ? AND duplicate_of > 0", rec.Namespace, rec.UserId, rec.SourceRequestId).First(&alias).Error
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
-		if err == nil {
-			var original RiskReview
-			if err := tx.First(&original, alias.DuplicateOf).Error; err != nil {
-				return err
-			}
-			if original.Status == RiskReviewDismissed || original.Status == RiskReviewRevoked {
-				return nil
-			}
-		}
-		var existing RiskRefusal
-		err = lockForUpdate(tx).Where("namespace = ? AND user_id = ? AND fingerprint = ?", rec.Namespace, rec.UserId, rec.Fingerprint).First(&existing).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			row := *rec
-			row.FirstSeenAt, row.LastSeenAt = rec.LastSeenAt, rec.LastSeenAt
-			return tx.Create(&row).Error
-		}
-		if err != nil {
-			return err
-		}
-		updates := map[string]any{"last_seen_at": rec.LastSeenAt}
-		if rec.ErrorMessage != "" {
-			updates["error_message"] = rec.ErrorMessage
-		}
-		if rec.Preview != "" {
-			updates["preview"] = rec.Preview
-		}
-		if rec.Signature != "" {
-			updates["signature"] = rec.Signature
-			updates["signature_version"] = rec.SignatureVersion
-		}
-		switch {
-		case existing.ExpiresAt == 0 || rec.ExpiresAt == 0:
-			updates["expires_at"] = 0
-		default:
-			updates["expires_at"] = rec.ExpiresAt
-		}
-		return tx.Model(&RiskRefusal{}).Where("id = ?", existing.Id).Updates(updates).Error
-	})
-}
-
-func HitRiskRefusal(id int, now int64) error {
-	return DB.Model(&RiskRefusal{}).Where("id = ?", id).
-		Updates(map[string]any{"hit_count": gorm.Expr("hit_count + 1"), "last_seen_at": now}).Error
-}
-
 // RiskListFilter narrows administrator list queries.
 type RiskListFilter struct {
-	Namespace   string
-	UserId      int
-	Model       string
-	SubjectType string
-	ActiveOnly  bool
-	Layer       string
-	Outcome     string
-	RequestId   string
-	GroupName   string
-	Start       int64
-	End         int64
-}
-
-func ListRiskRefusals(filter RiskListFilter, offset, limit int) ([]RiskRefusal, int64, error) {
-	query := DB.Model(&RiskRefusal{}).Where("namespace = ?", filter.Namespace)
-	if filter.UserId > 0 {
-		query = query.Where("user_id = ?", filter.UserId)
-	}
-	if filter.Model != "" {
-		query = query.Where("model = ?", filter.Model)
-	}
-	var total int64
-	if err := query.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-	var rows []RiskRefusal
-	err := query.Order("last_seen_at desc").Offset(offset).Limit(limit).Find(&rows).Error
-	return rows, total, err
-}
-
-func DeleteRiskRefusal(id int) (bool, error) {
-	result := DB.Delete(&RiskRefusal{}, id)
-	return result.RowsAffected > 0, result.Error
-}
-
-func ClearRiskRefusals(namespace string, userID int) (int64, error) {
-	query := DB.Where("namespace = ?", namespace)
-	if userID > 0 {
-		query = query.Where("user_id = ?", userID)
-	}
-	result := query.Delete(&RiskRefusal{})
-	return result.RowsAffected, result.Error
-}
-
-// GetActiveRiskBlock returns the unreleased, unexpired block, or nil.
-func GetActiveRiskBlock(namespace, subjectType, subjectValue string, now int64) (*RiskSubjectBlock, error) {
-	var row RiskSubjectBlock
-	err := DB.Where("namespace = ? AND subject_type = ? AND subject_value = ?", namespace, subjectType, subjectValue).
-		Where("released_at = 0").Where("expires_at = 0 OR expires_at > ?", now).First(&row).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &row, nil
-}
-
-// BlockRiskSubject creates or re-arms the block on one subject.
-func BlockRiskSubject(rec *RiskSubjectBlock) error {
-	return riskTransaction(func(tx *gorm.DB) error {
-		var existing RiskSubjectBlock
-		err := lockForUpdate(tx).Where("namespace = ? AND subject_type = ? AND subject_value = ?", rec.Namespace, rec.SubjectType, rec.SubjectValue).First(&existing).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			row := *rec
-			row.FirstSeenAt, row.LastSeenAt = rec.LastSeenAt, rec.LastSeenAt
-			return tx.Create(&row).Error
-		}
-		if err != nil {
-			return err
-		}
-		return tx.Model(&RiskSubjectBlock{}).Where("id = ?", existing.Id).Updates(map[string]any{
-			"reason": rec.Reason, "fingerprint": rec.Fingerprint, "source_request_id": rec.SourceRequestId,
-			"last_seen_at": rec.LastSeenAt, "expires_at": rec.ExpiresAt, "released_at": 0, "released_by": 0,
-		}).Error
-	})
-}
-
-func HitRiskBlock(id int, now int64) error {
-	return DB.Model(&RiskSubjectBlock{}).Where("id = ?", id).
-		Updates(map[string]any{"hit_count": gorm.Expr("hit_count + 1"), "last_seen_at": now}).Error
-}
-
-func ReleaseRiskBlock(id, operatorID int, now int64) (bool, error) {
-	changed := false
-	err := riskTransaction(func(tx *gorm.DB) error {
-		changed = false
-		state, err := lockRiskState(tx)
-		if err != nil {
-			return err
-		}
-		var row RiskSubjectBlock
-		if err := tx.Where("id = ? AND released_at = 0", id).First(&row).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return nil
-			}
-			return err
-		}
-		if err := releaseRiskBlockBases(tx, &row, operatorID, now, nil); err != nil {
-			return err
-		}
-		result := tx.Model(&RiskSubjectBlock{}).Where("id = ? AND released_at = 0", id).Updates(map[string]any{"released_at": now, "released_by": operatorID})
-		if result.Error != nil {
-			return result.Error
-		}
-		changed = result.RowsAffected > 0
-		return bumpRiskState(tx, state, false)
-	})
-	return changed, err
-}
-
-func ClearRiskBlocks(namespace string, operatorID int, now int64) (int64, error) {
-	var changed int64
-	err := riskTransaction(func(tx *gorm.DB) error {
-		changed = 0
-		state, err := lockRiskState(tx)
-		if err != nil {
-			return err
-		}
-		var rows []RiskSubjectBlock
-		if err := tx.Where("namespace = ? AND released_at = 0", namespace).Find(&rows).Error; err != nil {
-			return err
-		}
-		for _, row := range rows {
-			if err := releaseRiskBlockBases(tx, &row, operatorID, now, nil); err != nil {
-				return err
-			}
-		}
-		result := tx.Model(&RiskSubjectBlock{}).Where("namespace = ? AND released_at = 0", namespace).Updates(map[string]any{"released_at": now, "released_by": operatorID})
-		if result.Error != nil {
-			return result.Error
-		}
-		changed = result.RowsAffected
-		if changed == 0 {
-			return nil
-		}
-		return bumpRiskState(tx, state, false)
-	})
-	return changed, err
-}
-
-func ListRiskBlocks(filter RiskListFilter, now int64, offset, limit int) ([]RiskSubjectBlock, int64, error) {
-	query := DB.Model(&RiskSubjectBlock{})
-	if filter.Namespace != "" {
-		query = query.Where("namespace = ?", filter.Namespace)
-	}
-	if filter.SubjectType != "" {
-		query = query.Where("subject_type = ?", filter.SubjectType)
-	}
-	if filter.ActiveOnly {
-		query = query.Where("released_at = 0").Where("expires_at = 0 OR expires_at > ?", now)
-	}
-	var total int64
-	if err := query.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-	var rows []RiskSubjectBlock
-	err := query.Order("last_seen_at desc").Offset(offset).Limit(limit).Find(&rows).Error
-	return rows, total, err
+	Namespace string
+	UserId    int
+	Layer     string
+	Outcome   string
+	RequestId string
+	GroupName string
+	Start     int64
+	End       int64
 }
 
 func InsertRiskEvents(events []RiskEvent) error {
@@ -1009,19 +742,6 @@ func TopRiskKeywords(start, end int64, groupName string, limit int) ([]RiskKeywo
 	return rows, err
 }
 
-// CountRiskStrikes counts a user's confirmed risk hits in a namespace since a
-// time: local blocks other than replays of an active subject block, and
-// learned upstream refusals.
-func CountRiskStrikes(namespace string, userID int, since int64) (int64, error) {
-	var count int64
-	err := DB.Model(&RiskEvent{}).
-		Where("namespace = ? AND user_id = ? AND created_at >= ?", namespace, userID, since).
-		Where("outcome IN ?", []string{"block", "upstream_refusal"}).
-		Where("reason <> ?", "subject").
-		Count(&count).Error
-	return count, err
-}
-
 func deleteRiskBatch(model any, where string, args ...any) (int64, error) {
 	var total int64
 	for {
@@ -1043,9 +763,9 @@ func deleteRiskBatch(model any, where string, args ...any) (int64, error) {
 	}
 }
 
-// CleanupRiskRecords removes expired refusals and blocks and events or
-// counters older than their retention cutoffs.
-func CleanupRiskRecords(now, eventsBefore, countersBefore int64) (int64, error) {
+// CleanupRiskRecords removes events, counters and reviewed violations older
+// than their retention cutoffs. Pending violations wait for a reviewer.
+func CleanupRiskRecords(eventsBefore, countersBefore, violationsBefore int64) (int64, error) {
 	var total int64
 	steps := []struct {
 		model any
@@ -1054,9 +774,7 @@ func CleanupRiskRecords(now, eventsBefore, countersBefore int64) (int64, error) 
 	}{
 		{&RiskEvent{}, "created_at < ?", []any{eventsBefore}},
 		{&RiskCounter{}, "bucket < ?", []any{countersBefore}},
-		{&RiskSignal{}, "created_at < ?", []any{eventsBefore}},
-		{&RiskRefusal{}, "expires_at > 0 AND expires_at <= ?", []any{now}},
-		{&RiskSubjectBlock{}, "(expires_at > 0 AND expires_at <= ?) OR (released_at > 0 AND released_at < ?)", []any{now, eventsBefore}},
+		{&RiskViolation{}, "created_at < ? AND status <> ?", []any{violationsBefore, RiskViolationPending}},
 	}
 	for _, step := range steps {
 		n, err := deleteRiskBatch(step.model, step.where, step.args...)
@@ -1065,6 +783,5 @@ func CleanupRiskRecords(now, eventsBefore, countersBefore int64) (int64, error) 
 			return total, err
 		}
 	}
-	removed, err := cleanupRiskReviews(now, eventsBefore)
-	return total + removed, err
+	return total, nil
 }

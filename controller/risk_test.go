@@ -3,21 +3,14 @@ package controller
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/constant"
-	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
-	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	relayconstant "github.com/QuantumNous/new-api/relay/constant"
-	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service/risk"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -98,11 +91,9 @@ func TestRiskConfigPublicationValidationAndConflict(t *testing.T) {
 		{name: "auto", exempt: []string{"auto"}},
 		{name: "duplicate", exempt: []string{namespace, namespace}},
 		{name: "exempt and bound", exempt: []string{namespace}, bindings: []risk.GroupBinding{{Namespace: namespace, PolicyKey: risk.BaselinePolicyKey, PolicyRevision: 1, Mode: risk.ModeObserve}}},
-		{name: "bypass unknown", bypass: []string{"missing"}},
-		{name: "bypass auto", bypass: []string{"auto"}},
-		{name: "bypass duplicate", bypass: []string{namespace, namespace}},
-		{name: "bypass and exempt", exempt: []string{namespace}, bypass: []string{namespace}},
-		{name: "bypass and bound", bypass: []string{namespace}, bindings: []risk.GroupBinding{{Namespace: namespace, PolicyKey: risk.BaselinePolicyKey, PolicyRevision: 1, Mode: risk.ModeObserve}}},
+		{name: "legacy bypass unknown", bypass: []string{"missing"}},
+		{name: "legacy bypass auto", bypass: []string{"auto"}},
+		{name: "legacy bypass and bound", bypass: []string{namespace}, bindings: []risk.GroupBinding{{Namespace: namespace, PolicyKey: risk.BaselinePolicyKey, PolicyRevision: 1, Mode: risk.ModeObserve}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body["expected_revision"], body["exempt_namespaces"], body["bypass_namespaces"], body["group_bindings"] = 1, tc.exempt, tc.bypass, tc.bindings
@@ -113,7 +104,6 @@ func TestRiskConfigPublicationValidationAndConflict(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, int64(1), view.Revision)
 			assert.Empty(t, view.Payload.ExemptNamespaces)
-			assert.Empty(t, view.Payload.BypassNamespaces)
 		})
 	}
 	policy := map[string]any{"policy_key": "published", "name": "Published", "base_revision": 0, "payload": risk.DefaultPolicyPayload()}
@@ -131,7 +121,7 @@ func TestRiskConfigPublicationValidationAndConflict(t *testing.T) {
 	cfg.Enabled = false
 	cfg.ExemptNamespaces = []string{other}
 	cfg.GroupBindings = []risk.GroupBinding{{Namespace: namespace, PolicyKey: "published", PolicyRevision: 1, Mode: risk.ModeObserve}}
-	cfg.Retention = risk.Retention{EventsDays: 17, CountersDays: 29}
+	cfg.Retention = risk.Retention{EventsDays: 17, CountersDays: 29, ViolationsDays: 31}
 	_, problems, err := risk.PublishConfig(1, cfg, 1)
 	require.NoError(t, err)
 	require.Empty(t, problems)
@@ -201,8 +191,8 @@ func TestRiskProviderResponsesNeverExposeKeysAndUpdatesPreserveKeys(t *testing.T
 	assert.Empty(t, stored.KeyLines())
 }
 
-func TestRiskPreviewAndScopedRecordActions(t *testing.T) {
-	db, namespace, other := setupRiskManagementTest(t)
+func TestRiskPreviewDoesNotWriteRecords(t *testing.T) {
+	db, namespace, _ := setupRiskManagementTest(t)
 	payload := risk.DefaultPolicyPayload()
 	payload.Distill.Enabled, payload.Model.Enabled = false, false
 	payload.HardRegex.Rules = []risk.HardRule{{Category: "custom", Source: "riskblock", Enabled: true}}
@@ -217,7 +207,7 @@ func TestRiskPreviewAndScopedRecordActions(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, problems)
 	for _, viaAuto := range []bool{false, true} {
-		w := riskManagementRequest(t, PreviewRisk, http.MethodPost, "/api/risk/preview", nil, risk.PreviewRequest{GroupName: "default", ViaAuto: viaAuto, UserID: 9, Body: `{"model":"test","messages":[{"role":"user","content":"riskblock"}]}`})
+		w := riskManagementRequest(t, PreviewRisk, http.MethodPost, "/api/risk/preview", nil, risk.PreviewRequest{GroupName: "default", ViaAuto: viaAuto, Body: `{"model":"test","messages":[{"role":"user","content":"riskblock"}]}`})
 		var response struct {
 			Success bool
 			Data    risk.PreviewResult
@@ -228,485 +218,74 @@ func TestRiskPreviewAndScopedRecordActions(t *testing.T) {
 		assert.Equal(t, viaAuto, response.Data.Audited)
 		if viaAuto {
 			assert.Equal(t, risk.OutcomePass, response.Data.Decision.Outcome)
-			assert.Equal(t, risk.ReasonRuleUnconfirmed, response.Data.Decision.Reason, "a keyword alone is not a confirmed violation")
+			assert.Equal(t, risk.ReasonModelDisabled, response.Data.Decision.Reason, "a keyword alone is not a confirmed violation")
 		}
 	}
-	for _, table := range []any{&model.RiskSubjectBlock{}, &model.RiskRefusal{}, &model.RiskEvent{}, &model.RiskCounter{}} {
+	for _, table := range []any{&model.RiskViolation{}, &model.RiskEvent{}, &model.RiskCounter{}} {
 		var count int64
 		require.NoError(t, db.Model(table).Count(&count).Error)
 		assert.Zero(t, count, "preview must not write %T", table)
 	}
-	for _, ns := range []string{namespace, other} {
-		require.NoError(t, model.RememberRiskRefusal(&model.RiskRefusal{Namespace: ns, UserId: 9, Model: "test", Fingerprint: "fingerprint", FirstSeenAt: 1, LastSeenAt: 1}))
-		require.NoError(t, model.BlockRiskSubject(&model.RiskSubjectBlock{Namespace: ns, SubjectType: "user", SubjectValue: "9", LastSeenAt: 1}))
-	}
-	w := riskManagementRequest(t, ClearRiskRefusals, http.MethodPost, "/api/risk/refusals/clear", nil, riskClearRequest{Namespace: namespace})
-	assert.Contains(t, w.Body.String(), `"success":false`)
-	w = riskManagementRequest(t, ClearRiskRefusals, http.MethodPost, "/api/risk/refusals/clear", nil, riskClearRequest{Namespace: namespace, UserID: -1, Confirm: true})
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-	_, count, err := model.ListRiskRefusals(model.RiskListFilter{Namespace: namespace}, 0, 10)
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), count, "invalid user filter must not clear the entire group")
-	w = riskManagementRequest(t, ClearRiskRefusals, http.MethodPost, "/api/risk/refusals/clear", nil, riskClearRequest{Namespace: namespace, Confirm: true})
-	assert.Contains(t, w.Body.String(), `"removed":1`)
-	w = riskManagementRequest(t, ClearRiskBlocks, http.MethodPost, "/api/risk/blocks/clear", nil, riskClearRequest{Namespace: namespace, UserID: 9, Confirm: true})
-	assert.Equal(t, http.StatusBadRequest, w.Code, "group block clearing must not silently ignore a user filter")
-	current, err := model.GetActiveRiskBlock(namespace, "user", "9", common.GetTimestamp())
-	require.NoError(t, err)
-	require.NotNil(t, current)
-	w = riskManagementRequest(t, ClearRiskBlocks, http.MethodPost, "/api/risk/blocks/clear", nil, riskClearRequest{Namespace: namespace, Confirm: true})
-	assert.Contains(t, w.Body.String(), `"released":1`)
-	remaining, total, err := model.ListRiskRefusals(model.RiskListFilter{Namespace: other}, 0, 10)
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), total)
-	assert.Len(t, remaining, 1)
-	block, err := model.GetActiveRiskBlock(other, "user", "9", common.GetTimestamp())
-	require.NoError(t, err)
-	assert.NotNil(t, block)
 }
 
-// Exercise real HTTP requests through the production risk gate and then the
-// management handlers. No request is sent to a business upstream.
-func TestRiskReviewHTTPConfirmationAndRestrictions(t *testing.T) {
-	require.NoError(t, i18n.Init())
-	db, namespace, other := setupRiskManagementTest(t)
-	payload := risk.DefaultPolicyPayload()
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request struct {
-			State     string         `json:"state"`
-			Questions map[string]any `json:"questions"`
-		}
-		if err := common.DecodeJson(r.Body, &request); err != nil {
-			http.Error(w, "invalid request", http.StatusBadRequest)
-			return
-		}
-		answers := map[string]any{}
-		for key := range request.Questions {
-			score := 0.99
-			if key == "nsfw" && strings.Contains(request.State, "risk-nsfw") || key == "fixture_policy" && strings.Contains(request.State, "risk-general") {
-				score = 0.01
-			}
-			answers[key] = map[string]any{"noul": score}
-		}
-		body, err := common.Marshal(map[string]any{"answers": answers})
-		if err != nil {
-			http.Error(w, "encoding error", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(body)
-	}))
-	t.Cleanup(provider.Close)
-	keys := []string{"fixture-key"}
-	saved, problems, err := risk.SaveProvider(0, risk.ProviderInput{Name: "review-http", ProviderType: "jev", BaseURL: provider.URL, Model: "fixture", APIKeys: &keys})
+func TestRiskViolationHTTPReviewAndBan(t *testing.T) {
+	db, _, _ := setupRiskManagementTest(t)
+	previousRedis := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = previousRedis })
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}))
+	user := &model.User{Username: "violator", AffCode: "violator", Password: "password123", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default"}
+	admin := &model.User{Username: "reviewer", AffCode: "reviewer", Password: "password123", Role: common.RoleAdminUser, Status: common.UserStatusEnabled, Group: "default"}
+	require.NoError(t, db.Create(user).Error)
+	require.NoError(t, db.Create(admin).Error)
+	violation := &model.RiskViolation{RequestId: "req", ContentHash: "hash", UserId: user.Id, Mode: risk.ModeEnforce, Category: "nsfw", RequestBody: `{"messages":[]}`}
+	_, _, err := model.RecordRiskViolation(violation, 20, false, common.GetTimestamp())
 	require.NoError(t, err)
-	require.Empty(t, problems)
-	payload.Distill.Enabled, payload.Model.Enabled, payload.Model.ProviderID = false, true, saved.Id
-	payload.Model.Questions = append(append([]risk.Question{}, risk.BuiltinQuestions...), risk.Question{ID: "fixture_policy", Label: "Custom fixture", Instructions: "Is this request free of the prohibited risk-general action?", Enabled: true})
-	payload.HardRegex.Rules = []risk.HardRule{
-		{Category: "nsfw", Source: "risk-nsfw", Enabled: true, Action: risk.RuleActionBlock},
-		{Category: "custom", Source: "risk-general", Enabled: true, Action: risk.RuleActionBlock},
-	}
-	policyRevision, configRevision := 0, int64(0)
-	publish := func(mode string) {
-		t.Helper()
-		policy, problems, err := risk.CreatePolicyRevision("review-http", "Review HTTP", policyRevision, payload, 1)
-		require.NoError(t, err)
-		require.Empty(t, problems)
-		policyRevision = policy.Revision
-		cfg := risk.DefaultConfigPayload()
-		cfg.Enabled = true
-		cfg.DefaultBinding = risk.Binding{PolicyKey: policy.PolicyKey, PolicyRevision: policy.Revision, Mode: mode}
-		configRevision, problems, err = risk.PublishConfig(configRevision, cfg, 1)
-		require.NoError(t, err)
-		require.Empty(t, problems)
-	}
-	publish(risk.ModeEnforce)
-	router := gin.New()
-	router.POST("/v1/responses", func(c *gin.Context) {
-		group := c.GetHeader("X-Test-Group")
-		common.SetContextKey(c, constant.ContextKeyUsingGroup, group)
-		body, err := io.ReadAll(c.Request.Body)
-		if err != nil {
-			c.Status(http.StatusBadRequest)
-			return
-		}
-		info := &relaycommon.RelayInfo{UserId: 77, TokenId: 9, UserGroup: group, OriginModelName: "test", RequestId: c.GetHeader("X-Test-Request"), RelayFormat: types.RelayFormatOpenAIResponses, RelayMode: relayconstant.RelayModeResponses}
-		decision := risk.CheckAttempt(c, info, risk.AttemptInput{Phase: risk.PhaseHTTPFirst, ChannelID: 1, ChannelType: constant.ChannelTypeOpenAI, Body: body})
-		if decision != nil {
-			c.JSON(decision.StatusCode, gin.H{"code": decision.GetErrorCode()})
-			return
-		}
-		c.Status(http.StatusNoContent)
-	})
-	server := httptest.NewServer(router)
-	t.Cleanup(server.Close)
-	post := func(id, group, modelName, input string, status int) {
-		t.Helper()
-		body, err := common.Marshal(map[string]any{"model": modelName, "input": input})
-		require.NoError(t, err)
-		req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/responses", bytes.NewReader(body))
-		require.NoError(t, err)
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Test-Request", id)
-		req.Header.Set("X-Test-Group", group)
-		res, err := server.Client().Do(req)
-		require.NoError(t, err)
-		response, err := io.ReadAll(res.Body)
-		require.NoError(t, err)
-		require.NoError(t, res.Body.Close())
-		require.Equal(t, status, res.StatusCode, string(response))
-	}
-	candidate := func(id string) model.RiskReview {
-		t.Helper()
-		rows, total, err := model.ListRiskReviews(model.RiskReviewFilter{RequestId: id}, 0, 10)
-		require.NoError(t, err)
-		require.EqualValues(t, 1, total)
-		return rows[0]
-	}
-	resolve := func(row model.RiskReview, action, category, note string, wantStatus int) model.RiskReviewResult {
-		t.Helper()
-		w := riskManagementRequest(t, ResolveRiskReview, http.MethodPost, "/api/risk/reviews/resolve", gin.Params{{Key: "id", Value: fmt.Sprint(row.Id)}}, map[string]any{"revision": row.Revision, "action": action, "category": category, "note": note})
-		require.Equal(t, wantStatus, w.Code, w.Body.String())
-		var result struct{ Data model.RiskReviewResult }
-		require.NoError(t, common.Unmarshal(w.Body.Bytes(), &result))
-		return result.Data
-	}
-	post("first", "default", "test", "risk-nsfw first", http.StatusForbidden)
-	first := candidate("first")
-	assert.Equal(t, model.RiskReviewPending, first.Status)
-	assert.Zero(t, first.Points)
-	post("first", "default", "test", "risk-nsfw first", http.StatusForbidden)
-	post("client-retry", "default", "other-model", "risk-nsfw first", http.StatusForbidden)
-	_, total, err := model.ListRiskReviews(model.RiskReviewFilter{}, 0, 10)
-	require.NoError(t, err)
-	assert.EqualValues(t, 1, total, "client and server retries must not create new punishable incidents")
-	post("benign-before", "default", "test", "hello", http.StatusNoContent)
-	list := riskManagementRequest(t, GetRiskReviews, http.MethodGet, "/api/risk/reviews?status=pending", nil, nil)
-	assert.NotContains(t, list.Body.String(), "risk-nsfw first", "lists must not include stored evidence")
-	detail := riskManagementRequest(t, GetRiskReview, http.MethodGet, "/api/risk/reviews/1", gin.Params{{Key: "id", Value: fmt.Sprint(first.Id)}}, nil)
-	assert.Contains(t, detail.Body.String(), "risk-nsfw first")
-	resolve(first, "confirm", "nsfw", "", http.StatusBadRequest)
-	confirmed := resolve(first, "confirm", "nsfw", "Verified the current user's intent", http.StatusOK)
-	assert.Equal(t, 80, confirmed.Reputation.Score)
-	assert.Equal(t, 20, confirmed.Review.Deduction)
-	assert.Nil(t, confirmed.Block)
-	repeated := resolve(first, "confirm", "nsfw", "Verified the current user's intent", http.StatusOK)
-	assert.Equal(t, 80, repeated.Reputation.Score)
-	assert.Equal(t, 1, repeated.Reputation.ConfirmedEvents)
-	post("second", "default", "test", "risk-nsfw second", http.StatusForbidden)
-	second := resolve(candidate("second"), "confirm", "nsfw", "Independent second incident", http.StatusOK)
-	assert.Equal(t, 60, second.Reputation.Score)
-	assert.Nil(t, second.Block)
-	post("benign-before-ban", "default", "test", "hello", http.StatusNoContent)
-	payload.Behavior.AutoBlockEnabled = true
-	payload.Refusal.Enabled, payload.Refusal.SubjectBlockEnabled = false, false
-	publish(risk.ModeEnforce)
-	post("third", "default", "test", "risk-general third", http.StatusForbidden)
-	third := resolve(candidate("third"), "confirm", "custom", "Verified another independent incident", http.StatusOK)
-	assert.Equal(t, 40, third.Reputation.Score)
-	assert.Equal(t, 20, third.Review.Deduction)
-	assert.Nil(t, third.Block)
-	post("fourth", "default", "test", "risk-general fourth", http.StatusForbidden)
-	fourth := resolve(candidate("fourth"), "confirm", "custom", "Fourth independent incident", http.StatusOK)
-	assert.Equal(t, 20, fourth.Reputation.Score)
-	assert.Nil(t, fourth.Block)
-	post("fifth", "default", "test", "risk-nsfw fifth", http.StatusForbidden)
-	fifth := resolve(candidate("fifth"), "confirm", "nsfw", "Fifth independent incident", http.StatusOK)
-	assert.Zero(t, fifth.Reputation.Score)
-	require.NotNil(t, fifth.Block)
-	assert.Equal(t, "token", fifth.Block.SubjectType)
-	assert.Equal(t, "9", fifth.Block.SubjectValue)
-	assert.EqualValues(t, 30*60, fifth.Block.ExpiresAt-fifth.Block.LastSeenAt)
-	post("restricted", "default", "test", "hello", http.StatusForbidden)
-	post("other-group", "other", "test", "hello", http.StatusForbidden)
-	assert.NotEqual(t, namespace, other)
-	_, beforeRevoke, err := model.ListRiskReviews(model.RiskReviewFilter{}, 0, 10)
-	require.NoError(t, err)
-	assert.EqualValues(t, 5, beforeRevoke, "a block replay is not another violation")
-	revoked := resolve(*confirmed.Review, "revoke", "nsfw", "Context was misunderstood", http.StatusOK)
-	assert.Equal(t, 20, revoked.Reputation.Score)
-	post("first-appeal-release", "default", "test", "hello", http.StatusNoContent)
-	revoked = resolve(*second.Review, "revoke", "nsfw", "Second incident was also misunderstood", http.StatusOK)
-	assert.Equal(t, 40, revoked.Reputation.Score)
-	post("after-revoke", "default", "test", "hello", http.StatusNoContent)
-	resolve(first, "confirm", "nsfw", "Stale confirmation", http.StatusConflict)
-	publish(risk.ModeObserve)
-	post("observation", "default", "test", "risk-nsfw observation", http.StatusNoContent)
-	observed := candidate("observation")
-	publish(risk.ModeEnforce)
-	observation := resolve(observed, "confirm", "nsfw", "Observation stays non-punitive", http.StatusOK)
-	assert.Zero(t, observation.Review.Points)
-	assert.Equal(t, 40, observation.Reputation.Score)
-	payload.Evidence.StoreReviewEvidence = false
-	publish(risk.ModeEnforce)
-	post("no-evidence", "default", "test", "risk-nsfw no evidence", http.StatusForbidden)
-	noEvidence := candidate("no-evidence")
-	resolve(noEvidence, "confirm", "nsfw", "Insufficient evidence", http.StatusBadRequest)
-	dismissed := resolve(noEvidence, "dismiss", "nsfw", "Cannot establish user intent", http.StatusOK)
-	assert.Equal(t, model.RiskReviewDismissed, dismissed.Review.Status)
-	truncated, _, err := model.CreateRiskReviewCandidate(&model.RiskReview{RequestId: "truncated", Namespace: namespace, UserId: 77, Mode: risk.ModeEnforce, Evidence: "Context only", EvidenceTruncated: true}, payload.Behavior.Policy(), common.GetTimestamp())
-	require.NoError(t, err)
-	resolve(*truncated, "confirm", "nsfw", "Missing the actual triggering evidence", http.StatusBadRequest)
-	payload.Behavior.Enabled = false
-	publish(risk.ModeEnforce)
-	post("scoring-disabled", "default", "test", "risk-nsfw disabled", http.StatusForbidden)
-	var count int64
-	require.NoError(t, db.Model(&model.RiskReview{}).Where("request_id = ?", "scoring-disabled").Count(&count).Error)
-	assert.EqualValues(t, 1, count, "disabling behavior penalties must not discard a violating request's review evidence")
-}
+	id := gin.Params{{Key: "id", Value: strconv.Itoa(violation.Id)}}
 
-func TestRiskManualTokenRestrictionRequiresEvidenceAndPreservesOtherTokens(t *testing.T) {
-	db, namespace, _ := setupRiskManagementTest(t)
-	now := common.GetTimestamp()
-	makeReview := func(id string, tokenID int) *model.RiskReview {
-		t.Helper()
-		row, _, err := model.CreateRiskReviewCandidate(&model.RiskReview{
-			RequestId: id, Namespace: namespace, UserId: 77, TokenId: tokenID,
-			Mode: risk.ModeEnforce, Category: "nsfw", Evidence: "flagged review text",
-			OriginalRequest: "[user] flagged original text", Coverage: "full",
-			OriginalRequestHash: "request-hash", ConfigRevision: risk.CurrentSnapshot().ConfigRevision,
-		}, risk.DefaultPolicyPayload().Behavior.Policy(), now)
-		require.NoError(t, err)
-		return row
-	}
-	row := makeReview("manual-ban", 901)
-	body := map[string]any{"revision": row.Revision, "action": "ban", "category": "nsfw", "note": "Verified the complete request", "ttl_minutes": 0}
-	action := func(row *model.RiskReview, body map[string]any) *httptest.ResponseRecorder {
-		return riskManagementRequest(t, ResolveRiskReview, http.MethodPost, "/api/risk/reviews/resolve", gin.Params{{Key: "id", Value: fmt.Sprint(row.Id)}}, body)
-	}
-	result := action(row, body)
-	require.Equal(t, http.StatusOK, result.Code, result.Body.String())
-	block, err := model.GetActiveRiskTokenBlock(77, 901, now)
-	require.NoError(t, err)
-	require.NotNil(t, block)
-	assert.Zero(t, block.ExpiresAt)
-	unrelated, err := model.GetActiveRiskTokenBlock(77, 902, now)
-	require.NoError(t, err)
-	assert.Nil(t, unrelated)
-	result = action(row, body)
-	require.Equal(t, http.StatusOK, result.Code, "retry must be idempotent: %s", result.Body.String())
-	require.NoError(t, db.First(row, row.Id).Error)
-	result = action(row, map[string]any{"revision": row.Revision, "action": "revoke", "category": "nsfw", "note": "Appeal accepted"})
-	require.Equal(t, http.StatusOK, result.Code, result.Body.String())
-	block, err = model.GetActiveRiskTokenBlock(77, 901, now)
-	require.NoError(t, err)
-	assert.Nil(t, block)
+	w := riskManagementRequest(t, GetRiskViolations, http.MethodGet, "/api/risk/violations?status=pending", nil, nil)
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"request_id":"req"`)
+	assert.NotContains(t, w.Body.String(), "request_body\":", "lists never carry evidence")
+	w = riskManagementRequest(t, GetRiskViolation, http.MethodGet, "/api/risk/violations/x", id, nil)
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"score":80`)
+	assert.Contains(t, w.Body.String(), `"request_body":"{\"messages\":[]}"`)
+	assert.Equal(t, "no-store", w.Header().Get("Cache-Control"))
+
 	for _, tc := range []struct {
-		name      string
-		token     int
-		mode      string
-		original  string
-		truncated bool
-		duration  any
+		name, action, note string
+		ok                 bool
+		contains           string
 	}{
-		{"missing token", 0, risk.ModeEnforce, "content", false, 30},
-		{"observe", 902, risk.ModeObserve, "content", false, 30},
-		{"missing request", 903, risk.ModeEnforce, "", false, 30},
-		{"truncated request", 904, risk.ModeEnforce, "content", true, 30},
-		{"negative duration", 905, risk.ModeEnforce, "content", false, -1},
-		{"missing duration", 906, risk.ModeEnforce, "content", false, nil},
-		{"excessive duration", 907, risk.ModeEnforce, "content", false, 1441},
+		{"a note is required", "revoke", "", false, "A note of at most 500 characters is required"},
+		{"unknown action", "delete", "note", false, ""},
+		{"revoke refunds the deduction", "revoke", "false positive", true, `"score":100`},
+		{"a revoked violation cannot be revoked again", "revoke", "again", false, "no longer available"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			record := makeReview(tc.name, tc.token)
-			require.NoError(t, db.Model(record).Updates(map[string]any{"mode": tc.mode, "original_request": tc.original, "original_request_truncated": tc.truncated}).Error)
-			body := map[string]any{"revision": record.Revision, "action": "ban", "category": "nsfw", "note": "Review completed", "ttl_minutes": tc.duration}
-			response := action(record, body)
-			require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
-			var blocks int64
-			require.NoError(t, db.Model(&model.RiskSubjectBlock{}).Where("subject_type = ? AND subject_value = ? AND released_at = 0", "token", fmt.Sprint(tc.token)).Count(&blocks).Error)
-			assert.Zero(t, blocks)
+			w := riskManagementRequest(t, ResolveRiskViolation, http.MethodPost, "/api/risk/violations/x/resolve", id, map[string]string{"action": tc.action, "note": tc.note})
+			assert.Equal(t, tc.ok, strings.Contains(w.Body.String(), `"success":true`), w.Body.String())
+			assert.Contains(t, w.Body.String(), tc.contains)
 		})
 	}
-	t.Run("manual confirmation uses a fixed deduction without severity", func(t *testing.T) {
-		record := makeReview("manual-flat", 908)
-		reputation, err := model.GetRiskUserReputation(77, now)
-		require.NoError(t, err)
-		assert.Equal(t, 100, reputation.Score)
-		response := action(record, map[string]any{"revision": record.Revision, "action": "confirm", "category": "cyber", "note": "Review completed"})
-		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
-		require.NoError(t, db.First(record, record.Id).Error)
-		assert.Empty(t, record.Severity)
-		assert.Equal(t, 20, record.Deduction)
-		reputation, err = model.GetRiskUserReputation(77, common.GetTimestamp())
-		require.NoError(t, err)
-		assert.Equal(t, 80, reputation.Score)
-		legacy := makeReview("legacy-fields", 909)
-		response = action(legacy, map[string]any{"revision": legacy.Revision, "action": "confirm", "category": "nsfw", "severity": "severe", "deduction": 100, "note": "Legacy fields cannot change the deduction"})
-		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
-		require.NoError(t, db.First(legacy, legacy.Id).Error)
-		assert.Empty(t, legacy.Severity)
-		assert.Equal(t, 20, legacy.Deduction)
-		reputation, err = model.GetRiskUserReputation(77, common.GetTimestamp())
-		require.NoError(t, err)
-		assert.Equal(t, 60, reputation.Score)
-	})
-}
 
-func TestRiskTieredHTTPModelAndTokenEnforcement(t *testing.T) {
-	require.NoError(t, i18n.Init())
-	db, _, _ := setupRiskManagementTest(t)
-	var calls atomic.Int32
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		var body struct {
-			State     string         `json:"state"`
-			Questions map[string]any `json:"questions"`
-		}
-		if err := common.DecodeJson(r.Body, &body); err != nil {
-			http.Error(w, "bad payload", 400)
-			return
-		}
-		answers := map[string]any{}
-		for key := range body.Questions {
-			score := 0.99
-			if key == "nsfw" && strings.Contains(body.State, "flagged") {
-				score = 0.01
-			}
-			answers[key] = map[string]any{"noul": score}
-		}
-		encoded, err := common.Marshal(map[string]any{"answers": answers})
-		if err != nil {
-			http.Error(w, "encode failed", 500)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(encoded)
-	}))
-	t.Cleanup(provider.Close)
-	keys := []string{"test-provider-key"}
-	saved, problems, err := risk.SaveProvider(0, risk.ProviderInput{Name: "tiered-http", ProviderType: "jev", BaseURL: provider.URL, Model: "test-audit", APIKeys: &keys})
-	require.NoError(t, err)
-	require.Empty(t, problems)
-	payload := risk.DefaultPolicyPayload()
-	payload.Distill.Enabled = false
-	payload.HardRegex.Rules = []risk.HardRule{
-		{Category: "nsfw", Source: "risk-nsfw", Enabled: true, Action: risk.RuleActionReview},
-		{Category: "custom", Source: "weak", Enabled: true, Action: risk.RuleActionSignal},
-	}
-	payload.Model.Enabled, payload.Model.ProviderID, payload.Model.Model = true, saved.Id, "test-audit"
-	payload.Behavior.AutoConfirmEnabled, payload.Behavior.AutoBlockEnabled = true, true
-	policy, problems, err := risk.CreatePolicyRevision("tiered-http", "Tiered HTTP", 0, payload, 1)
-	require.NoError(t, err)
-	require.Empty(t, problems)
-	cfg := risk.DefaultConfigPayload()
-	cfg.Enabled = true
-	cfg.DefaultBinding = risk.Binding{PolicyKey: policy.PolicyKey, PolicyRevision: policy.Revision, Mode: risk.ModeEnforce}
-	_, problems, err = risk.PublishConfig(0, cfg, 1)
-	require.NoError(t, err)
-	require.Empty(t, problems)
-	router := gin.New()
-	router.POST("/v1/responses", func(c *gin.Context) {
-		body, err := io.ReadAll(c.Request.Body)
-		if err != nil {
-			c.Status(400)
-			return
-		}
-		tokenID, _ := strconv.Atoi(c.GetHeader("X-Test-Token"))
-		group := c.GetHeader("X-Test-Group")
-		common.SetContextKey(c, constant.ContextKeyUsingGroup, group)
-		info := &relaycommon.RelayInfo{UserId: 88, TokenId: tokenID, UserGroup: group, OriginModelName: "test", RequestId: c.GetHeader("X-Test-Request"), RelayFormat: types.RelayFormatOpenAIResponses, RelayMode: relayconstant.RelayModeResponses}
-		verdict := risk.CheckAttempt(c, info, risk.AttemptInput{Phase: risk.PhaseHTTPFirst, ChannelID: 1, ChannelType: constant.ChannelTypeOpenAI, Body: body})
-		if verdict != nil {
-			c.JSON(verdict.StatusCode, gin.H{"code": verdict.GetErrorCode()})
-			return
-		}
-		c.Status(http.StatusNoContent)
-	})
-	gateway := httptest.NewServer(router)
-	t.Cleanup(gateway.Close)
-	post := func(id, text, group string, tokenID, status int) {
-		t.Helper()
-		encoded, err := common.Marshal(map[string]any{"model": "test", "input": text})
-		require.NoError(t, err)
-		req, err := http.NewRequest(http.MethodPost, gateway.URL+"/v1/responses", bytes.NewReader(encoded))
-		require.NoError(t, err)
-		req.Header.Set("X-Test-Request", id)
-		req.Header.Set("X-Test-Token", strconv.Itoa(tokenID))
-		req.Header.Set("X-Test-Group", group)
-		req.Header.Set("Authorization", "Bearer transport-credential-not-evidence")
-		res, err := gateway.Client().Do(req)
-		require.NoError(t, err)
-		received, err := io.ReadAll(res.Body)
-		require.NoError(t, err)
-		require.NoError(t, res.Body.Close())
-		require.Equal(t, status, res.StatusCode, string(received))
-	}
-	post("ordinary", "normal request body never stored", "default", 31, http.StatusNoContent)
-	assert.Zero(t, calls.Load())
-	post("weak-1", "weak first", "default", 31, http.StatusNoContent)
-	assert.EqualValues(t, 1, calls.Load(), "the first weak signal must reach the LLM")
-	post("weak-2", "weak second", "default", 31, http.StatusNoContent)
-	assert.EqualValues(t, 2, calls.Load())
-	post("weak-3", "weak third", "default", 31, http.StatusNoContent)
-	assert.EqualValues(t, 3, calls.Load())
-	post("after-safe", "another normal request", "default", 31, http.StatusNoContent)
-	assert.EqualValues(t, 3, calls.Load(), "ordinary requests must not go to the model after suspicious requests")
-	var count int64
-	require.NoError(t, db.Model(&model.RiskReview{}).Count(&count).Error)
-	assert.Zero(t, count, "safe model verdicts must not create stored request evidence")
-	post("bad-1", "risk-nsfw flagged first", "default", 31, http.StatusForbidden)
-	post("bad-1-retry", "risk-nsfw flagged first", "default", 31, http.StatusForbidden)
-	rows, total, err := model.ListRiskReviews(model.RiskReviewFilter{TokenId: 31}, 0, 10)
-	require.NoError(t, err)
-	require.EqualValues(t, 1, total)
-	require.Len(t, rows, 1)
-	assert.Equal(t, model.RiskReviewConfirmed, rows[0].Status)
-	assert.Equal(t, 20, rows[0].Deduction)
-	assert.Empty(t, rows[0].Severity)
-	assert.EqualValues(t, 4, calls.Load(), "retry reuses the first verdict without another provider call")
-	for index := 2; index <= 5; index++ {
-		post(fmt.Sprintf("normal-before-%d", index), "ordinary", "default", 31, http.StatusNoContent)
-		post(fmt.Sprintf("bad-%d", index), fmt.Sprintf("risk-nsfw flagged incident %d", index), "default", 31, http.StatusForbidden)
-		reputation, err := model.GetRiskUserReputation(88, common.GetTimestamp())
-		require.NoError(t, err)
-		assert.Equal(t, 100-index*20, reputation.Score)
-		assert.EqualValues(t, 3+index, calls.Load(), "each independent violation needs only one model call")
-		if index < 5 {
-			active, err := model.GetActiveRiskTokenBlock(88, 31, common.GetTimestamp())
+	for _, tc := range []struct {
+		name, action string
+		target       int
+		ok           bool
+		status       int
+	}{
+		{"ban disables the account", "ban", user.Id, true, common.UserStatusDisabled},
+		{"unban enables the account", "unban", user.Id, true, common.UserStatusEnabled},
+		{"administrators cannot be banned", "ban", admin.Id, false, common.UserStatusEnabled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := riskManagementRequest(t, SetRiskUserBan, http.MethodPost, "/api/risk/users/x/ban", gin.Params{{Key: "id", Value: strconv.Itoa(tc.target)}}, map[string]string{"action": tc.action, "note": "reviewed"})
+			assert.Equal(t, tc.ok, strings.Contains(w.Body.String(), `"success":true`), w.Body.String())
+			stored, err := model.GetUserById(tc.target, false)
 			require.NoError(t, err)
-			assert.Nil(t, active, "every violating request is rejected before the token suspension threshold")
-		}
+			assert.Equal(t, tc.status, stored.Status)
+		})
 	}
-	block, err := model.GetActiveRiskTokenBlock(88, 31, common.GetTimestamp())
-	require.NoError(t, err)
-	require.NotNil(t, block)
-	assert.Positive(t, block.ExpiresAt)
-	post("blocked-other-group", "ordinary", "other", 31, http.StatusForbidden)
-	post("other-token", "ordinary", "default", 32, http.StatusNoContent)
-	rows, total, err = model.ListRiskReviews(model.RiskReviewFilter{TokenId: 31}, 0, 10)
-	require.NoError(t, err)
-	require.EqualValues(t, 5, total, "requests from an already restricted token do not create new violations")
-	for _, summary := range rows {
-		row, err := model.GetRiskReview(summary.Id)
-		require.NoError(t, err)
-		assert.Contains(t, row.OriginalRequest, "flagged")
-		assert.NotContains(t, row.OriginalRequest, "transport-credential-not-evidence")
-		assert.Equal(t, "pending", row.NotificationStatus)
-		assert.Equal(t, "model", row.JudgmentSource)
-	}
-	score, err := model.GetRiskUserReputation(88, common.GetTimestamp())
-	require.NoError(t, err)
-	assert.Zero(t, score.Score)
-	assert.Equal(t, 5, score.ConfirmedEvents)
-	released, err := model.ReleaseRiskBlock(block.Id, 1, common.GetTimestamp())
-	require.NoError(t, err)
-	require.True(t, released)
-	post("released-normal", "ordinary", "default", 31, http.StatusNoContent)
-	assert.Zero(t, score.Score, "zero reputation alone must not reblock a released token")
-	post("new-other-token-violation", "risk-nsfw flagged another token", "other", 32, http.StatusForbidden)
-	otherBlock, err := model.GetActiveRiskTokenBlock(88, 32, common.GetTimestamp())
-	require.NoError(t, err)
-	require.NotNil(t, otherBlock)
-	modelCalls := calls.Load()
-	post("same-content-other-token", "risk-nsfw flagged another token", "other", 34, http.StatusForbidden)
-	assert.Equal(t, modelCalls+1, calls.Load(), "a different token needs its own fresh judgment for an independent violation")
-	independentBlock, err := model.GetActiveRiskTokenBlock(88, 34, common.GetTimestamp())
-	require.NoError(t, err)
-	require.NotNil(t, independentBlock)
-	score, err = model.GetRiskUserReputation(88, common.GetTimestamp())
-	require.NoError(t, err)
-	assert.Equal(t, 7, score.ConfirmedEvents)
-	post("third-token-normal", "ordinary", "default", 33, http.StatusNoContent)
 }

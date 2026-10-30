@@ -7,116 +7,107 @@ import (
 	"net/mail"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 )
 
-// Notification claims are durable. Email delivery is deliberately outside the
-// enforcement transaction: a mail outage must not undo a confirmed violation.
-var reviewNotifications = struct {
-	start sync.Once
-	stop  sync.Once
-	done  chan struct{}
-	quit  chan struct{}
-}{done: make(chan struct{}), quit: make(chan struct{})}
+// Violation emails are sent by one background worker so mail delivery never
+// delays a request. Notices still queued at shutdown are not sent.
+var violationNotices = struct {
+	mu      sync.Mutex
+	queue   chan model.RiskViolation
+	done    chan struct{}
+	started bool
+	stopped bool
+}{queue: make(chan model.RiskViolation, 1000), done: make(chan struct{})}
+
+var sendViolationEmail = common.SendEmail
 
 func StartReviewNotifications() {
-	reviewNotifications.start.Do(func() {
-		go func() {
-			defer close(reviewNotifications.done)
-			ticker := time.NewTicker(10 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-reviewNotifications.quit:
-					return
-				case <-ticker.C:
-					// Bound each batch so shutdown is checked between deliveries.
-					for range 20 {
-						select {
-						case <-reviewNotifications.quit:
-							return
-						default:
-						}
-						sent, err := dispatchReviewNotification(common.SendEmail, common.GetTimestamp())
-						if err != nil {
-							// Do not log SMTP responses, addresses, or request contents.
-							common.SysError(common.LogText("risk review email notification processing failed"))
-							break
-						}
-						if !sent {
-							break
-						}
-					}
-				}
+	violationNotices.mu.Lock()
+	defer violationNotices.mu.Unlock()
+	if violationNotices.started {
+		return
+	}
+	violationNotices.started = true
+	go func() {
+		defer close(violationNotices.done)
+		for v := range violationNotices.queue {
+			status := deliverViolationNotice(v)
+			if err := model.SetRiskViolationNotification(v.Id, status); err != nil {
+				common.SysError(common.LogText("risk violation email notification processing failed"))
 			}
-		}()
-	})
+		}
+	}()
 }
 
 func StopReviewNotifications(ctx context.Context) error {
-	reviewNotifications.stop.Do(func() { close(reviewNotifications.quit) })
+	violationNotices.mu.Lock()
+	if !violationNotices.stopped {
+		violationNotices.stopped = true
+		close(violationNotices.queue)
+	}
+	started := violationNotices.started
+	violationNotices.mu.Unlock()
+	if !started {
+		return nil
+	}
 	select {
-	case <-reviewNotifications.done:
+	case <-violationNotices.done:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
-// dispatchReviewNotification processes at most one confirmed incident. Tests
-// inject only the external email transport; claims and state use the real DB.
-func dispatchReviewNotification(send func(string, string, string) error, now int64) (bool, error) {
-	row, err := model.ClaimRiskReviewNotification(now)
-	if err != nil || row == nil {
-		return false, err
-	}
-	email, err := model.GetUserEmail(row.UserId)
-	if err != nil {
-		return true, model.FinishRiskReviewNotification(row.Id, "failed", "recipient_lookup_failed", now)
-	}
-	email = strings.TrimSpace(email)
-	if email == "" {
-		return true, model.FinishRiskReviewNotification(row.Id, "skipped", "no_bound_email", now)
-	}
-	address, err := mail.ParseAddress(email)
-	if err != nil || address.Address != email {
-		return true, model.FinishRiskReviewNotification(row.Id, "skipped", "invalid_bound_email", now)
-	}
-	current, err := model.GetRiskReview(row.Id)
-	if err != nil {
-		return true, model.FinishRiskReviewNotification(row.Id, "failed", "review_lookup_failed", now)
-	}
-	if current.Status != model.RiskReviewConfirmed || current.Mode != ModeEnforce {
-		return true, model.FinishRiskReviewNotification(row.Id, "skipped", "review_no_longer_confirmed", now)
-	}
-	block, err := model.GetActiveRiskTokenBlock(row.UserId, row.TokenId, now)
-	if err != nil {
-		return true, model.FinishRiskReviewNotification(row.Id, "failed", "restriction_lookup_failed", now)
-	}
-	lang := model.GetUserLanguage(row.UserId)
-	args := map[string]any{
-		"SystemName": html.EscapeString(common.SystemName), "RequestID": html.EscapeString(row.RequestId),
-		"Category": html.EscapeString(row.Category), "TokenID": row.TokenId, "ReviewID": row.Id,
-	}
-	stateKey := i18n.MsgRiskEmailNoRestriction
-	if block != nil {
-		stateKey = i18n.MsgRiskEmailTemporaryRestriction
-		args["ExpiresAt"] = time.Unix(block.ExpiresAt, 0).UTC().Format(time.RFC3339)
-		if block.ExpiresAt == 0 {
-			stateKey = i18n.MsgRiskEmailPermanentRestriction
+func queueViolationNotice(v model.RiskViolation) {
+	violationNotices.mu.Lock()
+	defer violationNotices.mu.Unlock()
+	if !violationNotices.stopped {
+		select {
+		case violationNotices.queue <- v:
+			return
+		default:
 		}
 	}
-	subject := i18n.Translate(lang, i18n.MsgRiskEmailSubject, map[string]any{"SystemName": common.SystemName})
-	body := fmt.Sprintf("<p>%s</p><p>%s</p><p>%s</p>",
-		i18n.Translate(lang, i18n.MsgRiskEmailViolation, args),
-		i18n.Translate(lang, stateKey, args),
-		i18n.Translate(lang, i18n.MsgRiskEmailAppeal, args))
-	if err := send(subject, email, body); err != nil {
-		return true, model.FinishRiskReviewNotification(row.Id, "failed", "email_delivery_failed", now)
+	if err := model.SetRiskViolationNotification(v.Id, "failed"); err != nil {
+		common.SysError(common.LogText("risk violation email notification processing failed"))
 	}
-	return true, model.FinishRiskReviewNotification(row.Id, "sent", "", now)
+}
+
+// deliverViolationNotice emails the user about one violation and returns the
+// notification status to store.
+func deliverViolationNotice(v model.RiskViolation) string {
+	email, err := model.GetUserEmail(v.UserId)
+	if err != nil {
+		return "failed"
+	}
+	email = strings.TrimSpace(email)
+	if _, err := mail.ParseAddress(email); email == "" || err != nil {
+		return "skipped"
+	}
+	lang := model.GetUserLanguage(v.UserId)
+	args := map[string]any{
+		"SystemName": html.EscapeString(common.SystemName), "RequestID": html.EscapeString(v.RequestId),
+		"Category": html.EscapeString(v.Category), "Deduction": v.Deduction, "Score": v.ScoreAfter, "ViolationID": v.Id,
+	}
+	lines := []string{i18n.Translate(lang, i18n.MsgRiskEmailViolation, args)}
+	switch {
+	case v.Action == model.RiskActionAutoBanned:
+		lines = append(lines, i18n.Translate(lang, i18n.MsgRiskEmailBanned, args))
+	case v.ScoreAfter == 0:
+		lines = append(lines, i18n.Translate(lang, i18n.MsgRiskEmailZeroScore, args))
+	}
+	lines = append(lines, i18n.Translate(lang, i18n.MsgRiskEmailAppeal, args))
+	var body strings.Builder
+	for _, line := range lines {
+		fmt.Fprintf(&body, "<p>%s</p>", line)
+	}
+	subject := i18n.Translate(lang, i18n.MsgRiskEmailSubject, map[string]any{"SystemName": common.SystemName})
+	if err := sendViolationEmail(subject, email, body.String()); err != nil {
+		return "failed"
+	}
+	return "sent"
 }

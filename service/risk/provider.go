@@ -2,7 +2,6 @@ package risk
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -438,14 +437,10 @@ func (rt *providerRuntime) Classify(ctx context.Context, req ClassifyRequest) (C
 	var payload []byte
 	var err error
 	if rt.cfg.Type == "openai" {
-		modelName := rt.cfg.ResolvedModel(req.Model)
-		if !strings.HasPrefix(modelName, "omni-moderation-") {
-			return ClassifyResult{}, unavailable("unsupported moderation model")
-		}
 		payload, err = common.Marshal(struct {
 			Model string `json:"model"`
 			Input string `json:"input"`
-		}{Model: modelName, Input: req.State})
+		}{Model: rt.cfg.ResolvedModel(req.Model), Input: req.State})
 	} else {
 		payload, err = systemonePayload(req)
 	}
@@ -556,21 +551,31 @@ type modelHit struct {
 	score    float64
 }
 
-// judgeScores applies the same near-miss band independently to every
-// question. Correlated questions cannot turn borderline scores into proof.
-// The lowest safety score wins; category order resolves equal scores.
-func judgeScores(scores map[string]float64, asked []askedQuestion, threshold, band float64) []modelHit {
-	hits := make([]modelHit, 0, len(asked))
-	for _, q := range asked {
-		if score, ok := scores[q.id]; ok && score < threshold && score < threshold-band {
-			hits = append(hits, modelHit{category: q.id, score: score})
+// worstHit returns the lowest-scoring question below threshold, or for
+// OpenAI the lowest-scoring flagged category. Question order breaks ties.
+func worstHit(result ClassifyResult, asked []askedQuestion, threshold float64, moderation bool) (modelHit, bool) {
+	var hit modelHit
+	found := false
+	consider := func(category string, score float64) {
+		if !found || score < hit.score {
+			hit, found = modelHit{category: category, score: score}, true
 		}
 	}
-	slices.SortFunc(hits, func(a, b modelHit) int {
-		if order := cmp.Compare(a.score, b.score); order != 0 {
-			return order
+	if moderation {
+		for category, flagged := range result.Flags {
+			if flagged {
+				consider(category, result.Scores[category])
+			}
 		}
-		return strings.Compare(a.category, b.category)
-	})
-	return hits
+		if found {
+			hit.category = moderationCategory(hit.category)
+		}
+		return hit, found
+	}
+	for _, q := range asked {
+		if score, ok := result.Scores[q.id]; ok && score < threshold {
+			consider(q.category, score)
+		}
+	}
+	return hit, found
 }

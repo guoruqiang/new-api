@@ -7,12 +7,6 @@ import (
 
 var negatedExtraction = regexp.MustCompile(`(?i)\b(?:do not|don't|never|must not|should not)\s+$`)
 
-type distillHit struct {
-	Rule     string
-	Evidence string
-	Review   *hardHit
-}
-
 func matchNeedles(text string, needles []string) string {
 	hay := strings.ToLower(text)
 	if hay == "" {
@@ -97,54 +91,47 @@ func withFolded(text string) string {
 	return text
 }
 
-// distillReview preserves the whole match and its context for semantic
-// review. Templates, benchmark questions and reasoning knobs are signals,
-// not proof that the current user wants protected internal reasoning.
-func distillReview(text, match, rule string) distillHit {
-	text, match = NormalizeText(text), NormalizeText(match)
-	start := strings.Index(text, match)
-	if start < 0 {
-		start, match = 0, text
+// distillHit locates a distill match in the scanned text. A match that cannot
+// be located, such as one found only in folded text, keeps the whole text.
+func distillHit(scan, match, rule string) keywordHit {
+	match = NormalizeText(match)
+	start := strings.Index(scan, match)
+	if start < 0 || match == "" {
+		start, match = len(scan), ""
 	}
-	return distillHit{
-		Rule: rule, Evidence: truncateRunes(match, 80),
-		Review: &hardHit{Category: "distill", Action: RuleActionReview, Rule: rule,
-			Keyword: truncateRunes(match, 40), Text: text, Start: start, End: start + len(match)},
-	}
+	return keywordHit{Category: "distill", Keyword: truncateRunes(match, 40), Rule: rule, Text: scan, Start: start, End: start + len(match)}
 }
 
-// detectDistill keeps the existing exemptions and matching rules, but every
-// signal must be confirmed in context instead of blocking ordinary formats,
-// quoted examples or requests to summarize the user's own notes.
-func detectDistill(in *Input, p *CompiledPolicy) []distillHit {
+// detectDistill reports the first distill signal. Templates, benchmark
+// questions and reasoning knobs only select the request for the decision
+// model; they never prove an extraction attempt on their own.
+func detectDistill(in *Input, p *CompiledPolicy, scan string) (keywordHit, bool) {
 	rules := p.Payload.Distill
 	if !rules.Enabled || (rules.SkipGPTModels && IsGPTSeriesModel(in.Model)) {
-		return nil
+		return keywordHit{}, false
 	}
 	joined := withFolded(in.distillJoined())
 	if needle := matchNeedles(joined, rules.HardNeedles); needle != "" {
-		return []distillHit{distillReview(joined, needle, "harvest_needle")}
+		return distillHit(scan, needle, "harvest_needle"), true
 	}
 	if hit := matchDistillPatterns(joined, p.distillPatterns); hit != "" {
-		return []distillHit{distillReview(joined, hit, "distill_regex")}
+		return distillHit(scan, hit, "distill_regex"), true
 	}
 	if rules.SkipOfficial && in.Official {
-		return nil
+		return keywordHit{}, false
 	}
-	hits := make([]distillHit, 0, 3)
 	fingerprintText := joined
 	if in.LatestUser != "" {
 		fingerprintText = withFolded(in.LatestUser)
 	}
 	if fp := matchFingerprints(fingerprintText, rules.Fingerprints); fp != "" {
-		hits = append(hits, distillReview(fingerprintText, fp, "fingerprint"))
+		return distillHit(scan, fp, "fingerprint"), true
 	}
 	if needle := matchNeedles(joined, rules.Needles); needle != "" {
-		hits = append(hits, distillReview(joined, needle, "needle"))
+		return distillHit(scan, needle, "needle"), true
 	}
-	if p.contest != nil && len([]rune(p.Payload.Distill.Structure.ContestPattern)) <= patternMaxLen &&
-		p.contest.MatchString(joined) && isHarvestStructure(in, rules.Structure) {
-		hits = append(hits, distillReview(joined, p.contest.FindString(joined), "harvest"))
+	if p.contest != nil && p.contest.MatchString(joined) && isHarvestStructure(in, rules.Structure) {
+		return distillHit(scan, p.contest.FindString(joined), "harvest"), true
 	}
-	return hits
+	return keywordHit{}, false
 }

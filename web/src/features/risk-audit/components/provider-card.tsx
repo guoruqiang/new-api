@@ -129,14 +129,7 @@ export function ProviderCard(props: {
       }),
     meta: { errorToast: false },
     onMutate: () => setModels([]),
-    onSuccess: (result) =>
-      setModels(
-        value.provider_type === 'openai'
-          ? result.models.filter((model) =>
-              model.startsWith('omni-moderation-')
-            )
-          : result.models
-      ),
+    onSuccess: (result) => setModels(result.models),
   })
   const disabled = !props.canWrite || save.isPending || probe.isPending
   return (
@@ -219,7 +212,7 @@ export function ProviderCard(props: {
             <Alert role='status'>
               <AlertDescription>
                 {t(
-                  'OpenAI Moderation uses omni-moderation-latest and the /v1/moderations endpoint. Use an OpenAI API key or a compatible moderation service.'
+                  'OpenAI Moderation uses the /v1/moderations endpoint and defaults to omni-moderation-latest. Use an OpenAI API key or a compatible moderation service.'
                 )}
               </AlertDescription>
             </Alert>

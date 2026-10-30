@@ -36,14 +36,13 @@ import { Button } from '@/components/ui/button'
 import { FieldGroup, FieldLegend, FieldSet } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
-import { Textarea } from '@/components/ui/textarea'
 import { TitledCard } from '@/components/ui/titled-card'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
 import { getServerErrorStatus } from '@/lib/server-error-message'
 
 import { riskWrite } from '../api'
-import { LABELS, type View } from '../constants'
+import { LABELS, type PolicySection } from '../constants'
 import { useRiskDraft } from '../hooks/use-risk-draft'
 import { policySchema } from '../lib/schema'
 import type {
@@ -63,7 +62,7 @@ export function PolicySettings(props: {
   initial: Policy
   defaults: Defaults
   providers: Provider[]
-  view: View
+  section: PolicySection
   canWrite: boolean
   loadingLatest?: boolean
   activationBlocked?: boolean
@@ -79,20 +78,6 @@ export function PolicySettings(props: {
       model: {
         ...props.defaults.policy.model,
         ...props.initial.model,
-        auto_confirm_threshold:
-          props.initial.model.auto_confirm_threshold ??
-          Math.min(
-            props.defaults.policy.model.auto_confirm_threshold,
-            props.initial.model.threshold
-          ),
-      },
-      behavior: {
-        ...props.defaults.policy.behavior,
-        ...props.initial.behavior,
-      },
-      evidence: {
-        ...props.defaults.policy.evidence,
-        ...props.initial.evidence,
       },
     },
     resolver: zodResolver(policySchema),
@@ -175,17 +160,11 @@ export function PolicySettings(props: {
   const conflict = getServerErrorStatus(save.error) === 409
   const d = value.distill
   const h = value.hard_regex
-  const r = value.refusal
   const m = value.model
   const selectedProvider = props.providers.find(
     (provider) => provider.id === m.provider_id
   )
   const openaiModeration = selectedProvider?.provider_type === 'openai'
-  const moderationModelInvalid =
-    openaiModeration &&
-    m.model.trim() !== '' &&
-    !m.model.trim().startsWith('omni-moderation-')
-  const b = value.behavior
   const disabled = !props.canWrite || save.isPending || props.loadingLatest
   const bindingsMatch = [
     props.config.payload.default_binding,
@@ -198,7 +177,6 @@ export function PolicySettings(props: {
   const unchanged = !form.formState.isDirty && bindingsMatch
   const saveDisabled =
     disabled ||
-    moderationModelInvalid ||
     props.activationBlocked ||
     conflict ||
     !props.defaults.policy_save_activation
@@ -254,7 +232,12 @@ export function PolicySettings(props: {
         <FieldSet className='min-w-0 gap-6'>
           <FieldSet className='min-w-0 gap-3'>
             <FieldLegend variant='label'>{t('General settings')}</FieldLegend>
-            <FieldGroup className='grid gap-0 overflow-hidden rounded-lg border sm:grid-cols-2 [&>div]:border-b [&>div]:p-3 [&>div]:last:border-b-0 sm:[&>div]:border-b-0 sm:[&>div]:odd:border-r'>
+            <p className='text-muted-foreground text-sm'>
+              {t(
+                'Keyword matches only select a request for model review; requests without a match pass and are only counted. Only the decision model can confirm a violation, which rejects the request in enforce mode and deducts the user score.'
+              )}
+            </p>
+            <FieldGroup className='grid gap-4 sm:grid-cols-2'>
               <Toggle
                 disabled={disabled}
                 label='Skip GPT models for all layers'
@@ -263,84 +246,10 @@ export function PolicySettings(props: {
                   form.setValue('skip_gpt_models', v, { shouldDirty: true })
                 }
               />
-              <Toggle
-                disabled={disabled}
-                label='Store a 240-character evidence preview'
-                checked={value.evidence.store_preview}
-                onChange={(v) => update('evidence', { store_preview: v })}
-              />
-              <Toggle
-                disabled={disabled}
-                label='Store review evidence'
-                checked={value.evidence.store_review_evidence}
-                onChange={(store_review_evidence) =>
-                  update('evidence', { store_review_evidence })
-                }
-              />
-            </FieldGroup>
-            <p className='text-muted-foreground text-sm'>
-              {t(
-                'Only violation records retain request text. Original role content and submitted audit windows are separate evidence; missing or truncated evidence cannot support a token ban.'
-              )}
-            </p>
-          </FieldSet>
-          <Separator />
-          <FieldSet className='min-w-0 gap-3'>
-            <FieldLegend variant='label'>{t('User reputation')}</FieldLegend>
-            <p className='text-muted-foreground text-sm'>
-              {t(
-                'User reputation starts at 100 and is shared across tokens. Each distinct confirmed violation deducts 20 points; the automatic suspension threshold is 0.'
-              )}
-            </p>
-            <p className='text-muted-foreground text-sm'>
-              {t(
-                'In enforcement mode, a model-confirmed violation blocks the current request immediately. Reputation only delays token suspension; it does not permit violating requests.'
-              )}
-            </p>
-            <FieldGroup className='grid gap-4 sm:grid-cols-2'>
-              <Toggle
-                disabled={disabled}
-                label='Enable user reputation'
-                checked={b.enabled}
-                onChange={(enabled) => update('behavior', { enabled })}
-              />
-              <Toggle
-                disabled={disabled}
-                label='Automatically suspend the offending API token'
-                checked={b.auto_block_enabled}
-                onChange={(auto_block_enabled) =>
-                  update('behavior', { auto_block_enabled })
-                }
-              />
-              <Toggle
-                disabled={disabled}
-                label='Automatically confirm high-confidence model violations'
-                checked={b.auto_confirm_enabled}
-                onChange={(auto_confirm_enabled) =>
-                  update('behavior', { auto_confirm_enabled })
-                }
-              />
-            </FieldGroup>
-            <p className='text-muted-foreground text-sm'>
-              {t(
-                'Suspension affects only the token involved in the new violation. After seven days without a new confirmed violation, reputation recovers by 5 points, then 5 daily, up to 100. Observation mode does not change reputation.'
-              )}
-            </p>
-            <FieldGroup className='grid gap-4 sm:grid-cols-3'>
-              <NumberField
-                disabled={disabled}
-                label='Block duration (minutes)'
-                value={b.block_ttl_minutes}
-                min={1}
-                max={1440}
-                onChange={(block_ttl_minutes) =>
-                  update('behavior', { block_ttl_minutes })
-                }
-              />
             </FieldGroup>
           </FieldSet>
           <Separator />
-          {props.view === 'distill' && (
+          {props.section === 'distill' && (
             <>
               <FieldSet className='min-w-0 gap-3'>
                 <FieldLegend variant='label'>
@@ -348,7 +257,7 @@ export function PolicySettings(props: {
                 </FieldLegend>
                 <p className='text-muted-foreground text-sm'>
                   {t(
-                    'Distillation matches, including harvest wrappers, formatting signals and fingerprints, request contextual review by the decision model. Matches alone do not confirm a violation.'
+                    'Distillation matches, including harvest wrappers, formatting signals and fingerprints, select the request for review by the decision model. Matches alone do not confirm a violation.'
                   )}
                 </p>
                 <FieldGroup className='grid gap-3 sm:grid-cols-2'>
@@ -467,39 +376,9 @@ export function PolicySettings(props: {
                   ))}
                 </Accordion>
               </FieldSet>
-              <Separator />
-              <FieldSet className='min-w-0 gap-3'>
-                <FieldLegend variant='label'>
-                  {t('Client response')}
-                </FieldLegend>
-                <FieldGroup className='grid gap-4 sm:grid-cols-[10rem_1fr]'>
-                  <NumberField
-                    disabled={disabled}
-                    label='Block HTTP status'
-                    value={d.error.status}
-                    min={400}
-                    max={599}
-                    onChange={(status) =>
-                      update('distill', { error: { ...d.error, status } })
-                    }
-                  />
-                  <Field label='Block message'>
-                    <Input
-                      disabled={disabled}
-                      aria-label={t('Block message')}
-                      value={d.error.message}
-                      onChange={(e) =>
-                        update('distill', {
-                          error: { ...d.error, message: e.target.value },
-                        })
-                      }
-                    />
-                  </Field>
-                </FieldGroup>
-              </FieldSet>
             </>
           )}
-          {props.view === 'hard_regex' && (
+          {props.section === 'keyword' && (
             <>
               <FieldSet className='min-w-0 gap-3'>
                 <FieldLegend variant='label'>
@@ -508,7 +387,7 @@ export function PolicySettings(props: {
                 <FieldGroup className='grid gap-3 sm:grid-cols-2'>
                   <Toggle
                     disabled={disabled}
-                    label='Enable hard regex'
+                    label='Enable keyword screening'
                     checked={h.enabled}
                     onChange={(enabled) => update('hard_regex', { enabled })}
                   />
@@ -540,7 +419,7 @@ export function PolicySettings(props: {
                 </p>
                 <p className='text-muted-foreground text-sm'>
                   {t(
-                    'All rule matches request model review. Without an available decision model, matches alone do not confirm violations or deduct reputation.'
+                    'Every rule match selects the request for model review. Without an available decision model, matches alone never confirm a violation or deduct points.'
                   )}
                 </p>
                 <StaticDataTable
@@ -577,13 +456,10 @@ export function PolicySettings(props: {
                           hideLabel
                           label='Category'
                           value={rule.category}
-                          options={[
-                            'jailbreak',
-                            'crack',
-                            'nsfw',
-                            'distill',
-                            'custom',
-                          ].map((c) => ({ value: c, label: LABELS[c] ?? c }))}
+                          options={props.defaults.rule_categories.map((c) => ({
+                            value: c,
+                            label: LABELS[c] ?? c,
+                          }))}
                           onChange={(category) =>
                             update('hard_regex', {
                               rules: rules.map((old, n) =>
@@ -593,11 +469,6 @@ export function PolicySettings(props: {
                           }
                         />
                       ),
-                    },
-                    {
-                      id: 'action',
-                      header: t('Handling'),
-                      cell: () => t('Review by the decision model'),
                     },
                     {
                       id: 'rule',
@@ -650,12 +521,7 @@ export function PolicySettings(props: {
                       update('hard_regex', {
                         rules: [
                           ...rules,
-                          {
-                            category: 'custom',
-                            source: '',
-                            enabled: true,
-                            action: 'review',
-                          },
+                          { category: 'custom', source: '', enabled: true },
                         ],
                       })
                     }
@@ -674,7 +540,7 @@ export function PolicySettings(props: {
               </FieldSet>
               <Field
                 label='Additional regex patterns'
-                hint='Additional patterns trigger model review.'
+                hint='Additional patterns select the request for model review.'
               >
                 <TagInput
                   disabled={disabled}
@@ -686,82 +552,7 @@ export function PolicySettings(props: {
               </Field>
             </>
           )}
-          {props.view === 'refusal' && (
-            <>
-              <FieldSet className='min-w-0 gap-3'>
-                <FieldLegend variant='label'>
-                  {t('When to request model review')}
-                </FieldLegend>
-                <p className='text-muted-foreground text-sm'>
-                  {t(
-                    'Exact and similar refusal matches trigger model review. A refusal match alone does not confirm a violation or deduct reputation.'
-                  )}
-                </p>
-                <FieldGroup className='grid gap-4 sm:grid-cols-2'>
-                  <Toggle
-                    disabled={disabled}
-                    label='Enable refusal memory'
-                    checked={r.enabled}
-                    onChange={(enabled) => update('refusal', { enabled })}
-                  />
-                  <Toggle
-                    disabled={disabled}
-                    label='Enable similarity matching'
-                    checked={r.similarity_enabled}
-                    onChange={(similarity_enabled) =>
-                      update('refusal', { similarity_enabled })
-                    }
-                  />
-                  <Choice
-                    disabled={disabled}
-                    label='Similarity threshold'
-                    value={String(r.similarity)}
-                    options={[80, 85, 90, 95].map((n) => ({
-                      value: String(n),
-                      label: `${n}%`,
-                    }))}
-                    onChange={(similarity) =>
-                      update('refusal', {
-                        similarity: Number(similarity) as 80 | 85 | 90 | 95,
-                      })
-                    }
-                  />
-                </FieldGroup>
-              </FieldSet>
-              <Separator />
-              <FieldSet className='min-w-0 gap-3'>
-                <FieldLegend variant='label'>
-                  {t('Retention and limits')}
-                </FieldLegend>
-                <p className='text-muted-foreground text-sm'>
-                  {t(
-                    'Existing subject blocks remain available below. Automatic token suspensions use user reputation, not hit counts.'
-                  )}
-                </p>
-                <FieldGroup className='grid gap-4 sm:grid-cols-2'>
-                  <NumberField
-                    disabled={disabled}
-                    label='Memory retention (days)'
-                    value={r.memory_ttl_days}
-                    onChange={(memory_ttl_days) =>
-                      update('refusal', { memory_ttl_days })
-                    }
-                  />
-                  <NumberField
-                    disabled={disabled}
-                    label='Maximum similarity candidates'
-                    min={1}
-                    max={10000}
-                    value={r.max_similar_candidates}
-                    onChange={(max_similar_candidates) =>
-                      update('refusal', { max_similar_candidates })
-                    }
-                  />
-                </FieldGroup>
-              </FieldSet>
-            </>
-          )}
-          {props.view === 'model' && (
+          {props.section === 'model' && (
             <>
               <FieldSet className='min-w-0 gap-3'>
                 <FieldLegend variant='label'>{t('When to block')}</FieldLegend>
@@ -836,13 +627,6 @@ export function PolicySettings(props: {
                         )}
                       </p>
                     )}
-                    {moderationModelInvalid && (
-                      <p role='alert' className='text-destructive text-sm'>
-                        {t(
-                          'OpenAI Moderation requires an omni-moderation model'
-                        )}
-                      </p>
-                    )}
                   </Field>
                 </FieldGroup>
               </FieldSet>
@@ -860,29 +644,6 @@ export function PolicySettings(props: {
                       step={0.01}
                       max={1}
                       onChange={(threshold) => update('model', { threshold })}
-                    />
-                  )}
-                  <NumberField
-                    disabled={disabled}
-                    label='Automatic confirmation safety threshold'
-                    value={m.auto_confirm_threshold}
-                    min={0}
-                    max={m.threshold}
-                    step={0.01}
-                    onChange={(auto_confirm_threshold) =>
-                      update('model', { auto_confirm_threshold })
-                    }
-                  />
-                  {!openaiModeration && (
-                    <NumberField
-                      disabled={disabled}
-                      label='Near-miss tolerance'
-                      value={m.near_miss_band}
-                      step={0.01}
-                      max={1}
-                      onChange={(near_miss_band) =>
-                        update('model', { near_miss_band })
-                      }
                     />
                   )}
                   <NumberField
@@ -924,16 +685,16 @@ export function PolicySettings(props: {
                 <p className='text-muted-foreground text-sm'>
                   {openaiModeration
                     ? t(
-                        'OpenAI category flags decide request blocking. Displayed safety scores equal 1 minus the OpenAI risk score; only automatic confirmation uses the safety threshold and requires complete evidence.'
+                        'OpenAI category flags decide whether a request is a violation. Displayed safety scores equal 1 minus the OpenAI risk score.'
                       )
                     : t(
-                        'Lower model safety scores mean higher risk. Automatic confirmation requires a score below its threshold and complete violation evidence.'
+                        'Lower model safety scores mean higher risk. A score below the safety threshold confirms a violation.'
                       )}
                 </p>
                 <p className='text-muted-foreground text-sm'>
                   {openaiModeration
                     ? t(
-                        'OpenAI reviews only the latest user text, not system prompts, assistant replies or tool results. Incomplete text without a violation flag follows the failure action; incomplete evidence never triggers automatic deductions.'
+                        'OpenAI reviews only the latest user text, not system prompts, assistant replies or tool results.'
                       )
                     : t(
                         'The decision model reviews the final characters of the combined system and user text. Trimming to this window is not a model failure. Rule matches outside the window are reviewed separately using bounded excerpts.'
@@ -951,30 +712,18 @@ export function PolicySettings(props: {
                     </p>
                     <p>
                       {t(
-                        'Jailbreak, distillation and custom intent rules are not covered. Unresolved signals follow the failure action without confirming a violation or deducting reputation.'
+                        'Jailbreak, distillation and custom intent rules are not covered. Requests the provider cannot judge follow the failure action without confirming a violation.'
                       )}
                     </p>
                   </AlertDescription>
                 </Alert>
               ) : (
-                <>
-                  <QuestionBank
-                    disabled={disabled}
-                    value={m.questions}
-                    defaults={props.defaults.builtin_questions}
-                    onChange={(questions) => update('model', { questions })}
-                  />
-                  <Field label='Additional safety question'>
-                    <Textarea
-                      disabled={disabled}
-                      aria-label={t('Additional safety question')}
-                      value={m.custom_instruction}
-                      onChange={(e) =>
-                        update('model', { custom_instruction: e.target.value })
-                      }
-                    />
-                  </Field>
-                </>
+                <QuestionBank
+                  disabled={disabled}
+                  value={m.questions}
+                  defaults={props.defaults.builtin_questions}
+                  onChange={(questions) => update('model', { questions })}
+                />
               )}
             </>
           )}
@@ -1010,7 +759,7 @@ export function PolicySettings(props: {
             <Alert>
               <AlertDescription>
                 {t(
-                  'Save the group configuration above before saving these settings.'
+                  'Save the scope and scoring configuration before saving these settings.'
                 )}
               </AlertDescription>
             </Alert>

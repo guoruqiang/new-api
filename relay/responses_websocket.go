@@ -440,9 +440,6 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 						continue
 					}
 					terminal, ambiguous, controlError := responsesWSErrorEndsRequest(rejection, create.StreamID, responseID, sentControl)
-					if terminal {
-						risk.ObserveResponsesEvent(c, incoming.body)
-					}
 					if !terminal {
 						if err := s.writeClient(incoming.kind, incoming.body); err != nil {
 							s.shutdown(websocket.CloseInternalServerErr, "")
@@ -499,7 +496,6 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				if event.Response != nil {
 					s.lastResponseID = event.Response.ID
 				}
-				risk.ObserveResponsesEvent(c, incoming.body)
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
 				state.terminal = &incoming
 				ConsumeResponsesQuota(c, info, accumulator.Finish())

@@ -31,19 +31,28 @@ import {
   AccordionContent,
 } from '@/components/ui/accordion'
 import { Button } from '@/components/ui/button'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { hasPermission } from '@/lib/admin-permissions'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { riskGet } from './api'
+import { EventFeed } from './components/event-feed'
 import { Choice } from './components/fields'
-import { MemoryRecords } from './components/memory-records'
 import { RiskOverview } from './components/overview'
 import { PolicySettings } from './components/policy-settings'
 import { PreviewDialog } from './components/preview-dialog'
 import { ProviderCard } from './components/provider-card'
-import { ReviewRecords } from './components/review-records'
 import { ScopeCard } from './components/scope-card'
 import { ValidationErrors } from './components/validation-errors'
+import { ViolationRecords } from './components/violation-records'
+import {
+  LABELS,
+  POLICY_SECTIONS,
+  VIEW_LABELS,
+  VIEWS,
+  type PolicySection,
+  type View,
+} from './constants'
 import { DraftGuard } from './hooks/draft-guard'
 import { useConfirmRiskDiscard } from './hooks/use-risk-draft'
 import type {
@@ -140,6 +149,10 @@ function RiskAuditWorkspace(props: {
   const canUnblock = hasPermission(user, 'risk', 'unblock')
   const client = useQueryClient()
   const [scopeDirty, setScopeDirty] = useState(false)
+  // Views are local state: switching tabs must not navigate, or the draft
+  // guard would ask to discard unsaved settings kept in the other tabs.
+  const [view, setView] = useState<View>(search.view)
+  const [section, setSection] = useState<PolicySection>(search.section)
   const [editorEpoch, setEditorEpoch] = useState(0)
   const [selection, setSelection] = useState(() => ({
     key: props.config.payload.default_binding.policy_key,
@@ -156,7 +169,6 @@ function RiskAuditWorkspace(props: {
       riskGet<PolicyRow & { decoded: Policy }>(
         `policies/${encodeURIComponent(selectedKey)}/revisions/${selectedRevision}`
       ),
-    enabled: !['all', 'pass'].includes(search.view),
   })
   const reload = useMutation({
     meta: { errorToast: false },
@@ -199,7 +211,7 @@ function RiskAuditWorkspace(props: {
         <div className='min-w-0 space-y-5'>
           <p className='text-muted-foreground text-sm'>
             {t(
-              'Enabled checks identify signals for model review. Only confirmed violations affect reputation; request blocking and token suspension are separate outcomes. Select a stage to inspect its events and settings.'
+              'Requests are screened by keyword rules and distillation detection. Requests without a match pass and are only counted; matches are reviewed by the decision model, and only a confirmed violation is rejected and deducts the user score.'
             )}
           </p>
           {props.failed && (
@@ -238,33 +250,73 @@ function RiskAuditWorkspace(props: {
               </Button>
             </div>
           </div>
-          <ScopeCard
-            onDirtyChange={setScopeDirty}
-            config={props.config}
-            directory={props.directory}
-            canWrite={canWrite}
-          />
-          <RiskOverview
-            group={search.group}
-            view={search.view}
-            onView={(view) => void navigate({ search: { ...search, view } })}
-          />
-          <Accordion className='rounded-xl border px-4'>
-            <AccordionItem value='reviews'>
-              <AccordionTrigger>
-                {t('Review and user reputation')}
-              </AccordionTrigger>
-              <AccordionContent>
-                <ReviewRecords
-                  directory={props.directory}
+          <Tabs
+            value={view}
+            onValueChange={(next) => setView(next as View)}
+          >
+            <TabsList className='h-auto w-full flex-wrap justify-start'>
+              {VIEWS.map((view) => (
+                <TabsTrigger key={view} value={view}>
+                  {t(VIEW_LABELS[view])}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+            <TabsContent value='overview' className='mt-4'>
+              <RiskOverview
+                group={search.group}
+                onOpenViolations={() => setView('violations')}
+              />
+            </TabsContent>
+            <TabsContent value='scope' keepMounted className='mt-4'>
+              <ScopeCard
+                onDirtyChange={setScopeDirty}
+                config={props.config}
+                directory={props.directory}
+                scoreCategories={props.defaults.score_categories}
+                canWrite={canWrite}
+              />
+            </TabsContent>
+            <TabsContent value='policy' keepMounted className='mt-4 space-y-4'>
+              <Tabs
+                value={section}
+                onValueChange={(next) => setSection(next as PolicySection)}
+              >
+                <TabsList>
+                  {POLICY_SECTIONS.map((section) => (
+                    <TabsTrigger key={section} value={section}>
+                      {t(LABELS[section])}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </Tabs>
+              <ValidationErrors error={reload.error} />
+              {policy.isPending && <LoadingState />}
+              {policy.isError && (
+                <ErrorState onRetry={() => void policy.refetch()} />
+              )}
+              {policy.data && (
+                <PolicySettings
+                  key={`${policy.data.policy_key}-${policy.data.revision}-${editorEpoch}`}
+                  row={policy.data}
+                  initial={policy.data.decoded}
+                  defaults={props.defaults}
+                  providers={props.providers}
+                  section={section}
                   canWrite={canWrite}
-                  canUnblock={canUnblock}
+                  config={props.config}
+                  activationBlocked={scopeDirty}
+                  loadingLatest={reload.isPending}
+                  onReload={() => confirmDiscard(() => reload.mutate())}
+                  onSaved={(row) =>
+                    setSelection({
+                      key: row.policy_key,
+                      revision: row.revision,
+                    })
+                  }
                 />
-              </AccordionContent>
-            </AccordionItem>
-          </Accordion>
-          {search.view === 'model' && (
-            <section className='space-y-4'>
+              )}
+            </TabsContent>
+            <TabsContent value='providers' keepMounted className='mt-4 space-y-4'>
               {props.providers.map((provider) => (
                 <ProviderCard
                   key={provider.id}
@@ -292,45 +344,14 @@ function RiskAuditWorkspace(props: {
                   </AccordionItem>
                 </Accordion>
               )}
-            </section>
-          )}
-          {!['all', 'pass'].includes(search.view) && (
-            <section className='space-y-4'>
-              <ValidationErrors error={reload.error} />
-              {policy.isPending && <LoadingState />}
-              {policy.isError && (
-                <ErrorState onRetry={() => void policy.refetch()} />
-              )}
-              {policy.data && (
-                <PolicySettings
-                  key={`${policy.data.policy_key}-${policy.data.revision}-${search.view}-${editorEpoch}`}
-                  row={policy.data}
-                  initial={policy.data.decoded}
-                  defaults={props.defaults}
-                  providers={props.providers}
-                  view={search.view}
-                  canWrite={canWrite}
-                  config={props.config}
-                  activationBlocked={scopeDirty}
-                  loadingLatest={reload.isPending}
-                  onReload={() => confirmDiscard(() => reload.mutate())}
-                  onSaved={(row) =>
-                    setSelection({
-                      key: row.policy_key,
-                      revision: row.revision,
-                    })
-                  }
-                />
-              )}
-            </section>
-          )}
-          {search.view === 'refusal' && (
-            <MemoryRecords
-              directory={props.directory}
-              canWrite={canWrite}
-              canUnblock={canUnblock}
-            />
-          )}
+            </TabsContent>
+            <TabsContent value='violations' className='mt-4'>
+              <ViolationRecords canWrite={canWrite} canUnblock={canUnblock} />
+            </TabsContent>
+            <TabsContent value='events' className='mt-4'>
+              <EventFeed group={search.group} />
+            </TabsContent>
+          </Tabs>
           <Accordion className='rounded-xl border px-4'>
             <AccordionItem value='coverage'>
               <AccordionTrigger>{t('Coverage')}</AccordionTrigger>

@@ -13,7 +13,6 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/service/risk"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -38,10 +37,6 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	}
 
 	info.ObserveResponseModel(responsesResponse.Model)
-	if reason, refused := risk.ClassifyResponsesPayload(responseBody); refused {
-		info.PerformanceBusinessRejection = true
-		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, reason)
-	}
 	responseBody = rewriteSGLangResponsesCreatedAt(info, responseBody, "created_at", responsesResponse.CreatedAt)
 
 	// 写入新的 response body
@@ -93,13 +88,6 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		}
 		if streamResponse.Response != nil {
 			data = string(rewriteSGLangResponsesCreatedAt(info, []byte(data), "response.created_at", streamResponse.Response.CreatedAt))
-		}
-		switch streamResponse.Type {
-		case "response.completed", "response.done", "response.incomplete", "response.failed":
-			if reason, refused := risk.ClassifyResponsesPayload(common.StringToByteSlice(data)); refused {
-				info.PerformanceBusinessRejection = true
-				common.SetContextKey(c, constant.ContextKeyAdminRejectReason, reason)
-			}
 		}
 		accumulator.Observe(&streamResponse, common.StringToByteSlice(data))
 		if err := helper.ResponseChunkData(c, streamResponse, data); err != nil {

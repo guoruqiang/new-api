@@ -28,7 +28,6 @@ export const policy: Policy = {
     enabled: true,
     skip_official: true,
     skip_gpt_models: true,
-    error: { status: 403, message: 'Blocked' },
     structure: {
       min_max_tokens: 8192,
       require_no_tools: true,
@@ -47,40 +46,18 @@ export const policy: Policy = {
     rules: null,
     patterns: [],
   },
-  refusal: {
-    enabled: true,
-    similarity_enabled: true,
-    similarity: 90,
-    subject_block_enabled: true,
-    block_subject: 'user',
-    block_ttl_minutes: 30,
-    block_after_hits: 3,
-    block_window_minutes: 10,
-    memory_ttl_days: 7,
-    max_similar_candidates: 2000,
-  },
   model: {
     enabled: false,
     provider_id: 0,
     model: '',
     questions: null,
-    custom_instruction: '',
     threshold: 0.5,
-    auto_confirm_threshold: 0.15,
-    near_miss_band: 0.08,
     fail_action: 'pass',
     budget_ms: 2000,
     max_attempts: 2,
     dedup_sec: 60,
     max_audit_chars: 16000,
   },
-  behavior: {
-    enabled: true,
-    auto_confirm_enabled: false,
-    auto_block_enabled: false,
-    block_ttl_minutes: 30,
-  },
-  evidence: { store_preview: true, store_review_evidence: true },
 }
 export const defaults: Defaults = {
   policy_save_activation: true,
@@ -88,15 +65,31 @@ export const defaults: Defaults = {
   config: {
     enabled: false,
     exempt_namespaces: [],
-    bypass_namespaces: [],
     default_binding: {
       policy_key: 'baseline',
       policy_revision: 1,
       mode: 'observe',
     },
     group_bindings: [],
-    retention: { events_days: 17, counters_days: 123 },
+    retention: { events_days: 17, counters_days: 123, violations_days: 180 },
+    score: {
+      auto_ban: false,
+      email_notify: true,
+      default: 20,
+      deductions: { nsfw: 100, jailbreak: 100 },
+    },
   },
+  rule_categories: ['nsfw', 'distill', 'crack', 'jailbreak', 'custom'],
+  score_categories: [
+    'nsfw',
+    'jailbreak',
+    'reverse',
+    'pentest',
+    'cyber',
+    'distill',
+    'safety',
+    'custom',
+  ],
   builtin_questions: [
     {
       id: 'safety',
@@ -108,12 +101,7 @@ export const defaults: Defaults = {
     },
   ],
   builtin_rules: [
-    {
-      category: 'custom',
-      source: 'malicious',
-      enabled: true,
-      action: 'review',
-    },
+    { category: 'custom', source: 'malicious', enabled: true },
   ],
   providers: [
     {
@@ -121,6 +109,12 @@ export const defaults: Defaults = {
       label: 'Jev',
       default_base_url: 'https://api.example.test',
       default_model: 'safety-model',
+    },
+    {
+      id: 'openai',
+      label: 'OpenAI Moderation',
+      default_base_url: 'https://api.openai.com',
+      default_model: 'omni-moderation-latest',
     },
   ],
   covered_routes: ['responses'],
@@ -134,7 +128,6 @@ export const directory: Directory = {
       namespace: 'ns-a',
       generation: 1,
       exempt: false,
-      bypassed: false,
       binding_source: 'default',
       ...defaults.config.default_binding,
     },

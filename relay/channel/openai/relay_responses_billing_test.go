@@ -27,63 +27,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestResponsesRefusalObservationPreservesPayloadAndUsage(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	previousTimeout := constant.StreamingTimeout
-	constant.StreamingTimeout = 5
-	t.Cleanup(func() { constant.StreamingTimeout = previousTimeout })
-	for _, tc := range []struct {
-		name, status, fields string
-		refused              bool
-	}{
-		{"content filter", "incomplete", `"incomplete_details":{"reason":"content_filter"}`, true},
-		{"refusal output", "completed", `"output":[{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"Cannot comply"}]}]`, true},
-		{"policy failure", "failed", `"error":{"code":"content_policy_violation","message":"Rejected"}`, true},
-		{"token limit", "incomplete", `"incomplete_details":{"reason":"max_output_tokens"}`, false},
-	} {
-		for _, format := range []string{"json", "stream", "done alias"} {
-			stream := format != "json"
-			t.Run(fmt.Sprintf("%s/%s", tc.name, format), func(t *testing.T) {
-				body := fmt.Sprintf(`{"id":"observed","status":%q,%s,"usage":{"input_tokens":13,"output_tokens":7,"total_tokens":20,"input_tokens_details":{"cached_tokens":3}}}`, tc.status, tc.fields)
-				wire, contentType := body, "application/json"
-				if stream {
-					event := tc.status
-					if format == "done alias" {
-						event = "done"
-					}
-					wire = fmt.Sprintf("data: {\"type\":\"response.%s\",\"response\":%s}\n\ndata: [DONE]\n\n", event, body)
-					contentType = "text/event-stream"
-				}
-				recorder := httptest.NewRecorder()
-				c, _ := gin.CreateTestContext(recorder)
-				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-				info := &relaycommon.RelayInfo{OriginModelName: "gpt-5.1", IsStream: stream, DisablePing: true,
-					ChannelMeta: &relaycommon.ChannelMeta{ChannelType: constant.ChannelTypeOpenAI}}
-				response := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(wire)), Header: http.Header{"Content-Type": {contentType}}}
-				var usage *dto.Usage
-				var apiErr *types.NewAPIError
-				if stream {
-					usage, apiErr = OaiResponsesStreamHandler(c, info, response)
-				} else {
-					usage, apiErr = OaiResponsesHandler(c, info, response)
-				}
-				require.Nil(t, apiErr)
-				require.NotNil(t, usage)
-				assert.Equal(t, 13, usage.PromptTokens)
-				assert.Equal(t, 7, usage.CompletionTokens)
-				assert.Equal(t, 20, usage.TotalTokens)
-				assert.Equal(t, 3, usage.PromptTokensDetails.CachedTokens)
-				assert.Equal(t, tc.refused, info.PerformanceBusinessRejection)
-				if stream {
-					assert.Equal(t, 1, strings.Count(recorder.Body.String(), body), "each payload must be forwarded exactly once")
-				} else {
-					assert.JSONEq(t, body, recorder.Body.String())
-				}
-			})
-		}
-	}
-}
-
 // The next upstream read stays blocked until the scanner closes its body.
 // The channels let the downstream writer force cancellation during the final
 // callback without depending on sleeps or goroutine scheduling.

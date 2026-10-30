@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -534,61 +533,4 @@ func TestApplyWebSocketSubprotocolAuthorizationReadsRepeatedHeaders(t *testing.T
 
 	assert.True(t, applyWebSocketSubprotocolAuthorization(header))
 	assert.Equal(t, "Bearer sk-later-field", header.Get("Authorization"))
-}
-
-func TestTokenAuthEnforcesOnlyTheRestrictedAPIToken(t *testing.T) {
-	require.NoError(t, i18n.Init())
-	previousDB, previousType, previousLogType := model.DB, common.MainDatabaseType(), common.LogDatabaseType()
-	previousMaster, previousSQLite := common.IsMasterNode, common.SQLitePath
-	previousMemory, previousRedis := common.MemoryCacheEnabled, common.RedisEnabled
-	t.Setenv("SQL_DSN", "")
-	t.Setenv("LOG_SQL_DSN", "")
-	common.IsMasterNode, common.MemoryCacheEnabled, common.RedisEnabled = false, false, false
-	common.SQLitePath = filepath.Join(t.TempDir(), "token-auth.db")
-	require.NoError(t, model.InitDB())
-	pool, err := model.DB.DB()
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		model.DB = previousDB
-		common.SetDatabaseTypes(previousType, previousLogType)
-		common.IsMasterNode, common.SQLitePath = previousMaster, previousSQLite
-		common.MemoryCacheEnabled, common.RedisEnabled = previousMemory, previousRedis
-		require.NoError(t, pool.Close())
-	})
-	require.NoError(t, model.DB.AutoMigrate(&model.User{}, &model.Token{}, &model.RiskSubjectBlock{}))
-	user := createMiddlewarePATUser(t, "risk-token-user", "unused-management-credential")
-	now := common.GetTimestamp()
-	restricted := &model.Token{UserId: user.Id, Key: "riskrestrictedtoken", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true}
-	other := &model.Token{UserId: user.Id, Key: "riskothertoken", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true}
-	require.NoError(t, model.DB.Create(restricted).Error)
-	require.NoError(t, model.DB.Create(other).Error)
-	block := &model.RiskSubjectBlock{Namespace: "original-group", UserId: user.Id, SubjectType: "token", SubjectValue: fmt.Sprint(restricted.Id), ExpiresAt: now + 1800}
-	require.NoError(t, model.DB.Create(block).Error)
-	router := gin.New()
-	router.POST("/v1/responses", TokenAuth(), func(c *gin.Context) { c.Status(http.StatusNoContent) })
-	router.POST("/v1/moderations", TokenAuth(), func(c *gin.Context) { c.Status(http.StatusNoContent) })
-	request := func(path, key string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
-		req.Header.Set("Authorization", "Bearer sk-"+key)
-		req.Header.Set("Accept-Language", "en")
-		res := httptest.NewRecorder()
-		router.ServeHTTP(res, req)
-		return res
-	}
-	for _, path := range []string{"/v1/responses", "/v1/moderations"} {
-		res := request(path, restricted.Key)
-		assert.Equal(t, http.StatusForbidden, res.Code, res.Body.String())
-		assert.Contains(t, res.Body.String(), "risk_refusal_guard")
-		assert.NotContains(t, res.Body.String(), restricted.Key)
-		res = request(path, other.Key)
-		assert.Equal(t, http.StatusNoContent, res.Code, res.Body.String())
-	}
-	require.NoError(t, model.DB.Model(block).Update("expires_at", now-1).Error)
-	assert.Equal(t, http.StatusNoContent, request("/v1/responses", restricted.Key).Code)
-	require.NoError(t, model.DB.Model(block).Update("expires_at", 0).Error)
-	assert.Equal(t, http.StatusForbidden, request("/v1/responses", restricted.Key).Code)
-	require.NoError(t, model.DB.Model(block).Updates(map[string]any{"released_at": now, "released_by": 1}).Error)
-	assert.Equal(t, http.StatusNoContent, request("/v1/responses", restricted.Key).Code)
-	require.NoError(t, model.DB.Migrator().DropTable(&model.RiskSubjectBlock{}))
-	assert.Equal(t, http.StatusServiceUnavailable, request("/v1/responses", restricted.Key).Code, "failure to read restrictions must not bypass a token restriction")
 }

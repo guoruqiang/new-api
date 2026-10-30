@@ -34,31 +34,30 @@ import { formatNumber } from '@/lib/format'
 import { riskGet } from '../api'
 import { EVENT_LABELS, LABELS } from '../constants'
 import type { Page, RiskEvent } from '../types'
-import { Choice } from './fields'
+import { Choice, Field } from './fields'
 
-export function EventFeed(props: {
-  group: string
-  layer: string
-  compact?: boolean
-  startAt?: number
-  upstreamOnly?: boolean
-}) {
+const PAGE_SIZE = 20
+
+export function EventFeed(props: { group: string }) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const [page, setPage] = useState(1)
+  const [layer, setLayer] = useState('')
   const [outcome, setOutcome] = useState('')
+  const [user, setUser] = useState('')
+  const [request, setRequest] = useState('')
   const [start, setStart] = useState('')
   const [end, setEnd] = useState('')
   const [detail, setDetail] = useState<number | null>(null)
-  const [showFilters, setShowFilters] = useState(!props.compact)
-  const pageSize = props.compact ? 5 : 20
   const filters = {
     group: props.group,
-    layer: props.layer,
-    outcome: props.upstreamOnly ? '' : outcome,
+    layer,
+    outcome,
+    user_id: user || undefined,
+    request_id: request.trim() || undefined,
     p: page,
-    page_size: pageSize,
-    start: start ? Math.floor(new Date(start).getTime() / 1000) : props.startAt,
+    page_size: PAGE_SIZE,
+    start: start ? Math.floor(new Date(start).getTime() / 1000) : undefined,
     end: end ? Math.floor(new Date(end).getTime() / 1000) : undefined,
   }
   const query = useQuery({
@@ -71,78 +70,99 @@ export function EventFeed(props: {
     queryFn: () => riskGet<RiskEvent>(`events/${detail}`),
     enabled: detail !== null,
   })
-  let title = props.compact ? 'Recent events' : 'Risk events'
-  if (props.upstreamOnly) title = 'Upstream refusal'
   return (
     <TitledCard
-      title={t(title)}
+      title={t('Risk events')}
+      description={t(
+        'Events are recorded only for keyword matches and audit failures. They never contain request text.'
+      )}
       disableHoverEffect
       className='min-w-0'
-      titleClassName='text-base sm:text-base'
       contentClassName='space-y-3'
-      action={
-        props.compact && (
-          <Button
-            variant='ghost'
-            size='sm'
-            aria-expanded={showFilters}
-            onClick={() => setShowFilters(!showFilters)}
-          >
-            {t('Filters')}
-          </Button>
-        )
-      }
     >
-      {showFilters && (
-        <div className='grid gap-3 sm:grid-cols-3'>
-          {!props.upstreamOnly && (
-            <Choice
-              label='Outcome'
-              value={outcome}
-              options={[
-                '',
-                'block',
-                'would_block',
-                'error_block',
-                'error_pass',
-                'upstream_refusal',
-                'would_stop',
-              ].map((v) => ({ value: v, label: LABELS[v] ?? 'All' }))}
-              onChange={(v) => {
-                setOutcome(v)
-                setPage(1)
-              }}
-            />
-          )}
-          <label className='space-y-2 text-sm'>
-            {t('Start time')}
-            <Input
-              type='datetime-local'
-              value={start}
-              onChange={(e) => {
-                setStart(e.target.value)
-                setPage(1)
-              }}
-            />
-          </label>
-          <label className='space-y-2 text-sm'>
-            {t('End time')}
-            <Input
-              type='datetime-local'
-              value={end}
-              onChange={(e) => {
-                setEnd(e.target.value)
-                setPage(1)
-              }}
-            />
-          </label>
-        </div>
-      )}
+      <div className='grid gap-3 sm:grid-cols-3'>
+        <Choice
+          label='Layer'
+          value={layer}
+          options={[
+            { value: '', label: 'All' },
+            ...['gate', 'keyword', 'model'].map((v) => ({
+              value: v,
+              label: LABELS[v],
+            })),
+          ]}
+          onChange={(v) => {
+            setLayer(v)
+            setPage(1)
+          }}
+        />
+        <Choice
+          label='Outcome'
+          value={outcome}
+          options={[
+            { value: '', label: 'All' },
+            ...['pass', 'block', 'would_block', 'error_block', 'error_pass'].map(
+              (v) => ({ value: v, label: LABELS[v] })
+            ),
+          ]}
+          onChange={(v) => {
+            setOutcome(v)
+            setPage(1)
+          }}
+        />
+        <Field label='User ID'>
+          <Input
+            aria-label={t('User ID')}
+            type='number'
+            min={1}
+            step={1}
+            value={user}
+            onChange={(e) => {
+              setUser(e.target.value)
+              setPage(1)
+            }}
+          />
+        </Field>
+        <Field label='Request ID'>
+          <Input
+            aria-label={t('Request ID')}
+            value={request}
+            onChange={(e) => {
+              setRequest(e.target.value)
+              setPage(1)
+            }}
+          />
+        </Field>
+        <label className='space-y-2 text-sm'>
+          {t('Start time')}
+          <Input
+            type='datetime-local'
+            value={start}
+            onChange={(e) => {
+              setStart(e.target.value)
+              setPage(1)
+            }}
+          />
+        </label>
+        <label className='space-y-2 text-sm'>
+          {t('End time')}
+          <Input
+            type='datetime-local'
+            value={end}
+            onChange={(e) => {
+              setEnd(e.target.value)
+              setPage(1)
+            }}
+          />
+        </label>
+      </div>
       {query.isPending && <LoadingState />}
       {query.isError && <ErrorState onRetry={() => void query.refetch()} />}
       {query.data && (
         <>
           <StaticDataTable
+            className='overflow-x-auto'
+            tableClassName='min-w-[44rem]'
             data={query.data.items ?? []}
             getRowKey={(e) => e.id}
             emptyContent={t('No risk events in this range.')}
@@ -150,51 +170,41 @@ export function EventFeed(props: {
               {
                 id: 'time',
                 header: t('Time'),
-                cell: (e) => (
-                  <div>
-                    <span>
-                      {new Date(e.created_at * 1000).toLocaleString(locale)}
-                    </span>
-                    {props.compact && (
-                      <p className='text-muted-foreground text-xs'>
-                        {e.effective_group || 'auto'} · {t('User ID')}{' '}
-                        {formatNumber(e.user_id, locale)}
-                      </p>
-                    )}
-                  </div>
-                ),
+                cell: (e) =>
+                  new Date(e.created_at * 1000).toLocaleString(locale),
               },
-              ...(!props.compact
-                ? [
-                    {
-                      id: 'group',
-                      header: t('Group'),
-                      cell: (e: RiskEvent) => e.effective_group || 'auto',
-                    },
-                    {
-                      id: 'user',
-                      header: t('User ID'),
-                      cell: (e: RiskEvent) => formatNumber(e.user_id, locale),
-                    },
-                    {
-                      id: 'layer',
-                      header: t('Layer'),
-                      cell: (e: RiskEvent) => t(LABELS[e.layer] ?? e.layer),
-                    },
-                  ]
-                : []),
+              {
+                id: 'group',
+                header: t('Group'),
+                cell: (e) => e.effective_group || 'auto',
+              },
+              {
+                id: 'user',
+                header: t('User ID'),
+                cell: (e) => formatNumber(e.user_id, locale),
+              },
+              {
+                id: 'layer',
+                header: t('Layer'),
+                cell: (e) => t(LABELS[e.layer] ?? e.layer),
+              },
               {
                 id: 'outcome',
                 header: t('Outcome'),
                 cell: (e) => (
                   <div>
                     <span>{t(LABELS[e.outcome] ?? e.outcome)}</span>
-                    {props.compact && (
-                      <p className='text-muted-foreground text-xs'>
-                        {t(LABELS[e.layer] ?? e.layer)}
-                      </p>
-                    )}
+                    <p className='text-muted-foreground text-xs'>
+                      {t(LABELS[e.reason] ?? e.reason)}
+                    </p>
                   </div>
+                ),
+              },
+              {
+                id: 'keyword',
+                header: t('Keyword'),
+                cell: (e) => (
+                  <span className='break-all'>{e.keyword || '—'}</span>
                 ),
               },
               {
@@ -219,7 +229,7 @@ export function EventFeed(props: {
             <span>{formatNumber(page, locale)}</span>
             <Button
               variant='outline'
-              disabled={page * pageSize >= query.data.total}
+              disabled={page * PAGE_SIZE >= query.data.total}
               onClick={() => setPage(page + 1)}
             >
               {t('Next')}
@@ -246,9 +256,7 @@ export function EventFeed(props: {
             </div>
             <dl className='grid gap-3 sm:grid-cols-2'>
               {Object.entries(eventQuery.data)
-                .filter(
-                  ([key]) => !['preview', 'rule', 'request_id'].includes(key)
-                )
+                .filter(([key]) => !['rule', 'request_id'].includes(key))
                 .map(([key, value]) => (
                   <div key={key}>
                     <dt className='text-muted-foreground text-xs'>
@@ -262,18 +270,14 @@ export function EventFeed(props: {
                   </div>
                 ))}
             </dl>
-            <section>
-              <h4>{t('Matched rule')}</h4>
-              <pre className='break-all whitespace-pre-wrap'>
-                {eventQuery.data.rule}
-              </pre>
-            </section>
-            <section>
-              <h4>{t('Evidence preview')}</h4>
-              <p className='break-all whitespace-pre-wrap'>
-                {eventQuery.data.preview || '—'}
-              </p>
-            </section>
+            {eventQuery.data.rule && (
+              <section>
+                <h4>{t('Matched rule')}</h4>
+                <pre className='break-all whitespace-pre-wrap'>
+                  {eventQuery.data.rule}
+                </pre>
+              </section>
+            )}
           </div>
         )}
       </Dialog>

@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, it, vi } from 'vitest'
 
@@ -24,40 +24,18 @@ import { api } from '@/lib/api'
 
 import { ScopeCard } from '../components/scope-card'
 import { configSchema } from '../lib/schema'
-import { config, directory, renderRisk } from './fixtures'
+import { config, defaults, directory, renderRisk } from './fixtures'
 
-it('collapses active group configuration and preserves edits when reopened', async () => {
-  const user = userEvent.setup()
-  renderRisk(
-    <ScopeCard
-      config={{ ...config, payload: { ...config.payload, enabled: true } }}
-      directory={directory}
-      canWrite
-    />
-  )
-  const trigger = screen.getByRole('button', {
-    name: /Group exemptions and modes/,
-  })
-  expect(trigger).toHaveAttribute('aria-expanded', 'false')
-  await user.click(trigger)
-  await user.click(screen.getByRole('switch', { name: 'Enable risk audit' }))
-  await user.click(trigger)
-  expect(trigger).toHaveAttribute('aria-expanded', 'false')
-  await user.click(trigger)
-  expect(
-    screen.getByRole('switch', { name: 'Enable risk audit' })
-  ).not.toBeChecked()
-  expect(
-    screen.getByRole('button', { name: 'Save configuration' })
-  ).toBeEnabled()
-})
+function mockWrite(revision = 4) {
+  return vi
+    .spyOn(api, 'request')
+    .mockResolvedValue({ data: { success: true, data: { revision } } })
+}
 
-it('edits only default and group modes while preserving internal bindings and reporting dirty changes', async () => {
+it('edits default and group modes, preserves bindings and reports dirty changes', async () => {
   const user = userEvent.setup()
   const dirty = vi.fn()
-  const write = vi.spyOn(api, 'request').mockResolvedValue({
-    data: { success: true, data: { revision: 4 } },
-  })
+  const write = mockWrite()
   const override = { ...config.payload.default_binding, namespace: 'ns-a' }
   renderRisk(
     <ScopeCard
@@ -78,21 +56,17 @@ it('edits only default and group modes while preserving internal bindings and re
             group_name: 'exempt',
             namespace: 'ns-b',
             exempt: true,
+            binding_source: 'exempt',
           },
         ],
       }}
+      scoreCategories={defaults.score_categories}
       canWrite
       onDirtyChange={dirty}
     />
   )
   expect(dirty).toHaveBeenLastCalledWith(false)
-  expect(
-    screen.queryByRole('combobox', { name: 'Policy' })
-  ).not.toBeInTheDocument()
-  expect(
-    screen.queryByRole('spinbutton', { name: 'Revision' })
-  ).not.toBeInTheDocument()
-  expect(screen.queryByText(/baseline v1/)).not.toBeInTheDocument()
+  expect(screen.queryByLabelText('Bypassed groups')).not.toBeInTheDocument()
   const modes = screen.getAllByRole('combobox', { name: 'Mode' })
   await user.selectOptions(modes[0], 'enforce')
   await user.selectOptions(modes[1], 'enforce')
@@ -119,44 +93,76 @@ it('edits only default and group modes while preserving internal bindings and re
   await waitFor(() => expect(dirty).toHaveBeenLastCalledWith(false))
 })
 
-it('saves an empty exemption list with the expected revision and keeps auto out of choices', async () => {
-  const write = vi
-    .spyOn(api, 'request')
-    .mockResolvedValue({ data: { success: true, data: { revision: 4 } } })
+it('saves scoring, notification, per-category deductions and violation retention', async () => {
   const user = userEvent.setup()
+  const write = mockWrite()
   renderRisk(
     <ScopeCard
       config={config}
-      directory={{
-        ...directory,
-        groups: [
-          ...directory.groups,
-          { ...directory.groups[0], group_name: 'auto', namespace: 'auto' },
-        ],
-      }}
+      directory={directory}
+      scoreCategories={defaults.score_categories}
       canWrite
     />
   )
-  expect(
-    screen.getByText(
-      'New groups are audited automatically. Auto requests are always audited, even in exempt groups.'
-    )
-  ).toBeVisible()
-  await user.click(screen.getByRole('switch', { name: 'Enable risk audit' }))
-  await user.click(screen.getByRole('button', { name: 'Save configuration' }))
-  await waitFor(() =>
-    expect(write).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          expected_revision: 3,
-          enabled: true,
-          exempt_namespaces: [],
-          retention: { events_days: 17, counters_days: 123 },
-        }),
-      })
-    )
+  const autoBan = screen.getByRole('switch', {
+    name: 'Automatically ban accounts at score 0',
+  })
+  expect(autoBan).not.toBeChecked()
+  await user.click(autoBan)
+  await user.click(
+    screen.getByRole('switch', { name: 'Email the user about each violation' })
   )
-  expect(screen.queryByText('auto', { exact: true })).not.toBeInTheDocument()
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Default deduction' }), {
+    target: { value: '30' },
+  })
+  fireEvent.change(
+    screen.getByRole('spinbutton', {
+      name: 'Violation record retention (days)',
+    }),
+    { target: { value: '365' } }
+  )
+  const table = screen.getByRole('table', { name: 'Deduction per category' })
+  expect(within(table).getByRole('spinbutton', { name: 'Jailbreak' })).toHaveValue(
+    100
+  )
+  expect(
+    within(table).getByRole('spinbutton', { name: 'Reverse engineering' })
+  ).toHaveValue(30)
+  fireEvent.change(within(table).getByRole('spinbutton', { name: 'Cyber abuse' }), {
+    target: { value: '50' },
+  })
+  const nsfw = within(table).getByRole('row', { name: /Explicit content/ })
+  await user.click(within(nsfw).getByRole('button', { name: 'Use default' }))
+  await user.click(screen.getByRole('button', { name: 'Save configuration' }))
+  await waitFor(() => expect(write).toHaveBeenCalledOnce())
+  expect(write.mock.calls[0][0].data).toMatchObject({
+    retention: { events_days: 17, counters_days: 123, violations_days: 365 },
+    score: {
+      auto_ban: true,
+      email_notify: false,
+      default: 30,
+      deductions: { jailbreak: 100, cyber: 50 },
+    },
+  })
+})
+
+it('blocks saving a deduction outside 1 to 100 points', async () => {
+  const user = userEvent.setup()
+  const write = mockWrite()
+  renderRisk(
+    <ScopeCard
+      config={config}
+      directory={directory}
+      scoreCategories={defaults.score_categories}
+      canWrite
+    />
+  )
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Default deduction' }), {
+    target: { value: '101' },
+  })
+  await user.click(screen.getByRole('button', { name: 'Save configuration' }))
+  expect(await screen.findByText('Invalid risk audit settings')).toBeVisible()
+  expect(write).not.toHaveBeenCalled()
 })
 
 it('keeps unsaved values on revision conflict until the operator reloads', async () => {
@@ -167,17 +173,29 @@ it('keeps unsaved values on revision conflict until the operator reloads', async
     data: { success: true, data: { ...config, revision: 7 } },
   })
   const user = userEvent.setup()
-  renderRisk(<ScopeCard config={config} directory={directory} canWrite />)
-  await user.click(screen.getByRole('switch', { name: 'Enable risk audit' }))
+  renderRisk(
+    <ScopeCard
+      config={config}
+      directory={directory}
+      scoreCategories={defaults.score_categories}
+      canWrite
+    />
+  )
+  const enable = screen.getByRole('switch', { name: 'Enable risk audit' })
+  await user.click(enable)
   await user.click(screen.getByRole('button', { name: 'Save configuration' }))
   expect(
     await screen.findByText(
       'The risk audit settings were changed by someone else. Reload and try again.'
     )
   ).toBeVisible()
-  expect(screen.getByRole('switch')).toBeChecked()
+  expect(enable).toBeChecked()
   await user.click(screen.getByRole('button', { name: 'Reload' }))
-  await waitFor(() => expect(screen.getByRole('switch')).not.toBeChecked())
+  await waitFor(() =>
+    expect(
+      screen.getByRole('switch', { name: 'Enable risk audit' })
+    ).not.toBeChecked()
+  )
   write.mockResolvedValue({ data: { success: true, data: { revision: 8 } } })
   await user.click(screen.getByRole('switch', { name: 'Enable risk audit' }))
   await user.click(screen.getByRole('button', { name: 'Save configuration' }))
@@ -200,6 +218,7 @@ it('shows retired group references and makes configuration read-only without wri
           { namespace: 'old', group_name: 'retired', kind: 'exempt' },
         ],
       }}
+      scoreCategories={defaults.score_categories}
       canWrite={false}
     />
   )
@@ -211,76 +230,28 @@ it('shows retired group references and makes configuration read-only without wri
   expect(
     screen.queryByRole('button', { name: 'Save configuration' })
   ).not.toBeInTheDocument()
-  expect(screen.getByRole('switch')).toHaveAttribute('aria-disabled', 'true')
+  expect(
+    screen.getByRole('switch', { name: 'Enable risk audit' })
+  ).toHaveAttribute('aria-disabled', 'true')
   expect(screen.getByRole('combobox', { name: 'Mode' })).toBeDisabled()
   expect(screen.getByRole('button', { name: 'Override' })).toBeDisabled()
+  expect(
+    screen.getByRole('spinbutton', { name: 'Default deduction' })
+  ).toBeDisabled()
 })
 
-it('rejects auto, duplicate namespaces and a group that is both skipped and bound', () => {
+it('rejects auto, duplicate namespaces and an exempt group with a binding', () => {
   expect(configSchema.safeParse(config.payload).success).toBe(true)
   const binding = { ...config.payload.default_binding, namespace: 'a' }
   for (const patch of [
     { exempt_namespaces: ['auto'] },
     { exempt_namespaces: ['a', 'a'] },
     { exempt_namespaces: ['a'], group_bindings: [binding] },
-    { bypass_namespaces: ['auto'] },
-    { bypass_namespaces: ['a', 'a'] },
-    { exempt_namespaces: ['a'], bypass_namespaces: ['a'] },
-    { bypass_namespaces: ['a'], group_bindings: [binding] },
+    { retention: { ...config.payload.retention, violations_days: 0 } },
+    { score: { ...config.payload.score, deductions: { nsfw: 0 } } },
   ]) {
     expect(
       configSchema.safeParse({ ...config.payload, ...patch }).success
     ).toBe(false)
   }
-})
-
-it('bypasses a selected group, disables its override and saves the bypass list', async () => {
-  const write = vi
-    .spyOn(api, 'request')
-    .mockResolvedValue({ data: { success: true, data: { revision: 4 } } })
-  const user = userEvent.setup()
-  renderRisk(<ScopeCard config={config} directory={directory} canWrite />)
-  expect(
-    screen.getByText(
-      'Requests from these groups skip the risk audit entirely: no checks, counters or events. Auto requests are still audited.'
-    )
-  ).toBeVisible()
-  await user.click(screen.getByLabelText('Bypassed groups'))
-  await user.click(await screen.findByRole('option', { name: 'standard' }))
-  await user.keyboard('{Escape}')
-  expect(screen.getByText('Bypassed group')).toBeVisible()
-  expect(screen.getByRole('button', { name: 'Override' })).toBeDisabled()
-  await user.click(screen.getByRole('button', { name: 'Save configuration' }))
-  await waitFor(() =>
-    expect(write).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          exempt_namespaces: [],
-          bypass_namespaces: ['ns-a'],
-        }),
-      })
-    )
-  )
-})
-
-it('keeps an exempt group out of the bypass list', async () => {
-  const user = userEvent.setup()
-  renderRisk(
-    <ScopeCard
-      config={{
-        ...config,
-        payload: { ...config.payload, exempt_namespaces: ['ns-a'] },
-      }}
-      directory={directory}
-      canWrite
-    />
-  )
-  await user.click(screen.getByLabelText('Bypassed groups'))
-  await user.click(await screen.findByRole('option', { name: 'standard' }))
-  await user.keyboard('{Escape}')
-  expect(screen.getByText('Exempt group')).toBeVisible()
-  expect(screen.queryByText('Bypassed group')).not.toBeInTheDocument()
-  expect(
-    screen.getByRole('button', { name: 'Save configuration' })
-  ).toBeDisabled()
 })

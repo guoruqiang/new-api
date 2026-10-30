@@ -39,13 +39,14 @@ func (riskCleanupHandler) NewPayload() any { return nil }
 
 func (riskCleanupHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
 	retention := risk.DefaultConfigPayload().Retention
-	if snap := risk.CurrentSnapshot(); snap != nil && snap.Retention.EventsDays > 0 {
+	if snap := risk.CurrentSnapshot(); snap != nil && snap.Retention.EventsDays > 0 && snap.Retention.ViolationsDays > 0 {
 		retention = snap.Retention
 	}
 	now := time.Now()
-	removed, err := model.CleanupRiskRecords(now.Unix(),
+	removed, err := model.CleanupRiskRecords(
 		now.AddDate(0, 0, -retention.EventsDays).Unix(),
-		now.AddDate(0, 0, -retention.CountersDays).Unix())
+		now.AddDate(0, 0, -retention.CountersDays).Unix(),
+		now.AddDate(0, 0, -retention.ViolationsDays).Unix())
 	if err != nil {
 		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
 		return

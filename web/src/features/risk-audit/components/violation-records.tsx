@@ -26,72 +26,60 @@ import { LoadingState } from '@/components/loading-state'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { TitledCard } from '@/components/ui/titled-card'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
 
 import { riskGet } from '../api'
-import { JUDGMENT_SOURCE_LABELS, LABELS, SEVERITY_LABELS } from '../constants'
-import type { Directory, Page, RiskReview } from '../types'
+import { LABELS } from '../constants'
+import type { Page, Violation } from '../types'
 import { Choice, Field } from './fields'
-import { ReviewDetail } from './review-detail'
+import { ViolationDetail } from './violation-detail'
 
-export function ReviewRecords(props: {
-  directory: Directory
+const PAGE_SIZE = 20
+
+export function ViolationRecords(props: {
   canWrite: boolean
   canUnblock: boolean
 }) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
-  const [namespace, setNamespace] = useState('')
   const [status, setStatus] = useState('pending')
   const [user, setUser] = useState('')
   const [request, setRequest] = useState('')
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<number | null>(null)
+  const filters = {
+    status,
+    user_id: user || undefined,
+    request_id: request.trim() || undefined,
+    p: page,
+    page_size: PAGE_SIZE,
+  }
   const query = useQuery({
-    queryKey: ['risk', 'reviews', namespace, status, user, request, page],
-    queryFn: () =>
-      riskGet<Page<RiskReview>>('reviews', {
-        namespace,
-        status,
-        user_id: user || undefined,
-        request_id: request || undefined,
-        p: page,
-        page_size: 20,
-      }),
+    queryKey: ['risk', 'violations', filters],
+    queryFn: () => riskGet<Page<Violation>>('violations', filters),
   })
   return (
-    <div className='space-y-4 py-2'>
-      <p className='text-muted-foreground text-sm'>
-        {t(
-          'Confirmed violations reduce user reputation. Signals and pending reviews do not deduct points. Observation mode never changes reputation.'
-        )}
-      </p>
-      <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-4'>
-        <Choice
-          label='Group namespace'
-          value={namespace}
-          options={[
-            { value: '', label: 'All groups' },
-            { value: 'auto', label: 'auto' },
-            ...props.directory.groups.map((group) => ({
-              value: group.namespace,
-              label: group.group_name,
-            })),
-          ]}
-          onChange={(value) => {
-            setNamespace(value)
-            setPage(1)
-          }}
-        />
+    <TitledCard
+      title={t('Violations')}
+      description={t(
+        'Each record is a request the decision model judged as a violation. Review the saved request, uphold or revoke the deduction, and ban or unban the account when needed.'
+      )}
+      disableHoverEffect
+      className='min-w-0'
+      contentClassName='space-y-4'
+    >
+      <div className='grid gap-3 sm:grid-cols-3'>
         <Choice
           label='Review status'
           value={status}
           options={[
             { value: '', label: 'All statuses' },
-            ...['pending', 'confirmed', 'dismissed', 'revoked'].map(
-              (value) => ({ value, label: LABELS[value] })
-            ),
+            ...['pending', 'upheld', 'revoked'].map((value) => ({
+              value,
+              label: LABELS[value],
+            })),
           ]}
           onChange={(value) => {
             setStatus(value)
@@ -127,78 +115,64 @@ export function ReviewRecords(props: {
       {query.data && (
         <StaticDataTable
           className='overflow-x-auto'
-          tableClassName='min-w-[42rem]'
-          tableProps={{ 'aria-label': t('Review candidates') }}
+          tableClassName='min-w-[56rem]'
+          tableProps={{ 'aria-label': t('Violations') }}
           data={query.data.items ?? []}
           getRowKey={(row) => row.id}
-          emptyContent={t('No review candidates')}
+          emptyContent={t('No violations')}
           columns={[
             {
-              id: 'subject',
-              header: t('Subject'),
+              id: 'time',
+              header: t('Time'),
+              cell: (row) =>
+                new Date(row.created_at * 1000).toLocaleString(locale),
+            },
+            {
+              id: 'user',
+              header: t('User ID'),
+              cell: (row) => formatNumber(row.user_id, locale),
+            },
+            {
+              id: 'token',
+              header: t('Token ID'),
+              cell: (row) =>
+                row.token_id ? formatNumber(row.token_id, locale) : '—',
+            },
+            {
+              id: 'group',
+              header: t('Group'),
+              cell: (row) => row.group_name || 'auto',
+            },
+            {
+              id: 'category',
+              header: t('Category'),
+              cell: (row) => t(LABELS[row.category] ?? row.category) || '—',
+            },
+            {
+              id: 'keyword',
+              header: t('Keyword'),
               cell: (row) => (
-                <div className='space-y-1'>
-                  <p>
-                    {row.group_name} · {t('User ID')}:{' '}
-                    {formatNumber(row.user_id, locale)}
-                  </p>
-                  <p className='text-muted-foreground text-xs break-all'>
-                    {row.namespace}
-                  </p>
-                  <p className='text-muted-foreground text-xs'>
-                    {t('Token ID')}:{' '}
-                    {row.token_id ? formatNumber(row.token_id, locale) : '—'}
-                  </p>
-                  <p className='text-muted-foreground text-xs'>
-                    {new Date(row.created_at * 1000).toLocaleString(locale)}
-                  </p>
-                </div>
+                <span className='break-all'>{row.keyword || '—'}</span>
               ),
             },
             {
-              id: 'candidate',
-              header: t('Reason'),
-              cell: (row) => (
-                <div>
-                  <p>{t(LABELS[row.layer] ?? row.layer)}</p>
-                  <p className='text-muted-foreground text-xs'>
-                    {t(LABELS[row.category] ?? row.category) || '—'}
-                  </p>
-                </div>
-              ),
+              id: 'deduction',
+              header: t('Score change'),
+              cell: (row) =>
+                `${formatNumber(row.score_before, locale)} → ${formatNumber(row.score_after, locale)}`,
+            },
+            {
+              id: 'action',
+              header: t('Action'),
+              cell: (row) => t(LABELS[row.action] ?? row.action),
             },
             {
               id: 'status',
               header: t('Review status'),
               cell: (row) => (
-                <div className='space-y-1'>
-                  <Badge variant='secondary'>{t(LABELS[row.status])}</Badge>
-                  <p className='text-muted-foreground text-xs'>
-                    {t(LABELS[row.mode])}
-                  </p>
-                  {row.judgment_source && (
-                    <p className='text-muted-foreground text-xs'>
-                      {t(
-                        JUDGMENT_SOURCE_LABELS[row.judgment_source] ??
-                          row.judgment_source
-                      )}
-                    </p>
-                  )}
-                </div>
-              ),
-            },
-            {
-              id: 'deduction',
-              header: t('Actual reputation deduction'),
-              cell: (row) => (
-                <div>
-                  <p>{formatNumber(row.deduction, locale)}</p>
-                  {row.severity && (
-                    <p className='text-muted-foreground text-xs'>
-                      {t(SEVERITY_LABELS[row.severity] ?? row.severity)}
-                    </p>
-                  )}
-                </div>
+                <Badge variant={row.status === 'pending' ? 'default' : 'secondary'}>
+                  {t(LABELS[row.status] ?? row.status)}
+                </Badge>
               ),
             },
             {
@@ -226,20 +200,20 @@ export function ReviewRecords(props: {
         </span>
         <Button
           variant='outline'
-          disabled={!query.data || page * 20 >= query.data.total}
+          disabled={!query.data || page * PAGE_SIZE >= query.data.total}
           onClick={() => setPage(page + 1)}
         >
           {t('Next')}
         </Button>
       </div>
       {selected !== null && (
-        <ReviewDetail
+        <ViolationDetail
           id={selected}
           canWrite={props.canWrite}
           canUnblock={props.canUnblock}
           onClose={() => setSelected(null)}
         />
       )}
-    </div>
+    </TitledCard>
   )
 }

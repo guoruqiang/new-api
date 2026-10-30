@@ -44,9 +44,6 @@ func PublishConfig(expectedRevision int64, cfg ConfigPayload, operatorID int) (i
 	if cfg.ExemptNamespaces == nil {
 		cfg.ExemptNamespaces = []string{}
 	}
-	if cfg.BypassNamespaces == nil {
-		cfg.BypassNamespaces = []string{}
-	}
 	if cfg.GroupBindings == nil {
 		cfg.GroupBindings = []GroupBinding{}
 	}
@@ -70,7 +67,6 @@ type GroupEntry struct {
 	Namespace      string `json:"namespace"`
 	Generation     int    `json:"generation"`
 	Exempt         bool   `json:"exempt"`
-	Bypassed       bool   `json:"bypassed"`
 	BindingSource  string `json:"binding_source"`
 	PolicyKey      string `json:"policy_key"`
 	PolicyRevision int    `json:"policy_revision"`
@@ -104,10 +100,6 @@ func ListGroupDirectory() (GroupDirectory, error) {
 	for _, ns := range view.Payload.ExemptNamespaces {
 		exempt[ns] = true
 	}
-	bypassed := map[string]bool{}
-	for _, ns := range view.Payload.BypassNamespaces {
-		bypassed[ns] = true
-	}
 	bindings := map[string]GroupBinding{}
 	for _, gb := range view.Payload.GroupBindings {
 		bindings[gb.Namespace] = gb
@@ -119,9 +111,6 @@ func ListGroupDirectory() (GroupDirectory, error) {
 			if exempt[row.Namespace] {
 				dir.InvalidRefs = append(dir.InvalidRefs, InvalidRef{Namespace: row.Namespace, GroupName: row.GroupName, Kind: "exempt"})
 			}
-			if bypassed[row.Namespace] {
-				dir.InvalidRefs = append(dir.InvalidRefs, InvalidRef{Namespace: row.Namespace, GroupName: row.GroupName, Kind: "bypass"})
-			}
 			if _, ok := bindings[row.Namespace]; ok {
 				dir.InvalidRefs = append(dir.InvalidRefs, InvalidRef{Namespace: row.Namespace, GroupName: row.GroupName, Kind: "binding"})
 			}
@@ -130,8 +119,6 @@ func ListGroupDirectory() (GroupDirectory, error) {
 		mapped[row.GroupName] = true
 		entry := GroupEntry{GroupName: row.GroupName, Namespace: row.Namespace, Generation: row.Generation}
 		switch gb, bound := bindings[row.Namespace]; {
-		case bypassed[row.Namespace]:
-			entry.Bypassed, entry.BindingSource = true, "bypass"
 		case exempt[row.Namespace]:
 			entry.Exempt, entry.BindingSource = true, "exempt"
 		case bound:
@@ -344,9 +331,6 @@ func validateProvider(in ProviderInput) []*common.Message {
 	if len([]rune(in.Model)) > 120 {
 		problems = append(problems, common.NewMessage("{{field}} allows at most {{max}} characters", map[string]any{"field": "model", "max": 120}))
 	}
-	if in.ProviderType == "openai" && in.Model != "" && !strings.HasPrefix(in.Model, "omni-moderation-") {
-		problems = append(problems, common.NewMessage("OpenAI Moderation requires an omni-moderation model"))
-	}
 	if in.Proxy != "" {
 		_, err := common.ParseProxyURLStrict(in.Proxy)
 		if len(in.Proxy) > 255 || err != nil {
@@ -463,10 +447,8 @@ func StageStates(policy *CompiledPolicy, providers map[int]ProviderConfig) map[s
 		}
 	}
 	return map[string]string{
-		LayerDistill:   state(p.Distill.Enabled),
-		LayerHardRegex: state(p.HardRegex.Enabled),
-		LayerRefusal:   state(p.Refusal.Enabled),
-		LayerModel:     modelState,
+		LayerKeyword: state(p.HardRegex.Enabled || p.Distill.Enabled),
+		LayerModel:   modelState,
 	}
 }
 
@@ -494,6 +476,7 @@ type Overview struct {
 	Passes         []CounterRow             `json:"passes"`
 	Keywords       []model.RiskKeywordCount `json:"keywords"`
 	Stages         map[string]string        `json:"stages"`
+	PendingReviews int64                    `json:"pending_reviews"`
 	InvalidRefs    int                      `json:"invalid_refs"`
 	CoveredRoutes  []string                 `json:"covered_routes"`
 	Uncovered      []string                 `json:"uncovered_routes"`
@@ -502,7 +485,7 @@ type Overview struct {
 func BuildOverview(start, end int64, groupName string) (Overview, error) {
 	groupName = strings.TrimSpace(groupName)
 	ov := Overview{Start: start, End: end, Outcomes: map[string]int64{}, Blocks: []CounterRow{}, Passes: []CounterRow{}, CoveredRoutes: CoveredRoutes, Uncovered: UncoveredRoutes,
-		Stages: map[string]string{LayerDistill: "off", LayerHardRegex: "off", LayerRefusal: "off", LayerModel: "off"}}
+		Stages: map[string]string{LayerKeyword: "off", LayerModel: "off"}}
 	if snap := current.Load(); snap != nil {
 		ov.Enabled, ov.Available, ov.ConfigRevision = snap.Enabled, snap.Available, snap.ConfigRevision
 		ov.Fresh = snap.Fresh(time.Now())
@@ -510,13 +493,8 @@ func BuildOverview(start, end int64, groupName string) (Overview, error) {
 		ov.InvalidRefs = len(snap.InvalidRefs)
 		if snap.Enabled {
 			binding := snap.Default
-			bypassed := groupName != "auto" && IsBypassed(snap.Scope, groupName, false)
 			exempt := groupName != "auto" && IsExempt(snap.Scope, groupName, false)
 			switch {
-			case bypassed:
-				for layer := range ov.Stages {
-					ov.Stages[layer] = "bypass"
-				}
 			case exempt:
 				for layer := range ov.Stages {
 					ov.Stages[layer] = "exempt"
@@ -538,11 +516,7 @@ func BuildOverview(start, end int64, groupName string) (Overview, error) {
 	blocks := map[string]*CounterRow{}
 	passes := map[string]*CounterRow{}
 	for _, r := range rows {
-		// Upstream learning is a later observation of an already counted
-		// attempt, not another outgoing request.
-		if r.Layer != LayerUpstream {
-			ov.Attempts += r.Hits
-		}
+		ov.Attempts += r.Hits
 		if r.IsFirst == 1 {
 			ov.Requests += r.Hits
 		}
@@ -550,7 +524,7 @@ func BuildOverview(start, end int64, groupName string) (Overview, error) {
 		key := r.Outcome + "|" + r.Layer + "|" + r.Reason
 		bucket := passes
 		switch r.Outcome {
-		case OutcomeBlock, OutcomeWouldBlock, OutcomeErrorBlock, OutcomeUpstreamRefusal, OutcomeWouldStop:
+		case OutcomeBlock, OutcomeWouldBlock, OutcomeErrorBlock:
 			bucket = blocks
 		}
 		if row, ok := bucket[key]; ok {
@@ -575,7 +549,10 @@ func BuildOverview(start, end int64, groupName string) (Overview, error) {
 	}
 	sort.Slice(ov.Blocks, byCount(ov.Blocks))
 	sort.Slice(ov.Passes, byCount(ov.Passes))
-	ov.Keywords, err = model.TopRiskKeywords(start, end, groupName, 20)
+	if ov.Keywords, err = model.TopRiskKeywords(start, end, groupName, 20); err != nil {
+		return ov, err
+	}
+	ov.PendingReviews, err = model.CountPendingRiskViolations()
 	return ov, err
 }
 
@@ -586,31 +563,30 @@ type PreviewRequest struct {
 	PolicyKey      string `json:"policy_key"`
 	PolicyRevision int    `json:"policy_revision"`
 	Mode           string `json:"mode"`
-	UserID         int    `json:"user_id"`
-	TokenID        int    `json:"token_id"`
 	Body           string `json:"body"`
 	RunModel       bool   `json:"run_model"`
 }
 
-// PreviewResult reports the scope decision and the layer outcome.
+// PreviewResult reports the scope decision, the outcome and the points a
+// violation would cost.
 type PreviewResult struct {
 	Enabled        bool     `json:"enabled"`
 	Audited        bool     `json:"audited"`
 	Exempt         bool     `json:"exempt"`
-	Bypassed       bool     `json:"bypassed"`
 	Namespace      string   `json:"namespace"`
 	BindingSource  string   `json:"binding_source"`
 	PolicyKey      string   `json:"policy_key"`
 	PolicyRevision int      `json:"policy_revision"`
 	Mode           string   `json:"mode"`
 	ModelRun       bool     `json:"model_run"`
+	Deduction      int      `json:"deduction"`
 	Decision       Decision `json:"decision"`
 }
 
 var ErrSnapshotNotLoaded = errors.New("risk configuration is not loaded")
 
-// Preview evaluates a sample without writing records, blocking subjects,
-// using the verdict cache or touching shared key scheduling state.
+// Preview evaluates a sample without writing records or using the verdict
+// cache.
 func Preview(ctx context.Context, req PreviewRequest) (PreviewResult, error) {
 	snap := current.Load()
 	if snap == nil {
@@ -623,11 +599,6 @@ func Preview(ctx context.Context, req PreviewRequest) (PreviewResult, error) {
 	}
 	res := PreviewResult{Enabled: snap.Enabled, Namespace: namespace}
 	if !snap.Enabled {
-		return res, nil
-	}
-	if IsBypassed(snap.Scope, group, req.ViaAuto) {
-		res.Bypassed = true
-		res.BindingSource = "bypass"
 		return res, nil
 	}
 	if IsExempt(snap.Scope, group, req.ViaAuto) {
@@ -656,21 +627,20 @@ func Preview(ctx context.Context, req PreviewRequest) (PreviewResult, error) {
 	if err != nil {
 		return res, fmt.Errorf("body must be a JSON request: %w", err)
 	}
-	attempt := AttemptContext{Namespace: namespace, UserID: req.UserID, TokenID: req.TokenID, RequestID: "preview:" + input.ContextDigest, EffectiveGroup: group, ViaAuto: req.ViaAuto, Model: input.Model}
 	ev := evaluation{
-		snapshot: snap, binding: binding, attempt: attempt, input: input,
-		store: readOnlyStore{Store: defaultStore},
+		snapshot: snap, binding: binding, input: input, model: input.Model,
 		classifier: func(cfg ProviderConfig) Classifier {
-			// This factory is reached only immediately before Classify. Local
-			// blocks, skips and incomplete coverage never count as a model run.
 			res.ModelRun = true
 			return newProviderRuntime(cfg)
 		},
-		useCache: false, runModel: req.RunModel, now: time.Now(),
+		runModel: req.RunModel,
 	}
 	started := time.Now()
 	d := evaluate(ctx, ev)
 	d.LatencyMS = time.Since(started).Milliseconds()
 	res.Decision = applyMode(d, binding.Mode)
+	if d.Violates() && binding.Mode == ModeEnforce {
+		res.Deduction = snap.Score.Deduction(d.Category)
+	}
 	return res, nil
 }

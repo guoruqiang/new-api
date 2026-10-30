@@ -18,10 +18,11 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { z } from 'zod'
 
+import { POLICY_SECTIONS, VIEWS } from '../constants'
+
 export const riskSearchSchema = z.object({
-  view: z
-    .enum(['all', 'distill', 'hard_regex', 'refusal', 'model', 'pass'])
-    .catch('all'),
+  view: z.enum(VIEWS).catch('overview'),
+  section: z.enum(POLICY_SECTIONS).catch('distill'),
   group: z.string().catch(''),
 })
 const bindingSchema = z.object({
@@ -29,26 +30,33 @@ const bindingSchema = z.object({
   policy_revision: z.number().int().positive(),
   mode: z.enum(['observe', 'enforce']),
 })
+const points = z.number().int().min(1).max(100)
 export const configSchema = z
   .object({
     enabled: z.boolean(),
     exempt_namespaces: z.array(z.string()),
-    bypass_namespaces: z.array(z.string()),
     default_binding: bindingSchema,
     group_bindings: z.array(bindingSchema.extend({ namespace: z.string() })),
     retention: z.object({
       events_days: z.number().int().min(1).max(3650),
       counters_days: z.number().int().min(1).max(3650),
+      violations_days: z.number().int().min(1).max(3650),
+    }),
+    score: z.object({
+      auto_ban: z.boolean(),
+      email_notify: z.boolean(),
+      default: points,
+      deductions: z.record(z.string(), points),
     }),
   })
   .superRefine((value, ctx) => {
-    const skipped = [...value.exempt_namespaces, ...value.bypass_namespaces]
+    const exempt = value.exempt_namespaces
     if (
-      skipped.includes('auto') ||
-      new Set(skipped).size !== skipped.length ||
+      exempt.includes('auto') ||
+      new Set(exempt).size !== exempt.length ||
       new Set(value.group_bindings.map((b) => b.namespace)).size !==
         value.group_bindings.length ||
-      value.group_bindings.some((b) => skipped.includes(b.namespace))
+      value.group_bindings.some((b) => exempt.includes(b.namespace))
     ) {
       ctx.addIssue({ code: 'custom', message: 'Invalid risk audit settings' })
     }
@@ -76,10 +84,6 @@ export const policySchema = z
       enabled: z.boolean(),
       skip_official: z.boolean(),
       skip_gpt_models: z.boolean(),
-      error: z.object({
-        status: z.number().int().min(400).max(599),
-        message: unicodeText(200),
-      }),
       structure: z.object({
         min_max_tokens: z.number().int().positive(),
         require_no_tools: z.boolean(),
@@ -101,66 +105,26 @@ export const policySchema = z
             category: z.string().min(1),
             source: unicodeText(400).min(1),
             enabled: z.boolean(),
-            action: z.enum(['block', 'review', 'signal']).optional(),
           })
         )
         .max(60)
         .nullable(),
       patterns: listSchema.max(50),
     }),
-    refusal: z.object({
-      enabled: z.boolean(),
-      similarity_enabled: z.boolean(),
-      similarity: z.union([
-        z.literal(80),
-        z.literal(85),
-        z.literal(90),
-        z.literal(95),
-      ]),
-      subject_block_enabled: z.boolean(),
-      block_subject: z.enum(['user', 'user_device']),
-      block_ttl_minutes: z.number().int().min(0).max(525600),
-      block_after_hits: z.number().int().min(1).max(20),
-      block_window_minutes: z.number().int().min(1).max(1440),
-      memory_ttl_days: z.number().int().min(0).max(3650),
-      max_similar_candidates: z.number().int().min(1).max(10000),
-    }),
     model: z.object({
       enabled: z.boolean(),
       provider_id: z.number().int().nonnegative(),
       model: z.string(),
       questions: z.array(questionSchema).max(24).nullable(),
-      custom_instruction: unicodeText(500),
       threshold: z.number().min(0).max(1),
-      auto_confirm_threshold: z.number().min(0).max(1),
-      near_miss_band: z.number().min(0).max(1),
       fail_action: z.enum(['pass', 'block']),
       budget_ms: z.number().int().min(200).max(8000),
       max_attempts: z.number().int().min(1).max(10),
       dedup_sec: z.number().int().min(0).max(3600),
       max_audit_chars: z.number().int().min(256).max(64000),
     }),
-    behavior: z.object({
-      enabled: z.boolean(),
-      auto_confirm_enabled: z.boolean(),
-      auto_block_enabled: z.boolean(),
-      block_ttl_minutes: z.number().int().min(1).max(1440),
-    }),
-    evidence: z.object({
-      store_preview: z.boolean(),
-      store_review_evidence: z.boolean(),
-    }),
   })
-
   .superRefine((value, ctx) => {
-    if (value.model.auto_confirm_threshold > value.model.threshold) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['model', 'auto_confirm_threshold'],
-        message:
-          'Automatic confirmation threshold must not exceed the safety threshold.',
-      })
-    }
     const questions = value.model.questions ?? []
     if (
       new Set(questions.map((q) => q.id)).size !== questions.length ||
@@ -181,22 +145,8 @@ export const policySchema = z
     }
   })
 
-export const reviewResolveSchema = z.object({
-  ttl_minutes: z.number().int().min(0).max(1440).optional(),
-  category: z.enum([
-    'nsfw',
-    'jailbreak',
-    'reverse',
-    'pentest',
-    'cyber',
-    'distill',
-    'custom',
-    'safety',
-    'crack',
-  ]),
-  note: z
-    .string()
-    .trim()
-    .min(1)
-    .refine((text) => [...text].length <= 500),
-})
+export const violationNoteSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((text) => [...text].length <= 500)

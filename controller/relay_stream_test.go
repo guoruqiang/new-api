@@ -190,7 +190,7 @@ func TestRelayKeepAliveRiskRejection(t *testing.T) {
 	setupRiskManagementTest(t)
 	require.NoError(t, i18n.Init())
 	payload := risk.DefaultPolicyPayload()
-	payload.Distill.Enabled, payload.Refusal.Enabled, payload.Model.Enabled = false, false, false
+	payload.Distill.Enabled, payload.Model.Enabled = false, false
 	payload.HardRegex.Rules = []risk.HardRule{{Category: "custom", Source: "riskblock", Enabled: true}}
 	installRelayRiskPolicy(t, payload, risk.ModeEnforce, false)
 

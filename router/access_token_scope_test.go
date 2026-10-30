@@ -102,15 +102,10 @@ var accessTokenHelperRoutes = map[string]authz.Permission{
 	"PUT /api/risk/providers/:id":                     authz.RiskWrite,
 	"GET /api/risk/events":                            authz.RiskRead,
 	"GET /api/risk/events/:id":                        authz.RiskRead,
-	"GET /api/risk/reviews":                           authz.RiskRead,
-	"GET /api/risk/reviews/:id":                       authz.RiskRead,
-	"POST /api/risk/reviews/:id/resolve":              authz.RiskWrite,
-	"GET /api/risk/refusals":                          authz.RiskRead,
-	"DELETE /api/risk/refusals/:id":                   authz.RiskWrite,
-	"POST /api/risk/refusals/clear":                   authz.RiskWrite,
-	"GET /api/risk/blocks":                            authz.RiskRead,
-	"POST /api/risk/blocks/:id/release":               authz.RiskUnblock,
-	"POST /api/risk/blocks/clear":                     authz.RiskUnblock,
+	"GET /api/risk/violations":                        authz.RiskRead,
+	"GET /api/risk/violations/:id":                    authz.RiskRead,
+	"POST /api/risk/violations/:id/resolve":           authz.RiskWrite,
+	"POST /api/risk/users/:id/ban":                    authz.RiskUnblock,
 	"POST /api/risk/preview":                          authz.RiskWrite,
 	"POST /api/risk/providers/models":                 authz.RiskWrite,
 }
@@ -210,7 +205,7 @@ func TestRiskRoutesRequireAccountPermissionAndScopedLiveToken(t *testing.T) {
 	assert.Equal(t, http.StatusOK, request(http.MethodGet, "/api/risk/defaults", adminRead, "").Code)
 	require.NoError(t, authz.SetUserPermissions(admin.Id, authz.PermissionsMap{authz.ResourceRisk: {authz.ActionRead: false}}))
 	assert.Equal(t, http.StatusForbidden, request(http.MethodGet, "/api/risk/defaults", adminRead, "").Code, "token scope cannot retain revoked account permission")
-	assert.Equal(t, http.StatusForbidden, request(http.MethodPost, "/api/risk/blocks/clear", rootWrite, "{}").Code, "configuration permission does not release blocks")
+	assert.Equal(t, http.StatusForbidden, request(http.MethodPost, "/api/risk/users/1/ban", rootWrite, `{"action":"ban","note":"x"}`).Code, "configuration permission does not ban accounts")
 	assert.Equal(t, http.StatusForbidden, request(http.MethodPut, "/api/risk/config", rootUnblock, "{}").Code, "unblock permission does not publish configuration")
 	now := time.Now().Unix()
 	session := &model.UserSession{
@@ -226,67 +221,25 @@ func TestRiskRoutesRequireAccountPermissionAndScopedLiveToken(t *testing.T) {
 		status      int
 	}{
 		{"root PAT needs unblock scope", rootWrite, false, http.StatusForbidden},
-		{"unblock scope alone cannot write review", rootUnblock, false, http.StatusForbidden},
-		{"root PAT with both scopes", rootWriteUnblock, false, http.StatusOK},
+		{"root PAT with unblock scope", rootUnblock, false, http.StatusOK},
 		{"admin PAT also needs account unblock", adminWriteUnblock, false, http.StatusForbidden},
 		{"admin PAT with both grants", adminWriteUnblock, true, http.StatusOK},
-		{"admin PAT loses revoked account permission", adminWriteUnblock, false, http.StatusForbidden},
 		{"browser session needs account unblock", sessionToken, false, http.StatusForbidden},
-		{"browser session with both grants", sessionToken, true, http.StatusOK},
+		{"browser session with the grant", sessionToken, true, http.StatusOK},
 		{"browser session loses revoked account permission", sessionToken, false, http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			require.NoError(t, authz.SetUserPermissions(admin.Id, authz.PermissionsMap{authz.ResourceRisk: {authz.ActionWrite: true, authz.ActionUnblock: tc.unblock}}))
-			row := &model.RiskReview{
-				RequestKey: "revoke-permission-" + strconv.Itoa(i), RequestId: "revoke-permission-" + strconv.Itoa(i),
-				Namespace: "scope-review", UserId: 100 + i, TokenId: 300 + i, CreatedAt: now, Mode: risk.ModeEnforce,
-				Status: model.RiskReviewConfirmed, Revision: 2, Category: "nsfw", Points: 3, History: "[]", Evidence: "review evidence",
-			}
-			require.NoError(t, db.Create(row).Error)
-			require.NoError(t, db.Model(row).Update("block_review_ids", "["+strconv.Itoa(row.Id)+"]").Error)
-			block := &model.RiskSubjectBlock{
-				Namespace: row.Namespace, UserId: row.UserId, SubjectType: "token", SubjectValue: strconv.Itoa(row.TokenId),
-				Reason: "behavior_score", SourceRequestId: "risk-review:" + strconv.Itoa(row.Id), ExpiresAt: now + 3600,
-			}
-			require.NoError(t, db.Create(block).Error)
-			response := request(http.MethodPost, "/api/risk/reviews/"+strconv.Itoa(row.Id)+"/resolve", tc.token, `{"revision":2,"action":"revoke","note":"false positive"}`)
+			target := &model.User{Username: "risk-target-" + strconv.Itoa(i), Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", AffCode: "risk-target-" + strconv.Itoa(i), AuthVersion: 1}
+			require.NoError(t, db.Create(target).Error)
+			response := request(http.MethodPost, "/api/risk/users/"+strconv.Itoa(target.Id)+"/ban", tc.token, `{"action":"ban","note":"Human reviewed the original request"}`)
 			require.Equal(t, tc.status, response.Code, response.Body.String())
-			require.NoError(t, db.First(row, row.Id).Error)
-			require.NoError(t, db.First(block, block.Id).Error)
+			require.NoError(t, db.First(target, target.Id).Error)
 			if tc.status == http.StatusOK {
 				assert.Contains(t, response.Body.String(), `"success":true`)
-				assert.Equal(t, model.RiskReviewRevoked, row.Status)
-				assert.Equal(t, 3, row.Revision)
-				assert.Positive(t, block.ReleasedAt)
+				assert.Equal(t, common.UserStatusDisabled, target.Status)
 			} else {
-				assert.Equal(t, model.RiskReviewConfirmed, row.Status)
-				assert.Equal(t, 2, row.Revision)
-				assert.Zero(t, block.ReleasedAt, "denied revocation must not release the restriction")
-			}
-		})
-	}
-
-	for i, tc := range []struct {
-		name, credential string
-		status           int
-	}{
-		{"ban requires unblock scope", rootWrite, http.StatusForbidden},
-		{"ban with both scopes", rootWriteUnblock, http.StatusOK},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			row := &model.RiskReview{RequestKey: "ban-permission-" + strconv.Itoa(i), RequestId: "ban-permission-" + strconv.Itoa(i),
-				Namespace: "scope-review", UserId: 200 + i, TokenId: 500 + i, CreatedAt: now, Mode: risk.ModeEnforce,
-				Status: model.RiskReviewPending, Revision: 1, Category: "nsfw", History: "[]", Evidence: "review evidence", OriginalRequest: "original request"}
-			require.NoError(t, db.Create(row).Error)
-			response := request(http.MethodPost, "/api/risk/reviews/"+strconv.Itoa(row.Id)+"/resolve", tc.credential, `{"revision":1,"action":"ban","category":"nsfw","ttl_minutes":0,"note":"Human reviewed the original request"}`)
-			require.Equal(t, tc.status, response.Code, response.Body.String())
-			block, err := model.GetActiveRiskTokenBlock(row.UserId, row.TokenId, now)
-			require.NoError(t, err)
-			if tc.status == http.StatusOK {
-				require.NotNil(t, block)
-				assert.Zero(t, block.ExpiresAt)
-			} else {
-				assert.Nil(t, block)
+				assert.Equal(t, common.UserStatusEnabled, target.Status, "a denied ban must not disable the account")
 			}
 		})
 	}

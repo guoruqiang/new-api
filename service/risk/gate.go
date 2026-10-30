@@ -1,12 +1,10 @@
 package risk
 
 import (
-	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -23,7 +21,6 @@ import (
 )
 
 const ReasonGPTSkipped = "gpt_skipped"
-const ReasonStoreUnavailable = "store_unavailable"
 
 // AttemptInput describes one attempt from the relay call site.
 type AttemptInput struct {
@@ -38,13 +35,6 @@ type AttemptInput struct {
 
 const requestStateKey = "risk_request_state"
 
-type auditedAttempt struct {
-	attempt        AttemptContext
-	binding        ResolvedBinding
-	input          *Input
-	configRevision int64
-}
-
 // requestState is per gin context: one HTTP request or one WebSocket
 // response.create.
 type requestState struct {
@@ -58,123 +48,36 @@ type requestState struct {
 	firstDone    bool
 	firstGroup   string
 	firstErr     *types.NewAPIError
-	last         *auditedAttempt
-	learned      map[int]bool
 }
 
 func requestStateFor(c *gin.Context) *requestState {
 	if value, ok := c.Get(requestStateKey); ok {
 		return value.(*requestState)
 	}
-	st := &requestState{reuse: map[string]Decision{}, learned: map[int]bool{}}
+	st := &requestState{reuse: map[string]Decision{}}
 	c.Set(requestStateKey, st)
 	return st
 }
 
-func existingRequestState(c *gin.Context) *requestState {
-	if c == nil {
-		return nil
-	}
-	if value, ok := c.Get(requestStateKey); ok {
-		return value.(*requestState)
-	}
-	return nil
-}
-
 var classifierFor = func(cfg ProviderConfig) Classifier { return runtimeFor(cfg) }
-
-var attemptTime = time.Now
 
 type evaluation struct {
 	snapshot   *Snapshot
 	binding    ResolvedBinding
-	attempt    AttemptContext
 	input      *Input
-	store      Store
+	model      string
 	classifier func(ProviderConfig) Classifier
 	useCache   bool
 	runModel   bool
-	now        time.Time
 }
 
-func hashDevice(id string) string {
-	sum := sha256.Sum256([]byte(id))
-	return hex.EncodeToString(sum[:])
-}
-
-func blockDecision(base Decision, layer, reason, category, keyword, rule string) Decision {
-	d := base
-	d.Outcome = OutcomeBlock
-	d.Layer = layer
-	d.Reason = reason
-	d.Category = category
-	d.Keyword = truncateRunes(keyword, 40)
-	d.Rule = truncateRunes(rule, 120)
-	d.BanSubject = false
-	return d
-}
-
-func failureDecision(base Decision, payload PolicyPayload, layer, reason, detail string) Decision {
-	d := base
-	d.Layer = layer
-	d.Keyword = truncateRunes(detail, 40)
-	if reason == ReasonCoverageIncomplete || reason == ReasonProviderUnsupported {
-		d.Coverage = CoverageIncomplete
-	}
-	if payload.Model.FailAction == FailActionBlock {
-		d.Outcome = OutcomeErrorBlock
-		d.Reason = reason
-		return d
-	}
-	d.Outcome = OutcomeErrorPass
-	d.Reason = ReasonFailOpen
-	if reason == ReasonCoverageIncomplete {
-		d.Reason = ReasonCoverageIncompletePass
-	}
-	if reason == ReasonProviderUnsupported {
-		d.Reason = ReasonProviderUnsupported
-	}
-	return d
-}
-
-func storeFailure(base Decision, err error) Decision {
-	d := base
-	d.Outcome = OutcomeErrorBlock
-	d.Layer = LayerRefusal
-	d.Reason = ReasonStoreUnavailable
-	d.Keyword = truncateRunes(err.Error(), 40)
-	return d
-}
-
-func verdictKey(ev evaluation, provider ProviderConfig, modelName, document string) string {
-	p := ev.binding.Policy.Payload.Model
-	asked := make([]string, 0, len(ev.binding.Policy.asked))
-	for _, q := range ev.binding.Policy.asked {
-		asked = append(asked, q.id+"="+q.instructions)
-	}
-	encoded, _ := common.Marshal(struct {
-		Revision   int64    `json:"revision"`
-		Namespace  string   `json:"ns"`
-		User       int      `json:"u"`
-		Token      int      `json:"token"`
-		Provider   string   `json:"p"`
-		Model      string   `json:"m"`
-		Questions  []string `json:"q"`
-		Threshold  float64  `json:"t"`
-		Band       float64  `json:"b"`
-		Preprocess string   `json:"pp"`
-		Document   string   `json:"d"`
-		Context    string   `json:"context"`
-		Policy     string   `json:"policy"`
-	}{
-		ev.snapshot.ChangeRevision,
-		ev.attempt.Namespace, ev.attempt.UserID, ev.attempt.TokenID,
+// verdictKey identifies one model judgment: the same document under the same
+// policy, endpoint and model always gets the same verdict.
+func verdictKey(policy *CompiledPolicy, provider ProviderConfig, modelName, document string) string {
+	encoded, _ := common.Marshal([]string{
+		policy.Fingerprint,
 		providerFingerprint(ProviderConfig{Type: provider.Type, BaseURL: provider.BaseURL, KeyLines: endpointLines(provider)}),
-		modelName, asked, p.Threshold, p.NearMissBand,
-		fmt.Sprintf("%d:%d:%t:%t", model.RiskJudgmentVersion, PreprocessVersion, ev.binding.Policy.Payload.HardRegex.StripReminders, ev.binding.Policy.Payload.HardRegex.ExpandBase64),
-		document,
-		ev.input.ContextDigest,
-		ev.binding.Policy.Fingerprint,
+		modelName, document,
 	})
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])
@@ -192,374 +95,88 @@ func endpointLines(cfg ProviderConfig) []string {
 	return lines
 }
 
-// evaluate runs the four layers in vm2api's order and stops at the first
-// hit. It may populate the model cache; commit applies persistent side effects.
-func evaluate(ctx context.Context, ev evaluation) (d Decision) {
+// evaluate scans the system and latest user text for keywords. Without a hit
+// the request passes untouched; with one, the decision model judges it.
+func evaluate(ctx context.Context, ev evaluation) Decision {
 	p := ev.binding.Policy
 	payload := p.Payload
-	in := ev.input
-	now := ev.now.Unix()
-	d = Decision{
-		Outcome: OutcomePass, Layer: LayerGate, Coverage: CoverageComplete,
+	d := Decision{
+		Outcome: OutcomePass, Layer: LayerGate,
 		PolicyKey: p.Key, PolicyRevision: p.Revision, ConfigRevision: ev.snapshot.ConfigRevision,
 	}
-	defer func() {
-		// Passing, unconfirmed and failed audits retain metadata only. Even
-		// a matched keyword can contain user text, so do not persist it.
-		if d.Outcome != OutcomeBlock || d.Layer != LayerModel && d.Layer != LayerHardRegex && d.Layer != LayerDistill {
-			d.Preview, d.ReviewEvidence, d.Keyword = "", "", ""
-		}
-	}()
-	if payload.Evidence.StorePreview {
-		d.Preview = in.Preview()
-	}
-	if in.HasMedia || in.RefsHistory || in.PromptTokenOnly || in.Truncated {
-		d.Coverage = CoverageIncomplete
-	}
-	gpt := IsGPTSeriesModel(ev.attempt.Model)
+	gpt := IsGPTSeriesModel(ev.model)
 	if payload.SkipGPTModels && gpt {
 		d.Reason = ReasonGPTSkipped
 		return d
 	}
-	d.Fingerprint = Fingerprint(in)
-
-	var review *hardHit
-	distillSignaled := false
-	points, screeningReason := 0, ""
-	currentDoc, userIncomplete := in.CurrentUserDocument(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64)
-	contextDoc, contextIncomplete := in.ContextDocument(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64)
-	contextDoc, _ = tailRunes(contextDoc, 16000)
-	distillInput := *in
-	distillInput.LatestUser = currentDoc
-	distillInput.Systems = []string{contextDoc}
-	for _, hit := range detectDistill(&distillInput, p) {
-		distillSignaled = true
-		if hit.Review != nil {
-			if review == nil {
-				review = hit.Review
-				points, screeningReason = 1, "distill_signal"
-			}
-			continue
-		}
-		points, screeningReason = 1, "distill_signal"
-	}
-
-	ruleIncomplete := userIncomplete || contextIncomplete
-	if ruleIncomplete {
-		d.Coverage = CoverageIncomplete
-	}
+	texts := ev.input.auditTexts(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64)
+	scan := texts.scan()
 	allow := func(category string) bool {
 		if category == "distill" {
 			return payload.Distill.Enabled && !(payload.Distill.SkipGPTModels && gpt)
 		}
 		return payload.HardRegex.Enabled
 	}
-	scanned := slices.ContainsFunc(p.hardRules, func(r compiledRule) bool { return allow(r.category) })
-	// Legacy block-tier rules are signals too. Only the decision model may
-	// establish a content violation.
-	if hit, ok := matchHardRules(currentDoc, p.hardRules, allow); ok {
-		review = &hit
-		points, screeningReason = 3, "user_rule"
+	hit, ok := matchRules(scan, p.rules, allow)
+	if !ok {
+		hit, ok = detectDistill(ev.input, p, scan)
 	}
-	if review == nil {
-		if hit, ok := matchHardRules(contextDoc, p.hardRules, allow); ok {
-			review = &hit
-			points, screeningReason = 1, "context_rule"
-		}
+	if !ok {
+		d.Reason = ReasonNoHit
+		return d
 	}
-	var signal *hardHit
-	if hit, ok := matchHardRules(currentDoc, p.signalRules, allow); ok {
-		signal = &hit
-		if points == 0 {
-			points, screeningReason = 1, "keyword"
-		}
-	}
-
-	if cfg := payload.Refusal; cfg.Enabled {
-		ns := ev.attempt.Namespace
-
-		rec, err := ev.store.ExactRefusal(ns, ev.attempt.UserID, d.Fingerprint, now)
-		if err != nil {
-			return storeFailure(d, err)
-		}
-		if rec != nil {
-			d.RefusalID, d.Reviewed = rec.Id, true
-			if points == 0 {
-				points, screeningReason = 1, "exact_refusal"
-			}
-		}
-		if cfg.SimilarityEnabled {
-			if sig := Signature(in.SimilarityDocument()); sig != nil {
-				d.Signature = EncodeSignature(sig)
-				candidates, err := ev.store.RefusalCandidates(ns, ev.attempt.UserID, strings.ToLower(strings.TrimSpace(in.Model)), cfg.MaxSimilarCandidates, now)
-				if err != nil {
-					return storeFailure(d, err)
-				}
-				best, bestID := 0.0, 0
-				for _, cand := range candidates {
-					if score := Similarity(sig, DecodeSignature(cand.Signature)); score > best {
-						best, bestID = score, cand.Id
-					}
-				}
-				if bestID > 0 && best >= float64(cfg.Similarity)/100 {
-					// Similarity is a review signal, not evidence that the new
-					// request shares the earlier refusal's intent.
-					d.Similarity = best
-					d.Reviewed = true
-					if points == 0 {
-						points, screeningReason = 1, "similar_refusal"
-					}
-				}
-			}
-		}
-	}
+	d.Layer, d.Category, d.Keyword, d.Rule = LayerKeyword, hit.Category, hit.Keyword, hit.Rule
 
 	m := payload.Model
-	d.ScreeningScore, d.ScreeningReason = points, screeningReason
-	if review != nil {
-		d.Layer, d.Category, d.Keyword, d.Rule, d.Reviewed = LayerHardRegex, review.Category, review.Keyword, review.Rule, true
-		if review.Category == "distill" {
-			d.Layer = LayerDistill
-		}
-	}
-	if !m.Enabled || !ev.runModel {
-		switch {
-		case d.Reviewed:
-			d.Reason = ReasonRuleUnconfirmed
-		case scanned:
-			d.Reason = ReasonRegexMiss
-		default:
-			d.Reason = ReasonUnchecked
-		}
+	provider, configured := ev.snapshot.Providers[m.ProviderID]
+	if !m.Enabled || !ev.runModel || !configured {
+		d.Reason = ReasonModelDisabled
 		return d
 	}
-	if points == 0 {
-		d.Reason = ReasonModelNotTriggered
-		return d
-	}
-	if signal != nil && review == nil {
-		d.Category = signal.Category
-	}
-	d.ModelTriggered = true
-	provider, ok := ev.snapshot.Providers[m.ProviderID]
-	if !ok || provider.BaseURL == "" && len(endpointLines(provider)) == 0 {
-		return failureDecision(d, payload, LayerModel, ReasonUnavailable, "no provider")
-	}
-	documents, tailWindow, docIncomplete, reviewCovered := in.ModelDocuments(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64, m.MaxAuditChars, review)
 	moderation := provider.Type == "openai"
-	moderationUncovered := false
-	if moderation {
-		// Moderation classifies content, not instructions or labelled dialogue.
-		// Sending assistant/tool history would attribute their content to the
-		// current user. Its fixed categories also cannot clear arbitrary rules.
-		moderationUncovered = distillSignaled || d.RefusalID > 0 || d.Similarity > 0
-		currentSignal := false
-		for _, rules := range [][]compiledRule{p.hardRules, p.signalRules} {
-			for _, rule := range rules {
-				if !allow(rule.category) {
-					continue
-				}
-				if rule.re.MatchString(currentDoc) {
-					currentSignal = true
-					moderationUncovered = moderationUncovered || rule.category != "nsfw"
-				}
-			}
-		}
-		if _, contextHit := matchHardRules(contextDoc, p.hardRules, allow); contextHit {
-			moderationUncovered = true
-		}
-		text, clipped := tailRunes(currentDoc, m.MaxAuditChars)
-		documents = nil
-		if text != "" {
-			documents = []string{text}
-		}
-		// Dropping old history does not mean that the current text was cut.
-		// This provider deliberately does not claim to moderate that history.
-		d.Coverage = CoverageComplete
-		ruleIncomplete = userIncomplete
-		tailWindow, docIncomplete, reviewCovered = false, userIncomplete || clipped || in.currentUserTruncated, currentSignal
-		incidentHash := sha256.Sum256([]byte("openai-moderation-current-user\x00" + currentDoc))
-		d.ModerationIncidentKey = hex.EncodeToString(incidentHash[:])
-	}
-	if payload.Evidence.StoreReviewEvidence {
-		d.ReviewEvidence = strings.Join(documents, "\n\n--- audit document ---\n\n")
-	}
-	if ruleIncomplete || docIncomplete || in.HasMedia || in.RefsHistory || in.PromptTokenOnly {
-		d.Coverage = CoverageIncomplete
-	} else if tailWindow && len(documents) > 0 {
-		d.Coverage = CoverageTailWindow
-	}
-	if len(documents) == 0 {
-		if moderation {
-			return failureDecision(d, payload, LayerModel, ReasonProviderUnsupported, "no current user text to moderate")
-		}
-		d.Reason = ReasonUnchecked
-		if review != nil {
-			d.Reason = ReasonRuleUnconfirmed
+	modelName := provider.ResolvedModel(m.Model)
+	d.Layer, d.ProviderModel = LayerModel, modelName
+	result, err := classify(ctx, ev, provider, modelName, texts.modelDocument(m.MaxAuditChars, hit, moderation))
+	if err != nil {
+		d.Outcome, d.Reason = OutcomeErrorPass, ReasonUnavailable
+		if m.FailAction == FailActionBlock {
+			d.Outcome = OutcomeErrorBlock
 		}
 		return d
 	}
-	modelName := provider.ResolvedModel(m.Model)
-	d.ProviderModel = modelName
-	var failure error
-	merged := map[string]float64{}
-	flaggedScores := map[string]float64{}
-	allCached := true
-	freshJudgments := true
-	for _, v := range classifyDocuments(ctx, ev, provider, modelName, documents) {
-		if v.err != nil {
-			if failure == nil {
-				failure = v.err
-			}
-			allCached = false
-			continue
-		}
-		allCached = allCached && v.cached
-		freshJudgments = freshJudgments && !v.cached
-		if v.model != "" {
-			d.ProviderModel = v.model
-		}
-		for id, score := range v.scores {
-			if current, seen := merged[id]; !seen || score < current {
-				merged[id] = score
-			}
-			if v.flags[id] {
-				if current, seen := flaggedScores[id]; !seen || score < current {
-					flaggedScores[id] = score
-				}
-			}
-		}
+	if result.Model != "" {
+		d.ProviderModel = result.Model
 	}
-	d.Scores = merged
-	hits := judgeScores(merged, p.asked, m.Threshold, m.NearMissBand)
-	if moderation {
-		hits = nil
-		for category, score := range flaggedScores {
-			hits = append(hits, modelHit{category: category, score: score})
-		}
-		slices.SortFunc(hits, func(a, b modelHit) int {
-			if order := cmp.Compare(a.score, b.score); order != 0 {
-				return order
-			}
-			return strings.Compare(a.category, b.category)
-		})
-	}
-	if len(hits) > 0 {
-		d.JudgmentSource = "model"
-		d.JudgmentVersion = model.RiskJudgmentVersion
-		d.Deduction = model.RiskViolationDeduction
-		// Preserve each violated category's lowest safety score. Correlated
-		// questions and multiple audit documents still form one incident.
-		seen := make(map[string]bool, len(hits))
-		for _, hit := range hits {
-			category := "custom"
-			if moderation {
-				category = "safety"
-				if hit.category == "sexual" || hit.category == "sexual/minors" {
-					category = "nsfw"
-				}
-			} else {
-				for _, question := range p.asked {
-					if question.id == hit.category {
-						category = question.category
-						break
-					}
-				}
-			}
-			if !seen[category] {
-				seen[category] = true
-				assessment := model.RiskAssessment{Category: category, SafetyScore: hit.score, AppliedDeduction: model.RiskViolationDeduction}
-				if moderation {
-					assessment.Reason = "OpenAI Moderation flagged " + hit.category
-				}
-				d.Assessments = append(d.Assessments, assessment)
-			} else if moderation {
-				for i := range d.Assessments {
-					if d.Assessments[i].Category == category {
-						d.Assessments[i].Reason += ", " + hit.category
-						break
-					}
-				}
-			}
-		}
-		d.AutoConfirm = ev.attempt.TokenID > 0 && payload.Behavior.Enabled && payload.Behavior.AutoConfirmEnabled && failure == nil && freshJudgments &&
-			reviewCovered && d.Coverage != CoverageIncomplete && hits[0].score < m.AutoConfirmThreshold &&
-			payload.Evidence.StoreReviewEvidence && d.ReviewEvidence != "" && in.OriginalRequest != "" && !in.OriginalRequestTruncated
-		category := d.Assessments[0].Category
-		keyword := category
-		if moderation {
-			keyword = hits[0].category
-		}
-		return blockDecision(d, LayerModel, "model", category, keyword, d.Rule)
-	}
-	if failure != nil {
-		detail := failure.Error()
-		if unavail, ok := failure.(*ErrModelUnavailable); ok {
-			detail = unavail.Detail
-		}
-		return failureDecision(d, payload, LayerModel, ReasonUnavailable, detail)
-	}
-	if moderation && (moderationUncovered || d.Coverage == CoverageIncomplete) {
-		return failureDecision(d, payload, LayerModel, ReasonProviderUnsupported, "moderation cannot clear this review signal")
-	}
-	d.Layer = LayerModel
-	switch {
-	case review != nil && !reviewCovered:
-		d.Reason = ReasonRuleUnconfirmed
-	case d.Reviewed:
-		d.Reason = ReasonRuleCleared
-	case allCached:
-		d.Reason = ReasonModelReplay
-	default:
+	d.Scores = result.Scores
+	worst, violated := worstHit(result, p.asked, m.Threshold, moderation)
+	if !violated {
 		d.Reason = ReasonModelSafe
+		return d
 	}
+	d.Outcome, d.Reason, d.Category = OutcomeBlock, ReasonModelViolation, worst.category
 	return d
 }
 
-type documentVerdict struct {
-	scores map[string]float64
-	flags  map[string]bool
-	model  string
-	cached bool
-	err    error
-}
-
-// classifyDocuments judges the tail window and optional review excerpt within
-// one deadline. Each document has its own verdict cache entry.
-func classifyDocuments(ctx context.Context, ev evaluation, provider ProviderConfig, modelName string, documents []string) []documentVerdict {
+func classify(ctx context.Context, ev evaluation, provider ProviderConfig, modelName, document string) (ClassifyResult, error) {
 	m := ev.binding.Policy.Payload.Model
-	classifier := ev.classifier(provider)
-	verdicts := make([]documentVerdict, len(documents))
+	key := ""
+	if ev.useCache && m.DedupSec > 0 {
+		key = verdictKey(ev.binding.Policy, provider, modelName, document)
+		if cached, found, _ := verdictCache.Get(key); found {
+			return ClassifyResult{Scores: cached.scores, Flags: cached.flags, Model: cached.model}, nil
+		}
+	}
 	callCtx, cancel := context.WithTimeout(ctx, time.Duration(m.BudgetMS)*time.Millisecond)
 	defer cancel()
-	var wg sync.WaitGroup
-	for i, document := range documents {
-		wg.Go(func() {
-			key := ""
-			if ev.useCache && m.DedupSec > 0 {
-				key = verdictKey(ev, provider, modelName, document)
-				if cached, found, _ := verdictCache.Get(key); found {
-					verdicts[i] = documentVerdict{scores: cached.scores, flags: cached.flags, model: cached.model, cached: true}
-					return
-				}
-			}
-			req := ClassifyRequest{State: document, Questions: ev.binding.Policy.asked, Model: modelName, MaxAttempts: m.MaxAttempts}
-			if provider.Type == "openai" {
-				req.Questions = nil
-			}
-			result, err := classifier.Classify(callCtx, req)
-			if err != nil {
-				verdicts[i] = documentVerdict{err: err}
-				return
-			}
-			if key != "" {
-				verdictCache.SetWithTTL(key, cachedVerdict{scores: result.Scores, flags: result.Flags, model: result.Model}, time.Duration(m.DedupSec)*time.Second)
-			}
-			verdicts[i] = documentVerdict{scores: result.Scores, flags: result.Flags, model: result.Model}
-		})
+	req := ClassifyRequest{State: document, Model: modelName, MaxAttempts: m.MaxAttempts}
+	if provider.Type != "openai" {
+		req.Questions = ev.binding.Policy.asked
 	}
-	wg.Wait()
-	return verdicts
+	result, err := ev.classifier(provider).Classify(callCtx, req)
+	if err == nil && key != "" {
+		verdictCache.SetWithTTL(key, cachedVerdict{scores: result.Scores, flags: result.Flags, model: result.Model}, time.Duration(m.DedupSec)*time.Second)
+	}
+	return result, err
 }
 
 // applyMode turns blocking outcomes into observations in observe mode.
@@ -576,96 +193,47 @@ func applyMode(d Decision, mode string) Decision {
 	return d
 }
 
-// commit preserves violating evidence before an eligible fresh model verdict
-// can affect reputation. Local rules only trigger the model's review.
-func commit(ev evaluation, d Decision) {
-	if d.Outcome == OutcomeBlock || d.Outcome == OutcomeWouldBlock {
-		if d.Layer == LayerDistill || d.Layer == LayerHardRegex || d.Layer == LayerModel {
-			recordReviewCandidate(ev, d)
-		}
+// recordViolation keeps the evidence, deducts the score and applies a ban.
+// It runs only for model-confirmed violations, never on the passing path.
+func recordViolation(attempt AttemptContext, mode string, d Decision, in *Input, score ScoreConfig) {
+	body, size, truncated := EvidenceBody(in.Raw)
+	scores, _ := common.Marshal(d.Scores)
+	group := attempt.EffectiveGroup
+	if group == "" && attempt.ViaAuto {
+		group = "auto"
 	}
-	if ev.binding.Mode != ModeEnforce || d.Outcome != OutcomeBlock {
+	v := &model.RiskViolation{
+		RequestId: attempt.RequestID, ContentHash: in.ContentHash, UserId: attempt.UserID, TokenId: attempt.TokenID,
+		GroupName: group, Namespace: attempt.Namespace, Mode: mode, Model: truncateRunes(attempt.Model, 128),
+		Category: d.Category, Keyword: truncateRunes(d.Keyword, 160), Rule: truncateRunes(d.Rule, 255),
+		ProviderModel: truncateRunes(d.ProviderModel, 120), Scores: string(scores),
+		RequestBody: body, RequestBodyBytes: size, RequestBodyTruncated: truncated,
+	}
+	if score.EmailNotify {
+		v.NotificationStatus = "pending"
+	}
+	created, ban, err := model.RecordRiskViolation(v, score.Deduction(d.Category), score.AutoBan, time.Now().Unix())
+	if err != nil {
+		common.SysError(common.LogText("risk violation write failed: %s", err.Error()))
 		return
 	}
-	now := ev.now.Unix()
-	if d.BlockID > 0 {
-		if err := ev.store.HitBlock(d.BlockID, now); err != nil {
-			common.SysError(common.LogText("risk block hit update failed: %s", err.Error()))
-		}
-	}
-	if d.RefusalID > 0 {
-		if err := ev.store.HitRefusal(d.RefusalID, now); err != nil {
-			common.SysError(common.LogText("risk refusal hit update failed: %s", err.Error()))
-		}
-	}
-}
-
-func recordReviewCandidate(ev evaluation, d Decision) {
-	payload := ev.binding.Policy.Payload
-	store, ok := ev.store.(ReviewStore)
-	if !ok || ev.attempt.UserID <= 0 || ev.attempt.RequestID == "" ||
-		(d.Outcome != OutcomeBlock && d.Outcome != OutcomeWouldBlock) ||
-		(d.Layer != LayerModel && d.Layer != LayerHardRegex && d.Layer != LayerDistill) {
+	if !created {
 		return
 	}
-	evidence := ""
-	if payload.Evidence.StoreReviewEvidence {
-		evidence = d.ReviewEvidence
-		if evidence == "" {
-			documents, _, _, _ := ev.input.ModelDocuments(payload.HardRegex.StripReminders, payload.HardRegex.ExpandBase64, payload.Model.MaxAuditChars, nil)
-			evidence = strings.Join(documents, "\n\n--- audit document ---\n\n")
+	if ban {
+		banned, err := service.SetUserEnabledForRisk(v.UserId, false)
+		if err != nil {
+			common.SysError(common.LogText("risk ban failed for user %d: %s", v.UserId, err.Error()))
+		}
+		if err != nil || !banned {
+			v.Action = model.RiskActionBanSuggested
+			if err := model.SetRiskViolationAction(v.Id, v.Action); err != nil {
+				common.SysError(common.LogText("risk violation write failed: %s", err.Error()))
+			}
 		}
 	}
-	scores := ""
-	if len(d.Scores) > 0 {
-		encoded, _ := common.Marshal(d.Scores)
-		scores = string(encoded)
-	}
-	assessments, _ := common.Marshal(d.Assessments)
-	// A model switch is still the same incident for behavior scoring. The
-	// original fingerprint is retained to clear the corresponding refusal.
-	incidentInput := *ev.input
-	incidentInput.Model = ""
-	rec := &model.RiskReview{
-		RequestId: ev.attempt.RequestID, Namespace: ev.attempt.Namespace,
-		GroupName: ev.attempt.EffectiveGroup, UserId: ev.attempt.UserID, Mode: ev.binding.Mode,
-		Layer: d.Layer, Category: d.Category, Reason: d.Reason, Model: truncateRunes(ev.attempt.Model, 128),
-		ProviderModel: d.ProviderModel, Scores: scores, PolicyKey: d.PolicyKey, PolicyRevision: d.PolicyRevision,
-		Fingerprint: d.Fingerprint, IncidentKey: Fingerprint(&incidentInput), Evidence: evidence, Coverage: d.Coverage,
-		TokenId: ev.attempt.TokenID, JudgmentSource: d.JudgmentSource,
-		ScreeningScore: d.ScreeningScore, ScreeningReason: d.ScreeningReason, ConfigRevision: d.ConfigRevision,
-		Assessments: string(assessments), Deduction: d.Deduction, JudgmentVersion: d.JudgmentVersion,
-	}
-	if payload.Evidence.StoreReviewEvidence {
-		rec.OriginalRequest = ev.input.OriginalRequest
-		rec.OriginalRequestHash = ev.input.OriginalRequestHash
-		rec.OriginalRequestTruncated = ev.input.OriginalRequestTruncated
-	}
-	// Context is part of violation identity. A different tool/assistant
-	// context must not inherit an earlier human dismissal or model verdict.
-	incidentHash := sha256.Sum256([]byte(rec.IncidentKey + "\x00" + ev.input.IncidentContextDigest))
-	rec.IncidentKey = hex.EncodeToString(incidentHash[:])
-	if d.ModerationIncidentKey != "" {
-		rec.IncidentKey = d.ModerationIncidentKey
-	}
-	policy := payload.Behavior.Policy()
-	if ev.snapshot != nil {
-		policy.ExpectedChangeRevision = ev.snapshot.ChangeRevision
-		policy.ExpectedConfigRevision = ev.snapshot.ConfigRevision
-	}
-	autoConfirm := d.AutoConfirm && ev.binding.Mode == ModeEnforce && ev.attempt.TokenID > 0
-	if autoConfirm {
-		provider := ev.snapshot.Providers[payload.Model.ProviderID]
-		// A provider can change without publishing a policy revision. Check
-		// the judged endpoint in the confirmation transaction as well.
-		policy.ExpectedProvider = &model.RiskProvider{
-			Id: provider.ID, ProviderType: provider.Type, BaseURL: provider.BaseURL,
-			Model: provider.Model, Proxy: provider.Proxy, KeysRevision: provider.KeysRevision,
-		}
-	}
-	allowAutoBlock := autoConfirm && payload.Behavior.AutoBlockEnabled
-	if _, err := store.CreateModelReview(rec, policy, autoConfirm, allowAutoBlock, ev.now.Unix()); err != nil {
-		common.SysError(common.LogText("risk review write failed: %s", err.Error()))
+	if v.NotificationStatus == "pending" {
+		queueViolationNotice(*v)
 	}
 }
 
@@ -684,19 +252,16 @@ func counterKey(attempt AttemptContext, d Decision, isFirst bool, now time.Time)
 	}
 }
 
-func buildEvent(attempt AttemptContext, d Decision, mode string, deviceID string, now time.Time) *model.RiskEvent {
-	if (d.Outcome != OutcomeBlock && d.Outcome != OutcomeWouldBlock) ||
-		(d.Layer != LayerModel && d.Layer != LayerHardRegex && d.Layer != LayerDistill) {
-		d.Preview, d.Keyword = "", ""
-	}
+// buildEvent records a keyword hit or a failure without any request text.
+func buildEvent(attempt AttemptContext, d Decision, mode string, in *Input, now time.Time) *model.RiskEvent {
 	scores := ""
 	if len(d.Scores) > 0 {
 		encoded, _ := common.Marshal(d.Scores)
 		scores = string(encoded)
 	}
-	device := ""
-	if deviceID != "" {
-		device = hashDevice(deviceID)
+	fingerprint := ""
+	if in != nil {
+		fingerprint = in.ContentHash
 	}
 	return &model.RiskEvent{
 		RequestId: attempt.RequestID, Attempt: attempt.Index, CreatedAt: now.Unix(), UserId: attempt.UserID, TokenId: attempt.TokenID,
@@ -705,8 +270,7 @@ func buildEvent(attempt AttemptContext, d Decision, mode string, deviceID string
 		Mode: mode, ConfigRevision: d.ConfigRevision, PolicyKey: d.PolicyKey, PolicyRevision: d.PolicyRevision,
 		Layer: d.Layer, Outcome: d.Outcome, Reason: d.Reason, Category: d.Category, Keyword: truncateRunes(d.Keyword, 64),
 		Rule: truncateRunes(d.Rule, 160), Scores: scores, ProviderModel: d.ProviderModel, LatencyMs: int(d.LatencyMS),
-		Coverage: d.Coverage, ErrorCode: string(d.Code), Preview: truncateRunes(d.Preview, 240), Fingerprint: d.Fingerprint,
-		DeviceHash: device, Similarity: d.Similarity,
+		ErrorCode: string(d.Code), Fingerprint: fingerprint,
 	}
 }
 
@@ -740,34 +304,14 @@ var recorder = func() Recorder { return defaultRecorder }
 
 // CheckAttempt audits one upstream attempt. It returns a risk error only when
 // an enforce-mode decision blocks; everything else lets the request continue.
-// Disabled, bypassed, exempt and uncovered traffic return before the body is parsed.
+// The passing path reads no database: configuration comes from the in-memory
+// snapshot and statistics are written asynchronously.
 func CheckAttempt(c *gin.Context, info *relaycommon.RelayInfo, in AttemptInput) *types.NewAPIError {
-	if info.TokenId > 0 && (!c.GetBool("risk_token_block_checked") || in.Phase == PhaseWSSelect || in.Phase == PhaseWSLocked) {
-		block, err := defaultStore.ActiveTokenBlock(info.UserId, info.TokenId, time.Now().Unix())
-		if err != nil {
-			return decisionError(c, storeFailure(Decision{}, err), nil)
-		}
-		if block != nil {
-			return decisionError(c, Decision{Outcome: OutcomeBlock, Layer: LayerRefusal, Reason: ReasonSubject}, nil)
-		}
-	}
 	snap := current.Load()
 	if snap == nil || !snap.Enabled {
 		return nil
 	}
 	group, source, viaAuto := ResolveAttemptGroup(c, groupInput(in, info))
-	// A bypassed group never enters the audit: no request state, counters,
-	// events or freshness check, so a stale snapshot cannot fail it either.
-	if IsBypassed(snap.Scope, group, viaAuto) {
-		// Configuration can change between attempts of an in-flight request.
-		// Do not learn an upstream refusal against its earlier audited attempt.
-		if st := existingRequestState(c); st != nil {
-			st.mu.Lock()
-			st.last = nil
-			st.mu.Unlock()
-		}
-		return nil
-	}
 	st := requestStateFor(c)
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -778,11 +322,8 @@ func CheckAttempt(c *gin.Context, info *relaycommon.RelayInfo, in AttemptInput) 
 		}
 		logger.LogWarn(c, common.LogText("risk group_mismatch: pre-billing group %q, first attempt group %q", st.firstGroup, group))
 	}
-	// A later exempt or uncovered attempt must not learn a refusal against
-	// the previous attempt's group or policy.
-	st.last = nil
 
-	now := attemptTime()
+	now := time.Now()
 	isFirst := !st.countedFirst
 	st.countedFirst = true
 	route := attemptRoute(c, info, in)
@@ -837,53 +378,46 @@ func CheckAttempt(c *gin.Context, info *relaycommon.RelayInfo, in AttemptInput) 
 		st.inputDone = true
 	}
 
-	ev := evaluation{snapshot: snap, binding: binding, attempt: attempt, input: st.input, store: defaultStore,
-		classifier: classifierFor, useCache: true, runModel: true, now: now}
-	started := time.Now()
-	var raw Decision
+	var d Decision
 	if st.inputErr != nil {
-		base := Decision{Outcome: OutcomePass, PolicyKey: binding.Policy.Key, PolicyRevision: binding.Policy.Revision, ConfigRevision: snap.ConfigRevision}
-		raw = failureDecision(base, binding.Policy.Payload, LayerGate, ReasonCoverageIncomplete, "unreadable request body")
+		d = Decision{Outcome: OutcomeErrorPass, Layer: LayerGate, Reason: ReasonUnreadable,
+			PolicyKey: binding.Policy.Key, PolicyRevision: binding.Policy.Revision, ConfigRevision: snap.ConfigRevision}
+		if binding.Policy.Payload.Model.FailAction == FailActionBlock {
+			d.Outcome = OutcomeErrorBlock
+		}
+		d = applyMode(d, binding.Mode)
 	} else {
 		provider := snap.Providers[binding.Policy.Payload.Model.ProviderID]
-		key := fmt.Sprintf("%s|%d|%d|%d|%s|%s|%s", attempt.Namespace, attempt.UserID, snap.ConfigRevision, snap.ChangeRevision, binding.Policy.Fingerprint, providerFingerprint(provider), st.input.Digest)
-		if prev, ok := st.reuse[key]; ok && prev.Blocks() {
-			raw = prev
-			raw.AutoConfirm = false
+		key := fmt.Sprintf("%s|%d|%s|%s|%s", attempt.Namespace, snap.ConfigRevision, binding.Policy.Fingerprint, providerFingerprint(provider), binding.Mode)
+		prev, reused := st.reuse[key]
+		if reused {
+			d = prev
 		} else {
 			ctx := context.Background()
 			if c.Request != nil {
 				ctx = c.Request.Context()
 			}
-			raw = evaluate(ctx, ev)
-			raw.LatencyMS = time.Since(started).Milliseconds()
-			st.reuse[key] = raw
+			started := time.Now()
+			d = evaluate(ctx, evaluation{snapshot: snap, binding: binding, input: st.input, model: info.OriginModelName,
+				classifier: classifierFor, useCache: true, runModel: true})
+			d.LatencyMS = time.Since(started).Milliseconds()
+			d = applyMode(d, binding.Mode)
+			st.reuse[key] = d
+			if d.Violates() {
+				recordViolation(attempt, binding.Mode, d, st.input, snap.Score)
+			}
 		}
 	}
-	d := applyMode(raw, binding.Mode)
 	var riskErr *types.NewAPIError
 	if binding.Mode == ModeEnforce && d.Blocks() {
-		riskErr = decisionError(c, d, binding.Policy)
+		riskErr = decisionError(c, d)
 		d.Code = riskErr.GetErrorCode()
 	}
-	if st.input != nil {
-		// Concurrent model calls can finish out of request-start order. Score
-		// against confirmation time so already committed violations are visible.
-		ev.now = attemptTime()
-		commit(ev, d)
-	}
 	rec := Record{Counter: counterKey(attempt, d, isFirst, now)}
-	if d.Outcome != OutcomePass || d.Reviewed {
-		deviceID := ""
-		if st.input != nil {
-			deviceID = st.input.DeviceID
-		}
-		rec.Event = buildEvent(attempt, d, binding.Mode, deviceID, now)
+	if d.Reason != ReasonNoHit && d.Reason != ReasonGPTSkipped {
+		rec.Event = buildEvent(attempt, d, binding.Mode, st.input, now)
 	}
 	recorder().Record(rec)
 	appendPolicyEvent(c, attempt, d)
-	if st.input != nil {
-		st.last = &auditedAttempt{attempt: attempt, binding: binding, input: st.input, configRevision: snap.ConfigRevision}
-	}
 	return finish(riskErr)
 }

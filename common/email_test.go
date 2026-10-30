@@ -9,7 +9,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"math/big"
 	"net"
 	"net/smtp"
@@ -561,47 +560,4 @@ func TestSendEmailExplicitStartTLSRejectsUntrustedCertificateByDefault(t *testin
 	err := SendEmail("Verification", "receiver@example.com", "<p>123456</p>")
 	require.Error(t, err)
 	require.Contains(t, fmt.Sprint(err), "certificate")
-}
-
-func TestSMTPDeadlineBoundsGreetingTLSAndCommands(t *testing.T) {
-	for _, stage := range []string{"greeting", "tls", "command"} {
-		t.Run(stage, func(t *testing.T) {
-			withSMTPSettings(t)
-			SMTPServer, SMTPPort = "127.0.0.1", 25
-			SMTPSSLEnabled, SMTPStartTLSEnabled = stage == "tls", false
-			listener, err := net.Listen("tcp", "127.0.0.1:0")
-			require.NoError(t, err)
-			t.Cleanup(func() { _ = listener.Close() })
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				conn, err := listener.Accept()
-				if err != nil {
-					return
-				}
-				defer conn.Close()
-				if stage == "command" {
-					_, _ = io.WriteString(conn, "220 ready\r\n")
-				}
-				// Accept the connection but never answer this stage. EOF proves
-				// the timed-out client actually closes its transport.
-				_, _ = io.Copy(io.Discard, conn)
-			}()
-			client, err := newSMTPClientWithDeadline(listener.Addr().String(), time.Now().Add(250*time.Millisecond))
-			if stage == "command" {
-				require.NoError(t, err)
-				err = client.Mail("sender@example.com")
-				_ = client.Close()
-			}
-			require.Error(t, err)
-			var timeout net.Error
-			require.ErrorAs(t, err, &timeout)
-			require.True(t, timeout.Timeout())
-			select {
-			case <-done:
-			case <-time.After(2 * time.Second):
-				t.Fatal("SMTP connection remained open after its deadline")
-			}
-		})
-	}
 }

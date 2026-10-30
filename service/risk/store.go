@@ -10,65 +10,6 @@ import (
 	"github.com/samber/hot"
 )
 
-// Store is the refusal memory and subject block storage.
-type Store interface {
-	ActiveTokenBlock(userID, tokenID int, now int64) (*model.RiskSubjectBlock, error)
-	ActiveBlock(namespace, subjectType, value string, now int64) (*model.RiskSubjectBlock, error)
-	ExactRefusal(namespace string, userID int, fingerprint string, now int64) (*model.RiskRefusal, error)
-	RefusalCandidates(namespace string, userID int, modelName string, limit int, now int64) ([]model.RiskRefusal, error)
-	Block(rec *model.RiskSubjectBlock) error
-	HitBlock(id int, now int64) error
-	HitRefusal(id int, now int64) error
-	Remember(rec *model.RiskRefusal) error
-}
-
-type dbStore struct{}
-
-// ReviewStore persists pending evidence separately from raw events. A preview
-// uses readOnlyStore and never reaches this capability.
-type ReviewStore interface {
-	CreateModelReview(*model.RiskReview, model.RiskBehaviorPolicy, bool, bool, int64) (*model.RiskReviewResult, error)
-}
-
-func (dbStore) CreateModelReview(rec *model.RiskReview, policy model.RiskBehaviorPolicy, autoConfirm, allowAutoBlock bool, now int64) (*model.RiskReviewResult, error) {
-	if rec.Layer != LayerModel {
-		row, _, err := model.CreateRiskReviewCandidate(rec, policy, now)
-		return &model.RiskReviewResult{Review: row}, err
-	}
-	return model.CreateRiskModelReview(rec, policy, autoConfirm, allowAutoBlock, now)
-}
-
-func (dbStore) ActiveTokenBlock(userID, tokenID int, now int64) (*model.RiskSubjectBlock, error) {
-	return model.GetActiveRiskTokenBlock(userID, tokenID, now)
-}
-
-func (dbStore) ActiveBlock(namespace, subjectType, value string, now int64) (*model.RiskSubjectBlock, error) {
-	return model.GetActiveRiskBlock(namespace, subjectType, value, now)
-}
-
-func (dbStore) ExactRefusal(namespace string, userID int, fingerprint string, now int64) (*model.RiskRefusal, error) {
-	return model.GetRiskRefusal(namespace, userID, fingerprint, now)
-}
-
-func (dbStore) RefusalCandidates(namespace string, userID int, modelName string, limit int, now int64) ([]model.RiskRefusal, error) {
-	return model.ListRiskRefusalCandidates(namespace, userID, modelName, SignatureVersion, limit, now)
-}
-
-func (dbStore) Block(rec *model.RiskSubjectBlock) error { return model.BlockRiskSubject(rec) }
-func (dbStore) HitBlock(id int, now int64) error        { return model.HitRiskBlock(id, now) }
-func (dbStore) HitRefusal(id int, now int64) error      { return model.HitRiskRefusal(id, now) }
-func (dbStore) Remember(rec *model.RiskRefusal) error   { return model.RememberRiskRefusal(rec) }
-
-// readOnlyStore lets previews read records without writing any.
-type readOnlyStore struct{ Store }
-
-func (readOnlyStore) Block(*model.RiskSubjectBlock) error { return nil }
-func (readOnlyStore) HitBlock(int, int64) error           { return nil }
-func (readOnlyStore) HitRefusal(int, int64) error         { return nil }
-func (readOnlyStore) Remember(*model.RiskRefusal) error   { return nil }
-
-var defaultStore Store = dbStore{}
-
 // Record is one audited attempt for statistics and the event log.
 type Record struct {
 	Counter model.RiskCounterKey

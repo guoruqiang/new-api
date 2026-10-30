@@ -114,6 +114,7 @@ async function renderRiskPage(latestRevision = 1) {
         blocks: [],
         keywords: [],
         stages: {},
+        pending_reviews: 0,
         uncovered_routes: [],
       },
       '/api/risk/events': { items: [], total: 0, page: 1, page_size: 20 },
@@ -135,12 +136,12 @@ async function renderRiskPage(latestRevision = 1) {
   const router = createRouter({
     routeTree: root.addChildren([authenticated.addChildren([risk])]),
     history: createMemoryHistory({
-      initialEntries: ['/risk-audit/?view=distill'],
+      initialEntries: ['/risk-audit/?view=policy&section=distill'],
     }),
   })
   const result = renderRisk(<RouterProvider router={router} />)
   clients.push(result.client)
-  await screen.findByRole('textbox', { name: 'Block message' })
+  await screen.findByRole('textbox', { name: 'Contest regex' })
   return { ...result, server, get, created }
 }
 
@@ -201,7 +202,7 @@ it('retains an unsaved policy on cancel and changes policy only after explicit c
 it('keeps the real policy draft visible when Refresh fails after data was loaded', async () => {
   const user = userEvent.setup()
   const page = await renderRiskPage()
-  const input = screen.getByRole('textbox', { name: 'Block message' })
+  const input = screen.getByRole('textbox', { name: 'Contest regex' })
   await user.clear(input)
   await user.type(input, 'Keep this unsaved message')
 
@@ -209,7 +210,7 @@ it('keeps the real policy draft visible when Refresh fails after data was loaded
   await user.click(screen.getByRole('button', { name: 'Refresh' }))
 
   expect(await screen.findByRole('button', { name: 'Retry' })).toBeVisible()
-  expect(screen.getByRole('textbox', { name: 'Block message' })).toHaveValue(
+  expect(screen.getByRole('textbox', { name: 'Contest regex' })).toHaveValue(
     'Keep this unsaved message'
   )
   expect(screen.getByRole('button', { name: 'Save settings' })).toBeEnabled()
@@ -223,7 +224,7 @@ it.each([
   async (next) => {
     const user = userEvent.setup()
     const page = await renderRiskPage()
-    const input = screen.getByRole('textbox', { name: 'Block message' })
+    const input = screen.getByRole('textbox', { name: 'Contest regex' })
     await user.clear(input)
     await user.type(input, 'Keep this unsaved policy')
     page.server.createdPolicy = true
@@ -246,7 +247,7 @@ it.each([
         expect.anything()
       )
     )
-    expect(screen.getByRole('textbox', { name: 'Block message' })).toHaveValue(
+    expect(screen.getByRole('textbox', { name: 'Contest regex' })).toHaveValue(
       'Keep this unsaved policy'
     )
     expect(screen.getByRole('button', { name: 'Save settings' })).toBeEnabled()
@@ -284,22 +285,33 @@ it('shows one configuration and saves and enables it with a single request', asy
   expect(write).toHaveBeenCalledTimes(1)
 })
 
-it('requires saving group changes before saving the shared policy settings', async () => {
+it('keeps scope and policy drafts across tabs and requires saving the scope first', async () => {
   const user = userEvent.setup()
   await renderRiskPage()
-  await user.selectOptions(
-    screen.getByRole('combobox', { name: 'Mode' }),
-    'enforce'
-  )
   await user.type(
-    screen.getByRole('textbox', { name: 'Block message' }),
+    screen.getByRole('textbox', { name: 'Contest regex' }),
     ' modified'
   )
-  expect(screen.getByRole('button', { name: 'Save and enable' })).toBeDisabled()
-  expect(screen.getByRole('button', { name: 'Save settings' })).toBeDisabled()
+  await user.click(screen.getByRole('tab', { name: 'Scope and scoring' }))
+  await user.selectOptions(
+    await screen.findByRole('combobox', { name: 'Mode' }),
+    'enforce'
+  )
   expect(
     screen.getByRole('button', { name: 'Save configuration' })
   ).toBeEnabled()
+  await user.click(screen.getByRole('tab', { name: 'Policy' }))
+  await user.click(screen.getByRole('tab', { name: 'Decision model' }))
+  await user.click(screen.getByRole('tab', { name: 'Distillation detection' }))
+  expect(
+    await screen.findByRole('textbox', { name: 'Contest regex' })
+  ).toHaveValue('contest modified')
+  expect(screen.getByRole('button', { name: 'Save and enable' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Save settings' })).toBeDisabled()
+  await user.click(screen.getByRole('tab', { name: 'Scope and scoring' }))
+  expect(await screen.findByRole('combobox', { name: 'Mode' })).toHaveValue(
+    'enforce'
+  )
 })
 
 it('keeps a conflicting draft until reload is confirmed and locks editing while reloading', async () => {
@@ -314,7 +326,7 @@ it('keeps a conflicting draft until reload is confirmed and locks editing while 
       },
     },
   })
-  const input = screen.getByRole('textbox', { name: 'Block message' })
+  const input = screen.getByRole('textbox', { name: 'Contest regex' })
   await user.type(input, ' keep draft')
   await user.click(screen.getByRole('button', { name: 'Save settings' }))
   await user.click(
@@ -325,7 +337,7 @@ it('keeps a conflicting draft until reload is confirmed and locks editing while 
       name: 'Cancel',
     })
   )
-  expect(input).toHaveValue('Blocked keep draft')
+  expect(input).toHaveValue('contest keep draft')
   let finishLoading!: () => void
   const pending = new Promise<void>((resolve) => {
     finishLoading = resolve
@@ -346,8 +358,8 @@ it('keeps a conflicting draft until reload is confirmed and locks editing while 
   expect(screen.getByRole('button', { name: 'Save and enable' })).toBeDisabled()
   finishLoading()
   await waitFor(() =>
-    expect(screen.getByRole('textbox', { name: 'Block message' })).toHaveValue(
-      'Blocked'
+    expect(screen.getByRole('textbox', { name: 'Contest regex' })).toHaveValue(
+      'contest'
     )
   )
 })

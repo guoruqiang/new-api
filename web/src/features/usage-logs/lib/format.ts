@@ -572,6 +572,8 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   'risk.refusals_clear': 'Cleared refusal memory for a group',
   'risk.block_release': 'Released a risk subject block',
   'risk.blocks_clear': 'Cleared risk subject blocks for a group',
+  'risk.violation_resolve': 'Reviewed a risk violation',
+  'risk.user_ban': 'Changed the risk ban state of a user account',
   'risk.preview': 'Previewed the effective risk policy',
   'risk.provider_probe': 'Fetched models from a risk decision provider',
   // Generic middleware fallback

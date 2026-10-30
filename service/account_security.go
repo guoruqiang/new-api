@@ -55,3 +55,26 @@ func NotifyAccountSecurityChange(lang, email, eventKey string, eventArgs ...map[
 		i18n.Translate(lang, i18n.MsgEmailSecurityNoticeAdvice))
 	return common.SendEmail(subject, email, content)
 }
+
+// SetUserEnabledForRisk enables or disables an account after a content risk
+// review, through the normal user update path that refreshes the user cache
+// and revokes sessions. Administrators are never disabled; the result
+// reports whether the account now has the requested state.
+func SetUserEnabledForRisk(userId int, enabled bool) (bool, error) {
+	user, err := model.GetUserById(userId, true)
+	if err != nil {
+		return false, err
+	}
+	status := common.UserStatusEnabled
+	if !enabled {
+		if user.Role >= common.RoleAdminUser {
+			return false, nil
+		}
+		status = common.UserStatusDisabled
+	}
+	if user.Status == status {
+		return true, nil
+	}
+	user.Status = status
+	return true, user.Update(false)
+}
