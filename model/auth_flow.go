@@ -30,6 +30,8 @@ const (
 	AuthFlowPurposeTwoFASetup        = "2fa_setup"
 	AuthFlowPurposeSecurityProof     = "security_proof"
 	AuthFlowPurposeEmailBinding      = "email_binding"
+	AuthFlowPurposePasswordReset     = "password_reset"
+	AuthFlowPurposeEmailVerification = "email_verification"
 	AuthFlowTokenBytes               = 32
 	AuthFlowDefaultCleanupRetention  = 24 * time.Hour
 )
@@ -149,14 +151,19 @@ func CreateAuthFlow(input AuthFlowCreate) (string, *AuthFlow, error) {
 }
 
 func createAuthFlowWithTx(tx *gorm.DB, input AuthFlowCreate) (string, *AuthFlow, error) {
-	if strings.TrimSpace(input.Purpose) == "" || input.ExpiresAt.IsZero() || !input.ExpiresAt.After(time.Now()) {
-		return "", nil, ErrAuthFlowInvalid
-	}
 	random := make([]byte, AuthFlowTokenBytes)
 	if _, err := rand.Read(random); err != nil {
 		return "", nil, fmt.Errorf("generate auth flow token: %w", err)
 	}
 	token := base64.RawURLEncoding.EncodeToString(random)
+	flow, err := insertAuthFlow(tx, token, input)
+	return token, flow, err
+}
+
+func insertAuthFlow(tx *gorm.DB, token string, input AuthFlowCreate) (*AuthFlow, error) {
+	if strings.TrimSpace(input.Purpose) == "" || input.ExpiresAt.IsZero() || !input.ExpiresAt.After(time.Now()) {
+		return nil, ErrAuthFlowInvalid
+	}
 	flow := &AuthFlow{
 		TokenHash: authFlowTokenHash(token),
 		Purpose:   input.Purpose,
@@ -168,9 +175,22 @@ func createAuthFlowWithTx(tx *gorm.DB, input AuthFlowCreate) (string, *AuthFlow,
 		ExpiresAt: input.ExpiresAt,
 	}
 	if err := tx.Create(flow).Error; err != nil {
-		return "", nil, err
+		return nil, err
 	}
-	return token, flow, nil
+	return flow, nil
+}
+
+// Registration codes are typed by the user, so the flow token is the address
+// and the code together. Only their HMAC is stored, and any instance can
+// consume the code once before it expires.
+func CreateEmailVerificationCode(email, code string, expiresAt time.Time) error {
+	_, err := insertAuthFlow(DB, email+"\n"+code, AuthFlowCreate{Purpose: AuthFlowPurposeEmailVerification, ExpiresAt: expiresAt})
+	return err
+}
+
+func ConsumeEmailVerificationCode(email, code string) error {
+	_, err := ConsumeAuthFlow(email+"\n"+code, AuthFlowMatch{Purpose: AuthFlowPurposeEmailVerification})
+	return err
 }
 
 // ClaimExternalAuthAssertion records a signed provider assertion as consumed.

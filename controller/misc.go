@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -21,6 +22,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/console_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
+	"gorm.io/gorm"
 
 	"github.com/gin-gonic/gin"
 )
@@ -232,7 +234,10 @@ func SendEmailVerification(c *gin.Context) {
 		return
 	}
 	code := common.GenerateVerificationCode(6)
-	common.RegisterVerificationCodeWithKey(email, code, common.EmailVerificationPurpose)
+	if err := model.CreateEmailVerificationCode(email, code, time.Now().Add(time.Duration(common.VerificationValidMinutes)*time.Minute)); err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	// The address may not belong to an account yet, so the mail follows the
 	// request language.
 	systemName := map[string]any{"SystemName": common.SystemName}
@@ -261,32 +266,16 @@ func SendPasswordResetEmail(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if user, err := model.GetUniqueUserByEmail(email); err == nil {
-		code := common.GenerateVerificationCode(0)
-		common.RegisterVerificationCodeWithKey(email, code, common.PasswordResetPurpose)
-		query := url.Values{"email": {email}, "token": {code}}
-		link := system_setting.GetConsoleAddress() + "/user/reset?" + query.Encode()
-		lang := user.GetSetting().Language
-		if lang == "" {
-			lang = i18n.StatedLang(c)
-		}
-		systemName := map[string]any{"SystemName": common.SystemName}
-		linkParams := map[string]any{"Link": html.EscapeString(link)}
-		subject := i18n.Translate(lang, i18n.MsgEmailPasswordResetSubject, systemName)
-		content := fmt.Sprintf("<p>%s</p>"+
-			"<p>%s</p>"+
-			"<p>%s </p>"+
-			"<p>%s</p>",
-			i18n.Translate(lang, i18n.MsgEmailPasswordResetGreeting, systemName),
-			i18n.Translate(lang, i18n.MsgEmailPasswordResetLink, linkParams),
-			i18n.Translate(lang, i18n.MsgEmailPasswordResetLinkFallback, linkParams),
-			i18n.Translate(lang, i18n.MsgEmailPasswordResetValidity, map[string]any{"Minutes": common.VerificationValidMinutes}))
-		err := common.SendEmail(subject, email, content)
-		if err != nil {
+	user, err := model.GetUniqueUserByEmail(email)
+	if err != nil && !errors.Is(err, model.ErrEmailNotFound) {
+		logger.LogWarn(c.Request.Context(), common.LogText("skip password reset email for %s: %s", email, err.Error()))
+	}
+	if err == nil {
+		// Every outcome answers the same way, so the response never reveals
+		// whether the address belongs to an account.
+		if err := sendPasswordResetLink(c, user, email); err != nil {
 			logger.LogError(c.Request.Context(), common.LogText("failed to send password reset email to %s: %s", email, err.Error()))
 		}
-	} else if err != nil && !errors.Is(err, model.ErrEmailNotFound) {
-		logger.LogWarn(c.Request.Context(), common.LogText("skip password reset email for %s: %s", email, err.Error()))
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -294,8 +283,37 @@ func SendPasswordResetEmail(c *gin.Context) {
 	})
 }
 
+// sendPasswordResetLink emails a single-use reset link that any instance can
+// redeem until it expires.
+func sendPasswordResetLink(c *gin.Context, user *model.User, email string) error {
+	token, _, err := model.CreateAuthFlow(model.AuthFlowCreate{
+		Purpose: model.AuthFlowPurposePasswordReset, UserId: user.Id,
+		ExpiresAt: time.Now().Add(time.Duration(common.VerificationValidMinutes) * time.Minute),
+	})
+	if err != nil {
+		return err
+	}
+	query := url.Values{"email": {email}, "token": {token}}
+	link := system_setting.GetConsoleAddress() + "/user/reset?" + query.Encode()
+	lang := user.GetSetting().Language
+	if lang == "" {
+		lang = i18n.StatedLang(c)
+	}
+	systemName := map[string]any{"SystemName": common.SystemName}
+	linkParams := map[string]any{"Link": html.EscapeString(link)}
+	subject := i18n.Translate(lang, i18n.MsgEmailPasswordResetSubject, systemName)
+	content := fmt.Sprintf("<p>%s</p>"+
+		"<p>%s</p>"+
+		"<p>%s </p>"+
+		"<p>%s</p>",
+		i18n.Translate(lang, i18n.MsgEmailPasswordResetGreeting, systemName),
+		i18n.Translate(lang, i18n.MsgEmailPasswordResetLink, linkParams),
+		i18n.Translate(lang, i18n.MsgEmailPasswordResetLinkFallback, linkParams),
+		i18n.Translate(lang, i18n.MsgEmailPasswordResetValidity, map[string]any{"Minutes": common.VerificationValidMinutes}))
+	return common.SendEmail(subject, email, content)
+}
+
 type PasswordResetRequest struct {
-	Email string `json:"email"`
 	Token string `json:"token"`
 }
 
@@ -306,26 +324,20 @@ func ResetPassword(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	req.Email = model.NormalizeEmail(req.Email)
-	if req.Email == "" || req.Token == "" {
+	if req.Token == "" {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if !common.VerifyCodeWithKey(req.Email, req.Token, common.PasswordResetPurpose) {
+	password := common.GenerateVerificationCode(12)
+	err = model.ResetUserPasswordWithAuthFlow(req.Token, password)
+	if errors.Is(err, model.ErrAuthFlowInvalid) || errors.Is(err, model.ErrAuthFlowExpired) || errors.Is(err, model.ErrAuthFlowConsumed) || errors.Is(err, gorm.ErrRecordNotFound) {
 		common.ApiErrorT(c, "Password reset link is invalid or has expired")
 		return
 	}
-	password := common.GenerateVerificationCode(12)
-	err = model.ResetUserPasswordByEmail(req.Email, password)
 	if err != nil {
-		if errors.Is(err, model.ErrEmailNotFound) || errors.Is(err, model.ErrEmailAmbiguous) {
-			common.ApiErrorT(c, "Password reset link is invalid or has expired")
-			return
-		}
 		common.ApiError(c, err)
 		return
 	}
-	common.DeleteKey(req.Email, common.PasswordResetPurpose)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",

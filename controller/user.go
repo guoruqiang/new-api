@@ -244,10 +244,6 @@ func Register(c *gin.Context) {
 			common.ApiErrorT(c, "Email verification is enabled, please enter email address and verification code")
 			return
 		}
-		if !common.VerifyCodeWithKey(user.Email, user.VerificationCode, common.EmailVerificationPurpose) {
-			common.ApiErrorT(c, "Verification code is incorrect or has expired")
-			return
-		}
 		if err := model.EnsureEmailAvailable(user.Email, 0); err != nil {
 			if errors.Is(err, model.ErrEmailAlreadyTaken) {
 				common.ApiErrorT(c, "Email address is already in use")
@@ -270,6 +266,19 @@ func Register(c *gin.Context) {
 	if exist {
 		common.ApiErrorT(c, "Username already exists or has been deleted")
 		return
+	}
+	// The code is consumed only after the request is otherwise valid, so a
+	// taken username does not cost the user a new code.
+	if common.EmailVerificationEnabled {
+		err := model.ConsumeEmailVerificationCode(user.Email, user.VerificationCode)
+		if errors.Is(err, model.ErrAuthFlowInvalid) || errors.Is(err, model.ErrAuthFlowExpired) || errors.Is(err, model.ErrAuthFlowConsumed) {
+			common.ApiErrorT(c, "Verification code is incorrect or has expired")
+			return
+		}
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
 	}
 	affCode := user.AffCode // this code is the inviter's code, not the user's own code
 	inviterId, _ := model.GetUserIdByAffCode(affCode)

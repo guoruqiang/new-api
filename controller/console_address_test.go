@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/middleware"
@@ -45,7 +46,6 @@ func TestConsoleAddressPasswordResetEmailAndTokenLifecycle(t *testing.T) {
 			mailbox := newSecurityMailbox(t)
 			email := "reset+console@example.com"
 			require.NoError(t, model.DB.Model(user).Update("email", email).Error)
-			t.Cleanup(func() { common.DeleteKey(email, common.PasswordResetPurpose) })
 
 			request := httptest.NewRequest(http.MethodGet, "https://untrusted.example/api/reset_password?"+url.Values{"email": {email}}.Encode(), nil)
 			request.Header.Set("Origin", "https://untrusted.example")
@@ -78,14 +78,18 @@ func TestConsoleAddressPasswordResetEmailAndTokenLifecycle(t *testing.T) {
 				if phase == "invalid" {
 					currentToken += "invalid"
 				}
-				body, err := common.Marshal(PasswordResetRequest{Email: email, Token: currentToken})
+				body, err := common.Marshal(PasswordResetRequest{Token: currentToken})
 				require.NoError(t, err)
-				previousMinutes := common.VerificationValidMinutes
+				setExpiry := func(at time.Time) {
+					require.NoError(t, model.DB.Model(&model.AuthFlow{}).Where("purpose = ?", model.AuthFlowPurposePasswordReset).Update("expires_at", at).Error)
+				}
 				if phase == "expired" {
-					common.VerificationValidMinutes = -1
+					setExpiry(time.Now().Add(-time.Second))
 				}
 				resetResponse := securityEnrollmentRequest(http.MethodPost, "/api/user/reset", string(body), "", identity, ResetPassword)
-				common.VerificationValidMinutes = previousMinutes
+				if phase == "expired" {
+					setExpiry(time.Now().Add(time.Minute))
+				}
 				var result struct {
 					Success bool   `json:"success"`
 					Data    string `json:"data"`
@@ -104,6 +108,44 @@ func TestConsoleAddressPasswordResetEmailAndTokenLifecycle(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The registration code is stored in the database, so the instance that sent
+// it need not be the one that registers the account.
+func TestRegistrationEmailCodeIsUsedOnce(t *testing.T) {
+	setupSecurityEnrollmentTest(t)
+	configureEmailDelivery(t, map[string]string{"EmailProvider": "smtp"})
+	mailbox := newSecurityMailbox(t)
+	previous := []bool{common.RegisterEnabled, common.PasswordRegisterEnabled, common.EmailVerificationEnabled}
+	common.RegisterEnabled, common.PasswordRegisterEnabled, common.EmailVerificationEnabled = true, true, true
+	t.Cleanup(func() {
+		common.RegisterEnabled, common.PasswordRegisterEnabled, common.EmailVerificationEnabled = previous[0], previous[1], previous[2]
+	})
+	email := "new-user@example.com"
+	response := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(response)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/verification?"+url.Values{"email": {email}}.Encode(), nil)
+	SendEmailVerification(c)
+	require.Contains(t, response.Body.String(), `"success":true`)
+	mailbox.mutex.Lock()
+	messages := append([]string(nil), mailbox.mail[email]...)
+	mailbox.mutex.Unlock()
+	require.Len(t, messages, 1)
+	match := regexp.MustCompile(`<strong>([0-9a-f]{6})</strong>`).FindStringSubmatch(messages[0])
+	require.Len(t, match, 2, "the email carries the code")
+
+	register := func(username, code string) bool {
+		body, err := common.Marshal(map[string]string{"username": username, "password": "Password123!", "email": email, "verification_code": code})
+		require.NoError(t, err)
+		response := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(response)
+		c.Request = httptest.NewRequest(http.MethodPost, "/api/user/register", strings.NewReader(string(body)))
+		Register(c)
+		return strings.Contains(response.Body.String(), `"success":true`)
+	}
+	assert.False(t, register("newuser1", "000000"), "a wrong code is rejected")
+	assert.True(t, register("newuser1", match[1]))
+	assert.False(t, register("newuser2", match[1]), "a code registers once")
 }
 
 func TestConsoleAddressDiscoveryKeepsOAuthBackendEndpoints(t *testing.T) {

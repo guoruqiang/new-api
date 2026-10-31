@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -1191,30 +1192,31 @@ func IsTelegramIdAlreadyTaken(telegramId string) bool {
 	return DB.Unscoped().Where("telegram_id = ?", telegramId).Find(&User{}).RowsAffected == 1
 }
 
-func ResetUserPasswordByEmail(email string, password string) error {
-	if email == "" || password == "" {
-		return common.NewMessage("Email or password is empty!")
-	}
-	user, err := GetUniqueUserByEmail(email)
-	if err != nil {
-		return err
-	}
+// ResetUserPasswordWithAuthFlow consumes a password reset link and sets the
+// new password in the same transaction. Every other outstanding reset link of
+// the user and every session are revoked.
+func ResetUserPasswordWithAuthFlow(token string, password string) error {
 	hashedPassword, err := common.HashAccountPassword(password)
 	if err != nil {
 		return err
 	}
-	if err = DB.Transaction(func(tx *gorm.DB) error {
-		if _, err := IncrementUserAuthVersionWithTx(tx, user.Id); err != nil {
+	flow, err := ConsumeAuthFlowWithAction(token, AuthFlowMatch{Purpose: AuthFlowPurposePasswordReset}, func(tx *gorm.DB, flow *AuthFlow) error {
+		if _, err := IncrementUserAuthVersionWithTx(tx, flow.UserId); err != nil {
 			return err
 		}
-		return tx.Model(&User{}).Where("id = ?", user.Id).Update("password", hashedPassword).Error
-	}); err != nil {
+		if err := tx.Model(&User{}).Where("id = ?", flow.UserId).Update("password", hashedPassword).Error; err != nil {
+			return err
+		}
+		return tx.Model(&AuthFlow{}).Where("purpose = ? AND user_id = ? AND consumed_at IS NULL", AuthFlowPurposePasswordReset, flow.UserId).
+			Update("consumed_at", time.Now()).Error
+	})
+	if err != nil {
 		return err
 	}
-	if err := PublishUserAuthCache(user.Id); err != nil {
+	if err := PublishUserAuthCache(flow.UserId); err != nil {
 		return err
 	}
-	_, err = RevokeAllUserSessions(user.Id, "password_reset")
+	_, err = RevokeAllUserSessions(flow.UserId, "password_reset")
 	return err
 }
 

@@ -628,8 +628,9 @@ func TestUserUpdateBumpsAuthVersionOnlyForAuthorizationChanges(t *testing.T) {
 	assert.Equal(t, int64(3), user.AuthVersion)
 }
 
-func TestPasswordResetBumpsAuthVersionAndRevokesSessions(t *testing.T) {
+func TestPasswordResetLinkResetsOnceAndRevokesSessionsAndOtherLinks(t *testing.T) {
 	setupUserSessionTest(t)
+	require.NoError(t, DB.AutoMigrate(&AuthFlow{}))
 	now := time.Now().Unix()
 	user := &User{
 		Username: "password-reset-user",
@@ -644,12 +645,37 @@ func TestPasswordResetBumpsAuthVersionAndRevokesSessions(t *testing.T) {
 	session := newTestUserSession("password-reset-session", user.Id, now)
 	require.NoError(t, CreateUserSession(session))
 
-	require.NoError(t, ResetUserPasswordByEmail(user.Email, "new-password"))
+	link := func(expires time.Duration) string {
+		token, _, err := CreateAuthFlow(AuthFlowCreate{Purpose: AuthFlowPurposePasswordReset, UserId: user.Id, ExpiresAt: time.Now().Add(expires)})
+		require.NoError(t, err)
+		return token
+	}
+	expired, used, older := link(time.Minute), link(time.Minute), link(time.Minute)
+	require.NoError(t, DB.Model(&AuthFlow{}).Where("token_hash = ?", authFlowTokenHash(expired)).Update("expires_at", time.Now().Add(-time.Second)).Error)
+	otherPurpose, _, err := CreateAuthFlow(AuthFlowCreate{Purpose: AuthFlowPurposeEmailBinding, UserId: user.Id, ExpiresAt: time.Now().Add(time.Minute)})
+	require.NoError(t, err)
+
+	assert.ErrorIs(t, ResetUserPasswordWithAuthFlow(expired, "new-password"), ErrAuthFlowExpired)
+	assert.ErrorIs(t, ResetUserPasswordWithAuthFlow(otherPurpose, "new-password"), ErrAuthFlowInvalid, "another flow cannot reset the password")
+	require.NoError(t, ResetUserPasswordWithAuthFlow(used, "new-password"))
 	var stored User
 	require.NoError(t, DB.First(&stored, user.Id).Error)
 	assert.Equal(t, int64(2), stored.AuthVersion)
+	assert.True(t, common.ValidatePasswordAndHash("new-password", stored.Password))
 	storedSession, err := GetUserSessionBySID(session.SID)
 	require.NoError(t, err)
 	assert.Equal(t, UserSessionStatusRevoked, storedSession.Status)
 	assert.Equal(t, "password_reset", storedSession.RevokedReason)
+	assert.ErrorIs(t, ResetUserPasswordWithAuthFlow(used, "again-password"), ErrAuthFlowConsumed, "a link resets once")
+	assert.ErrorIs(t, ResetUserPasswordWithAuthFlow(older, "again-password"), ErrAuthFlowConsumed, "a reset revokes the user's other outstanding links")
+}
+
+func TestEmailVerificationCodeIsBoundToAddressAndUsedOnce(t *testing.T) {
+	require.NoError(t, DB.AutoMigrate(&AuthFlow{}))
+	expires := time.Now().Add(time.Minute)
+	require.NoError(t, CreateEmailVerificationCode("new@example.com", "abc123", expires))
+	assert.ErrorIs(t, ConsumeEmailVerificationCode("other@example.com", "abc123"), ErrAuthFlowInvalid)
+	assert.ErrorIs(t, ConsumeEmailVerificationCode("new@example.com", "abc124"), ErrAuthFlowInvalid)
+	require.NoError(t, ConsumeEmailVerificationCode("new@example.com", "abc123"))
+	assert.ErrorIs(t, ConsumeEmailVerificationCode("new@example.com", "abc123"), ErrAuthFlowConsumed)
 }
