@@ -7847,7 +7847,6 @@
     "Score change": "スコアの変化",
     "Scoring and bans": "スコアと停止",
     "The complete request as received, with attachments replaced by placeholders. Size: {{bytes}} bytes.": "受信したままの完全なリクエスト（添付ファイルはプレースホルダーに置換）。サイズ: {{bytes}} バイト。",
-    "The request was not saved.": "リクエストは保存されていません。",
     "The saved request was truncated because it exceeded the storage limit.": "保存されたリクエストは保存上限を超えたため切り詰められました。",
     "This violation would deduct {{points}} points.": "この違反では {{points}} 点が減点されます。",
     "Top keywords": "上位キーワード",

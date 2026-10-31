@@ -104,7 +104,10 @@ it('lists violations with the score change, action and status and filters by sta
     expect(get).toHaveBeenLastCalledWith(
       '/api/risk/violations',
       expect.objectContaining({
-        params: expect.objectContaining({ status: 'upheld', request_id: 'req' }),
+        params: expect.objectContaining({
+          status: 'upheld',
+          request_id: 'req',
+        }),
       })
     )
   )
@@ -136,9 +139,15 @@ it('shows the evidence, scores and account state and downloads the request JSON'
     )
   ).toBeVisible()
   const evidence = screen.getByRole('region', { name: 'Request JSON' })
-  const pretty = JSON.stringify(JSON.parse(violation.request_body ?? ''), null, 2)
+  const pretty = JSON.stringify(
+    JSON.parse(violation.request_body ?? ''),
+    null,
+    2
+  )
   expect(evidence.querySelector('pre')?.textContent).toBe(pretty)
-  await user.click(within(evidence).getByRole('button', { name: 'Download JSON' }))
+  await user.click(
+    within(evidence).getByRole('button', { name: 'Download JSON' })
+  )
   expect(click).toHaveBeenCalledOnce()
   expect((click.mock.contexts[0] as HTMLAnchorElement).download).toBe(
     'violation-5.json'
@@ -165,20 +174,17 @@ it('hides account bans without the unblock permission', async () => {
 it.each([
   ['Uphold violation', 1, '/api/risk/violations/5/resolve', 'uphold'],
   ['Revoke violation', 1, '/api/risk/violations/5/resolve', 'revoke'],
-  ['Ban account', 1, '/api/risk/users/42/ban', 'ban'],
-  ['Unban account', 2, '/api/risk/users/42/ban', 'unban'],
 ])(
   'sends %s with the review note to the matching endpoint',
   async (label, userStatus, url, action) => {
     mockDetail({ ...detail, user_status: userStatus })
-    const write = vi.spyOn(api, 'request').mockResolvedValue({
-      data: {
-        success: true,
-        data: action === 'ban' || action === 'unban' ? null : detail,
-      },
-    })
+    const write = vi
+      .spyOn(api, 'request')
+      .mockResolvedValue({ data: { success: true, data: detail } })
     const user = userEvent.setup()
-    renderRisk(<ViolationDetail id={5} canWrite canUnblock onClose={() => {}} />)
+    renderRisk(
+      <ViolationDetail id={5} canWrite canUnblock onClose={() => {}} />
+    )
     await user.click(await screen.findByRole('button', { name: label }))
     const confirm = await screen.findByRole('alertdialog')
     const submit = within(confirm).getByRole('button', { name: label })
@@ -193,6 +199,34 @@ it.each([
         method: 'post',
         url,
         data: { action, note: 'Customer notified' },
+      })
+    )
+  }
+)
+
+it.each([
+  ['Ban account', 1, 'ban'],
+  ['Unban account', 2, 'unban'],
+])(
+  'sends %s for the violation without a note',
+  async (label, userStatus, action) => {
+    mockDetail({ ...detail, user_status: userStatus })
+    const write = vi
+      .spyOn(api, 'request')
+      .mockResolvedValue({ data: { success: true, data: detail } })
+    const user = userEvent.setup()
+    renderRisk(
+      <ViolationDetail id={5} canWrite canUnblock onClose={() => {}} />
+    )
+    await user.click(await screen.findByRole('button', { name: label }))
+    const confirm = await screen.findByRole('alertdialog')
+    expect(within(confirm).queryByRole('textbox')).not.toBeInTheDocument()
+    await user.click(within(confirm).getByRole('button', { name: label }))
+    await waitFor(() =>
+      expect(write).toHaveBeenCalledWith({
+        method: 'post',
+        url: '/api/risk/violations/5/ban',
+        data: { action },
       })
     )
   }

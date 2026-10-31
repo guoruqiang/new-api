@@ -85,11 +85,10 @@ func (s RiskUserScore) Current(now int64) int {
 // RecordRiskViolation stores a model-confirmed violation once per request and
 // content, reporting whether it was new. In enforce mode it deducts points; a
 // violation while the score is already zero is a ban, which the caller
-// applies when autoBan is set. A pending notification is kept only for a new,
-// non-duplicate enforce-mode violation.
-func RecordRiskViolation(v *RiskViolation, deduction int, autoBan bool, now int64) (bool, bool, error) {
+// applies when autoBan is set. With notify, a new non-duplicate enforce-mode
+// violation is marked for an email notice.
+func RecordRiskViolation(v *RiskViolation, deduction int, autoBan, notify bool, now int64) (bool, bool, error) {
 	created, ban := false, false
-	notification := v.NotificationStatus
 	err := riskTransaction(func(tx *gorm.DB) error {
 		created, ban = false, false
 		var existing RiskViolation
@@ -140,7 +139,9 @@ func RecordRiskViolation(v *RiskViolation, deduction int, autoBan bool, now int6
 				}).Error; err != nil {
 					return err
 				}
-				v.NotificationStatus = notification
+				if notify {
+					v.NotificationStatus = "pending"
+				}
 			}
 		}
 		created = true
@@ -158,17 +159,16 @@ func SetRiskViolationNotification(id int, status string) error {
 	return DB.Model(&RiskViolation{}).Where("id = ?", id).Update("notification_status", status).Error
 }
 
-func GetRiskUserScore(userID int, now int64) (int, RiskUserScore, error) {
+func GetRiskUserScore(userID int, now int64) (int, error) {
 	var score RiskUserScore
 	err := DB.Where("user_id = ?", userID).Limit(1).Find(&score).Error
-	return score.Current(now), score, err
+	return score.Current(now), err
 }
 
 type RiskViolationFilter struct {
 	Status    string
 	UserId    int
 	RequestId string
-	Namespace string
 }
 
 func ListRiskViolations(filter RiskViolationFilter, offset, limit int) ([]RiskViolation, int64, error) {
@@ -181,9 +181,6 @@ func ListRiskViolations(filter RiskViolationFilter, offset, limit int) ([]RiskVi
 	}
 	if filter.RequestId != "" {
 		query = query.Where("request_id = ?", filter.RequestId)
-	}
-	if filter.Namespace != "" {
-		query = query.Where("namespace = ?", filter.Namespace)
 	}
 	var total int64
 	if err := query.Count(&total).Error; err != nil {

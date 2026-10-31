@@ -7847,7 +7847,6 @@
     "Score change": "Score change",
     "Scoring and bans": "Scoring and bans",
     "The complete request as received, with attachments replaced by placeholders. Size: {{bytes}} bytes.": "The complete request as received, with attachments replaced by placeholders. Size: {{bytes}} bytes.",
-    "The request was not saved.": "The request was not saved.",
     "The saved request was truncated because it exceeded the storage limit.": "The saved request was truncated because it exceeded the storage limit.",
     "This violation would deduct {{points}} points.": "This violation would deduct {{points}} points.",
     "Top keywords": "Top keywords",

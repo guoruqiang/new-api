@@ -7847,7 +7847,6 @@
     "Score change": "分数变化",
     "Scoring and bans": "打分与封禁",
     "The complete request as received, with attachments replaced by placeholders. Size: {{bytes}} bytes.": "收到的完整请求，附件已替换为占位符。大小：{{bytes}} 字节。",
-    "The request was not saved.": "未保存请求内容。",
     "The saved request was truncated because it exceeded the storage limit.": "保存的请求超过存储上限，已被截断。",
     "This violation would deduct {{points}} points.": "该违规将扣除 {{points}} 分。",
     "Top keywords": "热门关键词",

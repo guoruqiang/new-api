@@ -105,7 +105,7 @@ var accessTokenHelperRoutes = map[string]authz.Permission{
 	"GET /api/risk/violations":                        authz.RiskRead,
 	"GET /api/risk/violations/:id":                    authz.RiskRead,
 	"POST /api/risk/violations/:id/resolve":           authz.RiskWrite,
-	"POST /api/risk/users/:id/ban":                    authz.RiskUnblock,
+	"POST /api/risk/violations/:id/ban":               authz.RiskUnblock,
 	"POST /api/risk/preview":                          authz.RiskWrite,
 	"POST /api/risk/providers/models":                 authz.RiskWrite,
 }
@@ -205,7 +205,7 @@ func TestRiskRoutesRequireAccountPermissionAndScopedLiveToken(t *testing.T) {
 	assert.Equal(t, http.StatusOK, request(http.MethodGet, "/api/risk/defaults", adminRead, "").Code)
 	require.NoError(t, authz.SetUserPermissions(admin.Id, authz.PermissionsMap{authz.ResourceRisk: {authz.ActionRead: false}}))
 	assert.Equal(t, http.StatusForbidden, request(http.MethodGet, "/api/risk/defaults", adminRead, "").Code, "token scope cannot retain revoked account permission")
-	assert.Equal(t, http.StatusForbidden, request(http.MethodPost, "/api/risk/users/1/ban", rootWrite, `{"action":"ban","note":"x"}`).Code, "configuration permission does not ban accounts")
+	assert.Equal(t, http.StatusForbidden, request(http.MethodPost, "/api/risk/violations/1/ban", rootWrite, `{"action":"ban"}`).Code, "configuration permission does not ban accounts")
 	assert.Equal(t, http.StatusForbidden, request(http.MethodPut, "/api/risk/config", rootUnblock, "{}").Code, "unblock permission does not publish configuration")
 	now := time.Now().Unix()
 	session := &model.UserSession{
@@ -232,7 +232,9 @@ func TestRiskRoutesRequireAccountPermissionAndScopedLiveToken(t *testing.T) {
 			require.NoError(t, authz.SetUserPermissions(admin.Id, authz.PermissionsMap{authz.ResourceRisk: {authz.ActionWrite: true, authz.ActionUnblock: tc.unblock}}))
 			target := &model.User{Username: "risk-target-" + strconv.Itoa(i), Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", AffCode: "risk-target-" + strconv.Itoa(i), AuthVersion: 1}
 			require.NoError(t, db.Create(target).Error)
-			response := request(http.MethodPost, "/api/risk/users/"+strconv.Itoa(target.Id)+"/ban", tc.token, `{"action":"ban","note":"Human reviewed the original request"}`)
+			violation := &model.RiskViolation{RequestId: "ban-" + strconv.Itoa(i), ContentHash: "hash", UserId: target.Id, Mode: risk.ModeEnforce}
+			require.NoError(t, db.Create(violation).Error)
+			response := request(http.MethodPost, "/api/risk/violations/"+strconv.Itoa(violation.Id)+"/ban", tc.token, `{"action":"ban"}`)
 			require.Equal(t, tc.status, response.Code, response.Body.String())
 			require.NoError(t, db.First(target, target.Id).Error)
 			if tc.status == http.StatusOK {

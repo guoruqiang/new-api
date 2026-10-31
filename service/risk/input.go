@@ -163,28 +163,6 @@ func intField(body map[string]any, keys ...string) *int {
 	return nil
 }
 
-func toolNames(tools []any) []string {
-	names := make([]string, 0, len(tools))
-	for _, t := range tools {
-		obj, ok := t.(map[string]any)
-		if !ok {
-			continue
-		}
-		name, _ := obj["name"].(string)
-		if name == "" {
-			if fn, ok := obj["function"].(map[string]any); ok {
-				name, _ = fn["name"].(string)
-			}
-		}
-		name = strings.TrimSpace(name)
-		if name != "" && !slices.Contains(names, name) {
-			names = append(names, name)
-		}
-	}
-	slices.Sort(names)
-	return names
-}
-
 // auditTextBudget bounds, in runes, the system and user text the audit reads,
 // so a padded request costs a bounded amount of CPU before billing.
 const auditTextBudget = 256 * 1024
@@ -262,7 +240,6 @@ func ExtractInput(body []byte, headers http.Header) (*Input, error) {
 	}
 	tools, _ := doc["tools"].([]any)
 	in.ToolCount = len(tools)
-	in.ToolNames = toolNames(tools)
 	if thinking, ok := doc["thinking"].(map[string]any); ok {
 		in.Thinking.Type, _ = thinking["type"].(string)
 		in.Thinking.Display, _ = thinking["display"].(string)
@@ -323,13 +300,15 @@ const reviewExcerptRunes = 1000
 // for a match in the system text, that excerpt.
 func (t auditTexts) modelDocument(size int, hit keywordHit, moderation bool) string {
 	userStart := len(t.scan()) - len(t.user)
+	inUser := hit.Start >= userStart
 	part := keywordHit{Text: t.system, Start: hit.Start, End: hit.End}
-	if hit.Start >= userStart {
+	if inUser {
 		part = keywordHit{Text: t.user, Start: hit.Start - userStart, End: hit.End - userStart}
 	}
 	userTail, _ := tailRunes(t.user, size)
+	userCovered := inUser && part.Start >= len(t.user)-len(userTail)
 	if moderation {
-		if part.Text == t.user && part.Start >= len(t.user)-len(userTail) {
+		if userCovered {
 			return userTail
 		}
 		return strings.TrimSpace(part.excerpt(reviewExcerptRunes) + "\n\n" + userTail)
@@ -337,10 +316,7 @@ func (t auditTexts) modelDocument(size int, hit keywordHit, moderation bool) str
 	room := size - utf8.RuneCountInString(userTail)
 	systemTail, _ := tailRunes(t.system, max(room, 0))
 	excerpt := ""
-	switch {
-	case part.Text == t.user && part.Start >= len(t.user)-len(userTail):
-	case part.Text == t.system && part.Text != "" && part.Start >= len(t.system)-len(systemTail):
-	default:
+	if !userCovered && (inUser || part.Start < len(t.system)-len(systemTail)) {
 		excerpt = part.excerpt(reviewExcerptRunes)
 		systemTail, _ = tailRunes(t.system, max(room-utf8.RuneCountInString(excerpt), 0))
 	}
@@ -360,16 +336,16 @@ const evidenceLimit = 3 << 20
 
 var dataURLPattern = regexp.MustCompile(`^data:[^,]{0,128},`)
 
-// EvidenceBody returns the request JSON kept with a violation. Attachments
-// are replaced by a size placeholder; everything else is kept as submitted.
-// The result is cut at evidenceLimit bytes, and the original size returned.
+// EvidenceBody returns the request JSON kept with a violation. A request
+// without attachments is kept byte for byte; otherwise attachments become a
+// size placeholder (object keys are re-serialized in sorted order). The
+// result is cut at evidenceLimit bytes, and the original size returned.
 func EvidenceBody(raw []byte) (string, int, bool) {
 	var doc any
 	text := string(raw)
 	if common.Unmarshal(raw, &doc) == nil && omitAttachments(&doc) {
-		if encoded, err := common.Marshal(doc); err == nil {
-			text = string(encoded)
-		}
+		encoded, _ := common.Marshal(doc)
+		text = string(encoded)
 	}
 	if len(text) <= evidenceLimit {
 		return text, len(raw), false

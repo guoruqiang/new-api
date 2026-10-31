@@ -7847,7 +7847,6 @@
     "Score change": "Évolution du score",
     "Scoring and bans": "Notation et bannissements",
     "The complete request as received, with attachments replaced by placeholders. Size: {{bytes}} bytes.": "La requête complète telle que reçue, avec les pièces jointes remplacées par des espaces réservés. Taille : {{bytes}} octets.",
-    "The request was not saved.": "La requête n'a pas été enregistrée.",
     "The saved request was truncated because it exceeded the storage limit.": "La requête enregistrée a été tronquée car elle dépassait la limite de stockage.",
     "This violation would deduct {{points}} points.": "Cette violation déduirait {{points}} points.",
     "Top keywords": "Mots-clés principaux",

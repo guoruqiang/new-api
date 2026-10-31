@@ -19,19 +19,13 @@ var violationNotices = struct {
 	mu      sync.Mutex
 	queue   chan model.RiskViolation
 	done    chan struct{}
-	started bool
 	stopped bool
 }{queue: make(chan model.RiskViolation, 1000), done: make(chan struct{})}
 
 var sendViolationEmail = common.SendEmail
 
+// StartReviewNotifications starts the email worker; main calls it once.
 func StartReviewNotifications() {
-	violationNotices.mu.Lock()
-	defer violationNotices.mu.Unlock()
-	if violationNotices.started {
-		return
-	}
-	violationNotices.started = true
 	go func() {
 		defer close(violationNotices.done)
 		for v := range violationNotices.queue {
@@ -49,11 +43,7 @@ func StopReviewNotifications(ctx context.Context) error {
 		violationNotices.stopped = true
 		close(violationNotices.queue)
 	}
-	started := violationNotices.started
 	violationNotices.mu.Unlock()
-	if !started {
-		return nil
-	}
 	select {
 	case <-violationNotices.done:
 		return nil

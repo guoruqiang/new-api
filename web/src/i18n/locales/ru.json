@@ -7847,7 +7847,6 @@
     "Score change": "Изменение баллов",
     "Scoring and bans": "Оценка и блокировки",
     "The complete request as received, with attachments replaced by placeholders. Size: {{bytes}} bytes.": "Полный полученный запрос, вложения заменены заполнителями. Размер: {{bytes}} байт.",
-    "The request was not saved.": "Запрос не был сохранён.",
     "The saved request was truncated because it exceeded the storage limit.": "Сохранённый запрос был обрезан, так как превысил лимит хранения.",
     "This violation would deduct {{points}} points.": "Это нарушение спишет {{points}} баллов.",
     "Top keywords": "Частые ключевые слова",

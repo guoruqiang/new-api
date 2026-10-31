@@ -103,7 +103,7 @@ var auditRouteActions = map[string]string{
 	"POST /api/risk/providers":              "risk.provider_create",
 	"PUT /api/risk/providers/:id":           "risk.provider_update",
 	"POST /api/risk/violations/:id/resolve": "risk.violation_resolve",
-	"POST /api/risk/users/:id/ban":          "risk.user_ban",
+	"POST /api/risk/violations/:id/ban":     "risk.user_ban",
 	"POST /api/risk/preview":                "risk.preview",
 	"POST /api/risk/providers/models":       "risk.provider_probe",
 }

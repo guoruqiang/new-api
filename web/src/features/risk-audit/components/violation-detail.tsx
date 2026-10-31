@@ -68,28 +68,16 @@ export function ViolationDetail(props: {
   })
   const act = useMutation({
     meta: { errorToast: false },
-    mutationFn: async (input: {
-      action: ViolationAction
-      userId: number
-      note: string
-    }) => {
-      if (input.action === 'ban' || input.action === 'unban') {
-        await riskWrite<null>('post', `users/${input.userId}/ban`, {
-          action: input.action,
-          note: input.note,
-        })
-        return null
-      }
-      return riskWrite<Detail>('post', `violations/${props.id}/resolve`, {
-        action: input.action,
-        note: input.note,
-      })
-    },
+    mutationFn: (input: { action: ViolationAction; note: string }) =>
+      input.action === 'ban' || input.action === 'unban'
+        ? riskWrite<Detail>('post', `violations/${props.id}/ban`, {
+            action: input.action,
+          })
+        : riskWrite<Detail>('post', `violations/${props.id}/resolve`, input),
     onSuccess: (detail) => {
       setAction(null)
       setNote('')
-      if (detail) client.setQueryData(['risk', 'violation', props.id], detail)
-      else void query.refetch()
+      client.setQueryData(['risk', 'violation', props.id], detail)
       void client.invalidateQueries({ queryKey: ['risk', 'violations'] })
       void client.invalidateQueries({ queryKey: ['risk', 'overview'] })
       toast.success(t('Saved successfully'))
@@ -98,19 +86,12 @@ export function ViolationDetail(props: {
   const detail = query.data
   const violation = detail?.violation
   const submitting = act.isPending
-  const noteValid = violationNoteSchema.safeParse(note).success
+  const needsNote = action === 'uphold' || action === 'revoke'
+  const noteValid = !needsNote || violationNoteSchema.safeParse(note).success
   const body = tryPrettyJson(violation?.request_body ?? '')
-  let scores: [string, number][] = []
-  try {
-    const parsed: unknown = JSON.parse(violation?.scores || '{}')
-    if (parsed && typeof parsed === 'object') {
-      scores = Object.entries(parsed).filter(
-        (entry): entry is [string, number] => typeof entry[1] === 'number'
-      )
-    }
-  } catch {
-    scores = []
-  }
+  const scores = Object.entries(
+    JSON.parse(violation?.scores || '{}') as Record<string, number>
+  )
   const available: Record<ViolationAction, boolean> = {
     uphold: props.canWrite && violation?.status === 'pending',
     revoke: props.canWrite && !!violation && violation.status !== 'revoked',
@@ -136,10 +117,7 @@ export function ViolationDetail(props: {
   }
   const fields: [string, ReactNode][] = violation
     ? [
-        [
-          'Time',
-          new Date(violation.created_at * 1000).toLocaleString(locale),
-        ],
+        ['Time', new Date(violation.created_at * 1000).toLocaleString(locale)],
         ['User ID', formatNumber(violation.user_id, locale)],
         [
           'Token ID',
@@ -220,16 +198,15 @@ export function ViolationDetail(props: {
               </AlertDescription>
             </Alert>
           )}
-          {violation.action === 'ban_suggested' &&
-            detail.user_status === 1 && (
-              <Alert>
-                <AlertDescription>
-                  {t(
-                    'The score was already 0. Automatic banning is off, so the account is still enabled; ban it manually if needed.'
-                  )}
-                </AlertDescription>
-              </Alert>
-            )}
+          {violation.action === 'ban_suggested' && detail.user_status === 1 && (
+            <Alert>
+              <AlertDescription>
+                {t(
+                  'The score was already 0. Automatic banning is off, so the account is still enabled; ban it manually if needed.'
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
           <dl className='grid gap-3 text-sm sm:grid-cols-3'>
             {fields.map(([label, value]) => (
               <div key={label} className='min-w-0'>
@@ -247,7 +224,9 @@ export function ViolationDetail(props: {
             </section>
           )}
           <section className='space-y-2'>
-            <h3 className='text-sm font-medium'>{t('Decision model scores')}</h3>
+            <h3 className='text-sm font-medium'>
+              {t('Decision model scores')}
+            </h3>
             <StaticDataTable
               data={scores}
               getRowKey={(entry) => entry[0]}
@@ -270,12 +249,11 @@ export function ViolationDetail(props: {
             <div className='flex flex-wrap items-center justify-between gap-2'>
               <h3 className='text-sm font-medium'>{t('Request JSON')}</h3>
               <div className='flex items-center gap-2'>
-                {body && <CopyButton value={body} />}
+                <CopyButton value={body} />
                 <Button
                   type='button'
                   variant='outline'
                   size='sm'
-                  disabled={!body}
                   onClick={() => {
                     const blob = new Blob([body], {
                       type: 'application/json;charset=utf-8',
@@ -307,15 +285,9 @@ export function ViolationDetail(props: {
                 </AlertDescription>
               </Alert>
             )}
-            {body ? (
-              <pre className='bg-muted max-h-96 overflow-auto rounded-lg p-3 text-xs break-all whitespace-pre-wrap'>
-                {body}
-              </pre>
-            ) : (
-              <p className='text-muted-foreground text-sm'>
-                {t('The request was not saved.')}
-              </p>
-            )}
+            <pre className='bg-muted max-h-96 overflow-auto rounded-lg p-3 text-xs break-all whitespace-pre-wrap'>
+              {body}
+            </pre>
           </section>
           {violation.reviewed_at > 0 && (
             <section className='space-y-1'>
@@ -361,26 +333,22 @@ export function ViolationDetail(props: {
         confirmText={t(action ? ACTION_LABELS[action] : 'Continue')}
         isLoading={submitting}
         destructive={action === 'ban'}
-        disabled={!noteValid || !action || !available[action]}
+        disabled={!noteValid}
         handleConfirm={() => {
-          if (!action || !violation || !noteValid || !available[action]) {
-            return
-          }
-          act.mutate({ action, userId: violation.user_id, note: note.trim() })
+          if (action) act.mutate({ action, note: note.trim() })
         }}
       >
         <div className='space-y-3'>
-          <Field
-            label='Review note'
-            hint='Required. At most 500 characters.'
-          >
-            <Textarea
-              aria-label={t('Review note')}
-              disabled={submitting}
-              value={note}
-              onChange={(event) => setNote(event.target.value)}
-            />
-          </Field>
+          {needsNote && (
+            <Field label='Review note' hint='Required. At most 500 characters.'>
+              <Textarea
+                aria-label={t('Review note')}
+                disabled={submitting}
+                value={note}
+                onChange={(event) => setNote(event.target.value)}
+              />
+            </Field>
+          )}
           <ValidationErrors error={act.error} />
         </div>
       </ConfirmDialog>

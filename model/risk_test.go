@@ -688,9 +688,8 @@ func TestRiskViolationScoringBanAndReview(t *testing.T) {
 	const now = int64(1_000_000)
 	record := func(request, hash, mode string, deduction int, autoBan bool, at int64) (*RiskViolation, bool, bool) {
 		t.Helper()
-		v := &RiskViolation{RequestId: request, ContentHash: hash, UserId: 7, TokenId: 3, Mode: mode, Category: "nsfw",
-			NotificationStatus: "pending", RequestBody: `{"messages":[]}`}
-		created, ban, err := RecordRiskViolation(v, deduction, autoBan, at)
+		v := &RiskViolation{RequestId: request, ContentHash: hash, UserId: 7, TokenId: 3, Mode: mode, Category: "nsfw", RequestBody: `{"messages":[]}`}
+		created, ban, err := RecordRiskViolation(v, deduction, autoBan, true, at)
 		require.NoError(t, err)
 		return v, created, ban
 	}
@@ -721,10 +720,9 @@ func TestRiskViolationScoringBanAndReview(t *testing.T) {
 			assert.Equal(t, tc.before-tc.after, v.Deduction, "the deduction is the points actually removed")
 		})
 	}
-	score, row, err := GetRiskUserScore(7, now)
+	score, err := GetRiskUserScore(7, now)
 	require.NoError(t, err)
 	assert.Equal(t, 0, score)
-	assert.Equal(t, 3, row.Violations)
 
 	rows, total, err := ListRiskViolations(RiskViolationFilter{UserId: 7}, 0, 10)
 	require.NoError(t, err)
@@ -740,13 +738,13 @@ func TestRiskViolationScoringBanAndReview(t *testing.T) {
 	require.Equal(t, RiskActionAutoBanned, atZero.Action)
 	_, err = ResolveRiskViolation(atZero.Id, 1, "revoke", "ban was wrong", now+1)
 	require.NoError(t, err)
-	score, _, err = GetRiskUserScore(7, now+1)
+	score, err = GetRiskUserScore(7, now+1)
 	require.NoError(t, err)
 	assert.Equal(t, 0, score, "a violation recorded at zero removed nothing, so revoking it refunds nothing")
 	revoked, err := ResolveRiskViolation(first.Id, 1, "revoke", "false positive", now+1)
 	require.NoError(t, err)
 	assert.Equal(t, RiskViolationRevoked, revoked.Status)
-	score, _, err = GetRiskUserScore(7, now+1)
+	score, err = GetRiskUserScore(7, now+1)
 	require.NoError(t, err)
 	assert.Equal(t, 100, score, "revoking returns the deduction")
 	_, err = ResolveRiskViolation(first.Id, 1, "revoke", "again", now+2)
@@ -774,7 +772,7 @@ func TestRiskViolationConcurrentDeductions(t *testing.T) {
 		workers.Go(func() {
 			<-start
 			v := &RiskViolation{RequestId: fmt.Sprintf("req-%d", i), ContentHash: fmt.Sprintf("hash-%d", i), UserId: 9, Mode: "enforce"}
-			_, _, err := RecordRiskViolation(v, 20, false, 1000)
+			_, _, err := RecordRiskViolation(v, 20, false, false, 1000)
 			errs <- err
 		})
 	}
@@ -783,10 +781,9 @@ func TestRiskViolationConcurrentDeductions(t *testing.T) {
 	for range 4 {
 		require.NoError(t, <-errs)
 	}
-	score, row, err := GetRiskUserScore(9, 1000)
+	score, err := GetRiskUserScore(9, 1000)
 	require.NoError(t, err)
 	assert.Equal(t, 20, score, "every concurrent violation deducts exactly once")
-	assert.Equal(t, 4, row.Violations)
 }
 
 func TestRiskRetiredTablesAreDropped(t *testing.T) {

@@ -310,7 +310,7 @@ func GetRiskViolations(c *gin.Context) {
 	}
 	page := common.GetPageQuery(c)
 	rows, total, err := model.ListRiskViolations(model.RiskViolationFilter{
-		Status: status, UserId: userID, RequestId: strings.TrimSpace(c.Query("request_id")), Namespace: strings.TrimSpace(c.Query("namespace")),
+		Status: status, UserId: userID, RequestId: strings.TrimSpace(c.Query("request_id")),
 	}, page.GetStartIdx(), page.GetPageSize())
 	if err != nil {
 		common.ApiError(c, err)
@@ -323,7 +323,7 @@ func GetRiskViolations(c *gin.Context) {
 
 // riskViolationView is a violation with its user's current score and status.
 func riskViolationView(c *gin.Context, row *model.RiskViolation) {
-	score, _, err := model.GetRiskUserScore(row.UserId, common.GetTimestamp())
+	score, err := model.GetRiskUserScore(row.UserId, common.GetTimestamp())
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -340,58 +340,53 @@ func riskViolationView(c *gin.Context, row *model.RiskViolation) {
 	common.ApiSuccess(c, gin.H{"violation": row, "score": score, "user_status": userStatus})
 }
 
-func GetRiskViolation(c *gin.Context) {
+// readRiskViolation loads the violation named by the :id route parameter.
+func readRiskViolation(c *gin.Context) (*model.RiskViolation, bool) {
 	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil || id <= 0 {
+	if err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
-		return
+		return nil, false
 	}
 	row, err := model.GetRiskViolation(id)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Risk violation not found"))
-		return
+		return nil, false
 	}
 	if err != nil {
 		common.ApiError(c, err)
-		return
+		return nil, false
 	}
-	riskViolationView(c, row)
+	return row, true
 }
 
-func readRiskNote(c *gin.Context) (string, string, bool) {
-	var body struct {
-		Action string `json:"action"`
-		Note   string `json:"note"`
+func GetRiskViolation(c *gin.Context) {
+	if row, ok := readRiskViolation(c); ok {
+		riskViolationView(c, row)
 	}
-	if err := common.DecodeJson(c.Request.Body, &body); err != nil {
-		common.ApiErrorT(c, "Invalid request body")
-		return "", "", false
-	}
-	body.Note = strings.TrimSpace(body.Note)
-	if body.Note == "" || len([]rune(body.Note)) > 500 {
-		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("A note of at most 500 characters is required"))
-		return "", "", false
-	}
-	return body.Action, body.Note, true
 }
 
 // ResolveRiskViolation upholds a violation or revokes it, which returns its
 // deduction to the user's score.
 func ResolveRiskViolation(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil || id <= 0 {
+	if err != nil {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	action, note, ok := readRiskNote(c)
-	if !ok {
-		return
+	var body struct {
+		Action string `json:"action"`
+		Note   string `json:"note"`
 	}
-	if action != "uphold" && action != "revoke" {
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil || (body.Action != "uphold" && body.Action != "revoke") {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	row, err := model.ResolveRiskViolation(id, c.GetInt("id"), action, note, common.GetTimestamp())
+	body.Note = strings.TrimSpace(body.Note)
+	if body.Note == "" || len([]rune(body.Note)) > 500 {
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("A note of at most 500 characters is required"))
+		return
+	}
+	row, err := model.ResolveRiskViolation(id, c.GetInt("id"), body.Action, body.Note, common.GetTimestamp())
 	switch {
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		common.ApiErrorStatus(c, http.StatusNotFound, common.NewMessage("Risk violation not found"))
@@ -404,33 +399,29 @@ func ResolveRiskViolation(c *gin.Context) {
 	}
 }
 
-// SetRiskUserBan disables or enables the account of a violation's user.
-func SetRiskUserBan(c *gin.Context) {
-	userID, err := strconv.Atoi(c.Param("id"))
-	if err != nil || userID <= 0 {
-		common.ApiErrorT(c, "Invalid parameters")
-		return
-	}
-	action, _, ok := readRiskNote(c)
+// BanRiskViolationUser disables or re-enables the account that committed a
+// violation. Administrator accounts are never changed.
+func BanRiskViolationUser(c *gin.Context) {
+	row, ok := readRiskViolation(c)
 	if !ok {
 		return
 	}
-	if action != "ban" && action != "unban" {
+	var body struct {
+		Action string `json:"action"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &body); err != nil || (body.Action != "ban" && body.Action != "unban") {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	changed, err := service.SetUserEnabledForRisk(userID, action == "unban")
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+	changed, err := service.SetUserEnabledForRisk(row.UserId, body.Action == "unban")
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
 		common.ApiErrorT(c, "User does not exist")
-		return
-	}
-	if err != nil {
+	case err != nil:
 		common.ApiError(c, err)
-		return
-	}
-	if !changed {
+	case !changed:
 		common.ApiErrorT(c, "No permission to update users of same or higher permission level")
-		return
+	default:
+		riskViolationView(c, row)
 	}
-	common.ApiSuccess(c, nil)
 }

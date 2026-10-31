@@ -239,7 +239,10 @@ func TestRiskViolationHTTPReviewAndBan(t *testing.T) {
 	require.NoError(t, db.Create(user).Error)
 	require.NoError(t, db.Create(admin).Error)
 	violation := &model.RiskViolation{RequestId: "req", ContentHash: "hash", UserId: user.Id, Mode: risk.ModeEnforce, Category: "nsfw", RequestBody: `{"messages":[]}`}
-	_, _, err := model.RecordRiskViolation(violation, 20, false, common.GetTimestamp())
+	_, _, err := model.RecordRiskViolation(violation, 20, false, false, common.GetTimestamp())
+	require.NoError(t, err)
+	adminViolation := &model.RiskViolation{RequestId: "admin-req", ContentHash: "hash", UserId: admin.Id, Mode: risk.ModeEnforce, Category: "nsfw"}
+	_, _, err = model.RecordRiskViolation(adminViolation, 20, false, false, common.GetTimestamp())
 	require.NoError(t, err)
 	id := gin.Params{{Key: "id", Value: strconv.Itoa(violation.Id)}}
 
@@ -270,20 +273,21 @@ func TestRiskViolationHTTPReviewAndBan(t *testing.T) {
 		})
 	}
 
+	require.NoError(t, db.Model(admin).Update("status", common.UserStatusDisabled).Error)
 	for _, tc := range []struct {
 		name, action string
-		target       int
+		violation    *model.RiskViolation
 		ok           bool
 		status       int
 	}{
-		{"ban disables the account", "ban", user.Id, true, common.UserStatusDisabled},
-		{"unban enables the account", "unban", user.Id, true, common.UserStatusEnabled},
-		{"administrators cannot be banned", "ban", admin.Id, false, common.UserStatusEnabled},
+		{"ban disables the violator's account", "ban", violation, true, common.UserStatusDisabled},
+		{"unban enables the account", "unban", violation, true, common.UserStatusEnabled},
+		{"administrator accounts cannot be re-enabled here", "unban", adminViolation, false, common.UserStatusDisabled},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			w := riskManagementRequest(t, SetRiskUserBan, http.MethodPost, "/api/risk/users/x/ban", gin.Params{{Key: "id", Value: strconv.Itoa(tc.target)}}, map[string]string{"action": tc.action, "note": "reviewed"})
+			w := riskManagementRequest(t, BanRiskViolationUser, http.MethodPost, "/api/risk/violations/x/ban", gin.Params{{Key: "id", Value: strconv.Itoa(tc.violation.Id)}}, map[string]string{"action": tc.action})
 			assert.Equal(t, tc.ok, strings.Contains(w.Body.String(), `"success":true`), w.Body.String())
-			stored, err := model.GetUserById(tc.target, false)
+			stored, err := model.GetUserById(tc.violation.UserId, true)
 			require.NoError(t, err)
 			assert.Equal(t, tc.status, stored.Status)
 		})

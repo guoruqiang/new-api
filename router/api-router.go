@@ -341,7 +341,7 @@ func SetApiRouter(router *gin.Engine) {
 		handlePermissionRoute(riskRoute, http.MethodGet, "/violations", authz.RiskRead, controller.GetRiskViolations)
 		handlePermissionRoute(riskRoute, http.MethodGet, "/violations/:id", authz.RiskRead, controller.GetRiskViolation)
 		handlePermissionRoute(riskRoute, http.MethodPost, "/violations/:id/resolve", authz.RiskWrite, controller.ResolveRiskViolation)
-		handlePermissionRoute(riskRoute, http.MethodPost, "/users/:id/ban", authz.RiskUnblock, controller.SetRiskUserBan)
+		handlePermissionRoute(riskRoute, http.MethodPost, "/violations/:id/ban", authz.RiskUnblock, controller.BanRiskViolationUser)
 		riskProbeRoute := apiRouter.Group("/risk", middleware.DisableCache(), middleware.AdminAuth(), middleware.CriticalRateLimit())
 		handlePermissionRoute(riskProbeRoute, http.MethodPost, "/preview", authz.RiskWrite, controller.PreviewRisk)
 		handlePermissionRoute(riskProbeRoute, http.MethodPost, "/providers/models", authz.RiskWrite, controller.ProbeRiskProviderModels)

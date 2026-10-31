@@ -20,8 +20,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const ReasonGPTSkipped = "gpt_skipped"
-
 // AttemptInput describes one attempt from the relay call site.
 type AttemptInput struct {
 	Phase       string
@@ -198,21 +196,14 @@ func applyMode(d Decision, mode string) Decision {
 func recordViolation(attempt AttemptContext, mode string, d Decision, in *Input, score ScoreConfig) {
 	body, size, truncated := EvidenceBody(in.Raw)
 	scores, _ := common.Marshal(d.Scores)
-	group := attempt.EffectiveGroup
-	if group == "" && attempt.ViaAuto {
-		group = "auto"
-	}
 	v := &model.RiskViolation{
 		RequestId: attempt.RequestID, ContentHash: in.ContentHash, UserId: attempt.UserID, TokenId: attempt.TokenID,
-		GroupName: group, Namespace: attempt.Namespace, Mode: mode, Model: truncateRunes(attempt.Model, 128),
+		GroupName: attempt.groupLabel(), Namespace: attempt.Namespace, Mode: mode, Model: truncateRunes(attempt.Model, 128),
 		Category: d.Category, Keyword: truncateRunes(d.Keyword, 160), Rule: truncateRunes(d.Rule, 255),
 		ProviderModel: truncateRunes(d.ProviderModel, 120), Scores: string(scores),
 		RequestBody: body, RequestBodyBytes: size, RequestBodyTruncated: truncated,
 	}
-	if score.EmailNotify {
-		v.NotificationStatus = "pending"
-	}
-	created, ban, err := model.RecordRiskViolation(v, score.Deduction(d.Category), score.AutoBan, time.Now().Unix())
+	created, ban, err := model.RecordRiskViolation(v, score.Deduction(d.Category), score.AutoBan, score.EmailNotify, time.Now().Unix())
 	if err != nil {
 		common.SysError(common.LogText("risk violation write failed: %s", err.Error()))
 		return
@@ -242,12 +233,8 @@ func counterKey(attempt AttemptContext, d Decision, isFirst bool, now time.Time)
 	if isFirst {
 		first = 1
 	}
-	group := attempt.EffectiveGroup
-	if group == "" && attempt.ViaAuto {
-		group = "auto"
-	}
 	return model.RiskCounterKey{
-		Bucket: now.Truncate(time.Hour).Unix(), Namespace: attempt.Namespace, GroupName: group, Route: attempt.Route,
+		Bucket: now.Truncate(time.Hour).Unix(), Namespace: attempt.Namespace, GroupName: attempt.groupLabel(), Route: attempt.Route,
 		Outcome: d.Outcome, Layer: d.Layer, Reason: d.Reason, IsFirst: first,
 	}
 }

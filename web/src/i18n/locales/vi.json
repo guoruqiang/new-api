@@ -7847,7 +7847,6 @@
     "Score change": "Thay đổi điểm",
     "Scoring and bans": "Chấm điểm và cấm",
     "The complete request as received, with attachments replaced by placeholders. Size: {{bytes}} bytes.": "Toàn bộ yêu cầu như đã nhận, tệp đính kèm được thay bằng chỗ giữ chỗ. Kích thước: {{bytes}} byte.",
-    "The request was not saved.": "Yêu cầu chưa được lưu.",
     "The saved request was truncated because it exceeded the storage limit.": "Yêu cầu đã lưu bị cắt bớt vì vượt quá giới hạn lưu trữ.",
     "This violation would deduct {{points}} points.": "Vi phạm này sẽ trừ {{points}} điểm.",
     "Top keywords": "Từ khóa hàng đầu",

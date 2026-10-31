@@ -279,7 +279,6 @@ export const STATIC_I18N_KEYS = [
   'The model provider returned HTTP {{status}}',
   'The model request timed out. Check the endpoint and proxy',
   'The proxy requires authentication (HTTP 407). Check the proxy username and password',
-  'The request was not saved.',
   'The risk audit settings changed. Reload the latest settings before saving. Your draft is kept until you confirm.',
   'The risk audit settings were changed by someone else. Reload and try again.',
   'The saved request was truncated because it exceeded the storage limit.',

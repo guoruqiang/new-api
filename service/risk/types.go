@@ -35,6 +35,7 @@ const (
 	ReasonUnreadable     = "unreadable"
 	ReasonExemptGroup    = "exempt_group"
 	ReasonUncovered      = "uncovered"
+	ReasonGPTSkipped     = "gpt_skipped"
 )
 
 const (
@@ -79,15 +80,22 @@ type AttemptContext struct {
 	Route          string
 }
 
+// groupLabel names the attempt's group in statistics and violation records;
+// an auto request whose group could not be resolved is labelled "auto".
+func (a AttemptContext) groupLabel() string {
+	if a.EffectiveGroup == "" && a.ViaAuto {
+		return "auto"
+	}
+	return a.EffectiveGroup
+}
+
 // Input is the text view of one request body. Attachments are never read.
 type Input struct {
 	Raw          []byte
 	ContentHash  string
 	Model        string
 	Systems      []string
-	DistillUsers []string
 	LatestUser   string
-	ToolNames    []string
 	MessageCount int
 	ToolCount    int
 	MaxTokens    *int
