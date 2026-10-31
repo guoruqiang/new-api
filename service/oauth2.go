@@ -620,9 +620,15 @@ func BuildOAuthUserInfo(user *model.User, scopes []string) map[string]any {
 }
 
 func BuildOAuthDiscoveryDocument(issuer string) map[string]any {
+	common.OptionMapRWMutex.RLock()
+	authorizationAddress := strings.TrimRight(strings.TrimSpace(system_setting.ConsoleAddress), "/")
+	common.OptionMapRWMutex.RUnlock()
+	if authorizationAddress == "" {
+		authorizationAddress = issuer
+	}
 	return map[string]any{
 		"issuer":                                issuer,
-		"authorization_endpoint":                issuer + OAuthAuthorizationEndpoint,
+		"authorization_endpoint":                authorizationAddress + OAuthAuthorizationEndpoint,
 		"token_endpoint":                        issuer + OAuthTokenEndpoint,
 		"revocation_endpoint":                   issuer + OAuthRevocationEndpoint,
 		"userinfo_endpoint":                     issuer + OAuthUserinfoEndpoint,

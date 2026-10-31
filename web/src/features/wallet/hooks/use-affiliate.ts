@@ -21,6 +21,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { toast } from 'sonner'
 
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
+import { useStatus } from '@/hooks/use-status'
 import { getSelf } from '@/lib/api'
 import { handleServerError } from '@/lib/handle-server-error'
 import {
@@ -37,7 +38,12 @@ import { generateAffiliateLink } from '../lib'
 
 export function useAffiliate() {
   const [affiliateCode, setAffiliateCode] = useState<string>('')
-  const [affiliateLink, setAffiliateLink] = useState<string>('')
+  const { status } = useStatus()
+  const consoleAddress =
+    status?.console_address ?? status?.data?.console_address
+  const affiliateLink = affiliateCode
+    ? generateAffiliateLink(affiliateCode, consoleAddress)
+    : ''
   const [loading, setLoading] = useState(true)
   const [transferring, setTransferring] = useState(false)
   const { copyToClipboard } = useCopyToClipboard()
@@ -50,8 +56,6 @@ export function useAffiliate() {
 
       if (response.success && response.data) {
         setAffiliateCode(response.data)
-        const link = generateAffiliateLink(response.data)
-        setAffiliateLink(link)
       }
     } catch (error) {
       handleServerError(error)
