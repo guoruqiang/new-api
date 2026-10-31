@@ -760,11 +760,6 @@
     "Auth type is invalid": "Le type auth est invalide",
     "Auth value": "Valeur auth",
     "Auth value is required": "La valeur auth est requise",
-    "auth.resetPasswordConfirm.backToLogin": "Retour à la connexion",
-    "auth.resetPasswordConfirm.confirm": "Confirmer la réinitialisation du mot de passe",
-    "auth.resetPasswordConfirm.description": "Confirmez la demande de réinitialisation pour générer un nouveau mot de passe.",
-    "auth.resetPasswordConfirm.retry": "Réessayer ({{seconds}}s)",
-    "auth.resetPasswordConfirm.success": "Votre mot de passe a été réinitialisé avec succès",
     "Authentication": "Authentification",
     "Authentication for upstream requests; channel credentials may still be used.": "Authentification des requêtes au fournisseur ; les identifiants du canal peuvent rester nécessaires.",
     "Authentication Method": "Méthode d'authentification",
@@ -4814,7 +4809,6 @@
     "Password / Access Token": "Mot de passe / Jeton d'accès",
     "Password authentication is disabled.": "L’authentification par mot de passe est désactivée.",
     "Password changed successfully": "Mot de passe changé avec succès",
-    "Password copied to clipboard: {{password}}": "Mot de passe copié dans le presse-papiers : {{password}}",
     "Password has been copied to clipboard": "Le mot de passe a été copié dans le presse-papiers",
     "Password Login": "Connexion par mot de passe",
     "Password login has been disabled by administrator": "La connexion par mot de passe a été désactivée par l’administrateur",
@@ -4824,9 +4818,7 @@
     "Password must contain between 8 and 128 characters.": "Le mot de passe doit contenir entre 8 et 128 caractères.",
     "Password Registration": "Inscription par mot de passe",
     "Password registration has been disabled by administrator, please use third-party account verification": "L’inscription par mot de passe a été désactivée par l’administrateur, veuillez utiliser la vérification par un compte tiers",
-    "Password reset and copied to clipboard: {{password}}": "Mot de passe réinitialisé et copié dans le presse-papiers : {{password}}",
     "Password reset link is invalid or has expired": "Le lien de réinitialisation du mot de passe est invalide ou a expiré",
-    "Password reset: {{password}}": "Mot de passe réinitialisé : {{password}}",
     "Password set successfully": "Mot de passe défini",
     "Password settings have changed. Reload the page and try again.": "Les paramètres du mot de passe ont changé. Rechargez la page et réessayez.",
     "Passwords do not match": "Les mots de passe ne correspondent pas",
@@ -7696,7 +7688,6 @@
     "Waffo Public Key (Sandbox)": "Clé publique Waffo (Sandbox)",
     "WaffoPancakeProductId is not configured for this plan": "WaffoPancakeProductId n'est pas configuré pour ce forfait",
     "Waiting": "En attente",
-    "Waiting for email...": "En attente de l'e-mail...",
     "Waiting for two comparable samples. Counter resets restart the sampling window.": "En attente de deux relevés comparables. Un compteur remis à zéro redémarre la période.",
     "Waiting requests": "Requêtes en attente",
     "Wallet": "Portefeuille",
@@ -7860,6 +7851,9 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Set new password": "Définir le nouveau mot de passe",
+    "Choose a new password for your account.": "Choisissez un nouveau mot de passe pour votre compte.",
+    "Your password has been updated. Sign in with your new password.": "Votre mot de passe a été mis à jour. Connectez-vous avec votre nouveau mot de passe."
   }
 }

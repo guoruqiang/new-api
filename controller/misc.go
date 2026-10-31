@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -314,34 +313,25 @@ func sendPasswordResetLink(c *gin.Context, user *model.User, email string) error
 }
 
 type PasswordResetRequest struct {
-	Token string `json:"token"`
+	Token    string `json:"token"`
+	Password string `json:"password"`
 }
 
+// ResetPassword sets the password the user chose through an emailed reset
+// link. A password that fails the policy leaves the link usable.
 func ResetPassword(c *gin.Context) {
 	var req PasswordResetRequest
-	err := json.NewDecoder(c.Request.Body).Decode(&req)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	if req.Token == "" {
+	if err := common.DecodeJson(c.Request.Body, &req); err != nil || req.Token == "" {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	password := common.GenerateVerificationCode(12)
-	err = model.ResetUserPasswordWithAuthFlow(req.Token, password)
-	if errors.Is(err, model.ErrAuthFlowInvalid) || errors.Is(err, model.ErrAuthFlowExpired) || errors.Is(err, model.ErrAuthFlowConsumed) || errors.Is(err, gorm.ErrRecordNotFound) {
+	err := model.ResetUserPasswordWithAuthFlow(req.Token, req.Password)
+	switch {
+	case errors.Is(err, model.ErrAuthFlowInvalid), errors.Is(err, model.ErrAuthFlowExpired), errors.Is(err, model.ErrAuthFlowConsumed), errors.Is(err, gorm.ErrRecordNotFound):
 		common.ApiErrorT(c, "Password reset link is invalid or has expired")
-		return
+	case err != nil:
+		writeSecurityOperationError(c, err)
+	default:
+		common.ApiSuccess(c, nil)
 	}
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    password,
-	})
-	return
 }

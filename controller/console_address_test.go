@@ -73,12 +73,15 @@ func TestConsoleAddressPasswordResetEmailAndTokenLifecycle(t *testing.T) {
 			require.NotEmpty(t, token)
 			assert.Len(t, resetURL.Query(), 2)
 
-			for _, phase := range []string{"invalid", "expired", "valid", "replay"} {
-				currentToken := token
-				if phase == "invalid" {
+			for _, phase := range []string{"invalid", "expired", "weak password", "valid", "replay"} {
+				currentToken, password := token, "Chosen-password-1"
+				switch phase {
+				case "invalid":
 					currentToken += "invalid"
+				case "weak password":
+					password = "short"
 				}
-				body, err := common.Marshal(PasswordResetRequest{Token: currentToken})
+				body, err := common.Marshal(PasswordResetRequest{Token: currentToken, Password: password})
 				require.NoError(t, err)
 				setExpiry := func(at time.Time) {
 					require.NoError(t, model.DB.Model(&model.AuthFlow{}).Where("purpose = ?", model.AuthFlowPurposePasswordReset).Update("expires_at", at).Error)
@@ -92,18 +95,19 @@ func TestConsoleAddressPasswordResetEmailAndTokenLifecycle(t *testing.T) {
 				}
 				var result struct {
 					Success bool   `json:"success"`
-					Data    string `json:"data"`
+					Message string `json:"message"`
 				}
 				require.NoError(t, common.Unmarshal(resetResponse.Body.Bytes(), &result))
 				assert.Equal(t, phase == "valid", result.Success, phase)
+				if phase == "weak password" {
+					assert.Equal(t, common.ErrAccountPasswordLength.Error(), result.Message, "a rejected password leaves the link usable")
+				}
 				if phase == "valid" {
 					stored, err := model.GetUserById(user.Id, true)
 					require.NoError(t, err)
-					assert.True(t, common.ValidatePasswordAndHash(result.Data, stored.Password), "successful reset changes the password")
+					assert.True(t, common.ValidatePasswordAndHash(password, stored.Password), "the user's chosen password is set")
 					_, _, err = service.ValidateLoginSession(identity)
 					assert.Error(t, err, "password reset invalidates the old dashboard session")
-				} else {
-					assert.Empty(t, result.Data, "failed reset must not disclose a new password")
 				}
 			}
 		})

@@ -760,11 +760,6 @@
     "Auth type is invalid": "Loại xác thực không hợp lệ",
     "Auth value": "Giá trị xác thực",
     "Auth value is required": "Bắt buộc giá trị xác thực",
-    "auth.resetPasswordConfirm.backToLogin": "Quay lại đăng nhập",
-    "auth.resetPasswordConfirm.confirm": "Xác nhận đặt lại mật khẩu",
-    "auth.resetPasswordConfirm.description": "Xác nhận yêu cầu đặt lại để tạo mật khẩu mới.",
-    "auth.resetPasswordConfirm.retry": "Thử lại ({{seconds}} giây)",
-    "auth.resetPasswordConfirm.success": "Mật khẩu của bạn đã được đặt lại thành công",
     "Authentication": "Xác thực",
     "Authentication for upstream requests; channel credentials may still be used.": "Cách xác thực yêu cầu tới nhà cung cấp; plugin vẫn có thể dùng thông tin xác thực của kênh.",
     "Authentication Method": "Phương thức xác thực",
@@ -4814,7 +4809,6 @@
     "Password / Access Token": "Mật khẩu / Access Token",
     "Password authentication is disabled.": "Xác thực bằng mật khẩu đã bị tắt.",
     "Password changed successfully": "Đổi mật khẩu thành công",
-    "Password copied to clipboard: {{password}}": "Mật khẩu đã sao chép vào clipboard: {{password}}",
     "Password has been copied to clipboard": "Mật khẩu đã được sao chép vào bộ nhớ tạm",
     "Password Login": "Đăng nhập bằng mật khẩu",
     "Password login has been disabled by administrator": "Quản trị viên đã tắt đăng nhập bằng mật khẩu",
@@ -4824,9 +4818,7 @@
     "Password must contain between 8 and 128 characters.": "Mật khẩu phải có từ 8 đến 128 ký tự.",
     "Password Registration": "Đăng ký mật khẩu",
     "Password registration has been disabled by administrator, please use third-party account verification": "Quản trị viên đã tắt đăng ký bằng mật khẩu, vui lòng dùng xác minh tài khoản bên thứ ba",
-    "Password reset and copied to clipboard: {{password}}": "Mật khẩu đã đặt lại và sao chép vào clipboard: {{password}}",
     "Password reset link is invalid or has expired": "Liên kết đặt lại mật khẩu không hợp lệ hoặc đã hết hạn",
-    "Password reset: {{password}}": "Mật khẩu đã đặt lại: {{password}}",
     "Password set successfully": "Đã đặt mật khẩu thành công",
     "Password settings have changed. Reload the page and try again.": "Cài đặt mật khẩu đã thay đổi. Tải lại trang và thử lại.",
     "Passwords do not match": "Mật khẩu không khớp",
@@ -7696,7 +7688,6 @@
     "Waffo Public Key (Sandbox)": "Khóa công khai Waffo (Sandbox)",
     "WaffoPancakeProductId is not configured for this plan": "Gói này chưa cấu hình WaffoPancakeProductId",
     "Waiting": "Đang chờ",
-    "Waiting for email...": "Đang chờ email...",
     "Waiting for two comparable samples. Counter resets restart the sampling window.": "Đang chờ hai mẫu có thể so sánh. Đặt lại bộ đếm sẽ bắt đầu lại khoảng lấy mẫu.",
     "Waiting requests": "Yêu cầu đang chờ",
     "Wallet": "Ví",
@@ -7860,6 +7851,9 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Set new password": "Đặt mật khẩu mới",
+    "Choose a new password for your account.": "Chọn mật khẩu mới cho tài khoản của bạn.",
+    "Your password has been updated. Sign in with your new password.": "Mật khẩu của bạn đã được cập nhật. Hãy đăng nhập bằng mật khẩu mới."
   }
 }

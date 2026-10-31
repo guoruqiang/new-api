@@ -760,11 +760,6 @@
     "Auth type is invalid": "認證類型無效",
     "Auth value": "認證值",
     "Auth value is required": "認證值不能為空",
-    "auth.resetPasswordConfirm.backToLogin": "返回登入",
-    "auth.resetPasswordConfirm.confirm": "確認重設密碼",
-    "auth.resetPasswordConfirm.description": "確認重設請求以產生新密碼。",
-    "auth.resetPasswordConfirm.retry": "重試 ({{seconds}}s)",
-    "auth.resetPasswordConfirm.success": "您的密碼已成功重設",
     "Authentication": "身份驗證",
     "Authentication for upstream requests; channel credentials may still be used.": "用於呼叫上游服務的驗證方式；外掛仍可能使用管道憑證。",
     "Authentication Method": "認證方式",
@@ -4814,7 +4809,6 @@
     "Password / Access Token": "密碼 / 存取令牌",
     "Password authentication is disabled.": "密碼驗證已停用。",
     "Password changed successfully": "密碼更改成功",
-    "Password copied to clipboard: {{password}}": "密碼已複製到剪貼簿：{{password}}",
     "Password has been copied to clipboard": "密碼已複製到剪貼簿",
     "Password Login": "密碼登入",
     "Password login has been disabled by administrator": "管理員關閉了密碼登入",
@@ -4824,9 +4818,7 @@
     "Password must contain between 8 and 128 characters.": "密碼長度必須為 8–128 個字元。",
     "Password Registration": "密碼註冊",
     "Password registration has been disabled by administrator, please use third-party account verification": "管理員關閉了透過密碼進行註冊，請使用第三方帳號驗證的方式進行註冊",
-    "Password reset and copied to clipboard: {{password}}": "密碼已重置並複製到剪貼簿：{{password}}",
     "Password reset link is invalid or has expired": "重設連結無效或已過期",
-    "Password reset: {{password}}": "密碼已重置：{{password}}",
     "Password set successfully": "密碼設定成功",
     "Password settings have changed. Reload the page and try again.": "密碼設定已變更，請重新載入頁面後再試。",
     "Passwords do not match": "密碼不匹配",
@@ -7696,7 +7688,6 @@
     "Waffo Public Key (Sandbox)": "Waffo 公鑰（沙盒）",
     "WaffoPancakeProductId is not configured for this plan": "該訂閱方案未設定 WaffoPancakeProductId",
     "Waiting": "等待中",
-    "Waiting for email...": "等待電郵...",
     "Waiting for two comparable samples. Counter resets restart the sampling window.": "等待兩次可比較的取樣，計數重設後將重新開始統計。",
     "Waiting requests": "排隊中請求",
     "Wallet": "錢包",
@@ -7860,6 +7851,9 @@
     "Zhipu": "智譜",
     "Zhipu GLM": "智譜GLM",
     "Zhipu V4": "智譜 V4",
-    "Zoom": "縮放"
+    "Zoom": "縮放",
+    "Set new password": "設定新密碼",
+    "Choose a new password for your account.": "為你的帳號設定一個新密碼。",
+    "Your password has been updated. Sign in with your new password.": "密碼已更新，請使用新密碼登入。"
   }
 }

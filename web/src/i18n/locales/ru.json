@@ -760,11 +760,6 @@
     "Auth type is invalid": "Тип auth недействителен",
     "Auth value": "Значение auth",
     "Auth value is required": "Значение auth обязательно",
-    "auth.resetPasswordConfirm.backToLogin": "Вернуться ко входу",
-    "auth.resetPasswordConfirm.confirm": "Подтвердить сброс пароля",
-    "auth.resetPasswordConfirm.description": "Подтвердите запрос на сброс, чтобы создать новый пароль.",
-    "auth.resetPasswordConfirm.retry": "Повторить ({{seconds}}с)",
-    "auth.resetPasswordConfirm.success": "Ваш пароль успешно сброшен",
     "Authentication": "Аутентификация",
     "Authentication for upstream requests; channel credentials may still be used.": "Способ аутентификации запросов к провайдеру; учётные данные канала всё ещё могут использоваться.",
     "Authentication Method": "Метод аутентификации",
@@ -4814,7 +4809,6 @@
     "Password / Access Token": "Пароль / Токен доступа",
     "Password authentication is disabled.": "Аутентификация по паролю отключена.",
     "Password changed successfully": "Пароль успешно изменён",
-    "Password copied to clipboard: {{password}}": "Пароль скопирован в буфер обмена: {{password}}",
     "Password has been copied to clipboard": "Пароль скопирован в буфер обмена",
     "Password Login": "Вход по паролю",
     "Password login has been disabled by administrator": "Администратор отключил вход по паролю",
@@ -4824,9 +4818,7 @@
     "Password must contain between 8 and 128 characters.": "Пароль должен содержать от 8 до 128 символов.",
     "Password Registration": "Регистрация пароля",
     "Password registration has been disabled by administrator, please use third-party account verification": "Администратор отключил регистрацию по паролю, используйте проверку через сторонний аккаунт",
-    "Password reset and copied to clipboard: {{password}}": "Пароль сброшен и скопирован в буфер обмена: {{password}}",
     "Password reset link is invalid or has expired": "Ссылка для сброса пароля недействительна или устарела",
-    "Password reset: {{password}}": "Пароль сброшен: {{password}}",
     "Password set successfully": "Пароль установлен",
     "Password settings have changed. Reload the page and try again.": "Настройки пароля изменились. Перезагрузите страницу и повторите попытку.",
     "Passwords do not match": "Пароли не совпадают",
@@ -7696,7 +7688,6 @@
     "Waffo Public Key (Sandbox)": "Публичный ключ Waffo (Песочница)",
     "WaffoPancakeProductId is not configured for this plan": "Для этого плана не настроен WaffoPancakeProductId",
     "Waiting": "Ожидание",
-    "Waiting for email...": "Ожидание письма...",
     "Waiting for two comparable samples. Counter resets restart the sampling window.": "Ожидание двух сопоставимых выборок. Сброс счётчиков начинает новый период.",
     "Waiting requests": "Запросы в очереди",
     "Wallet": "Кошелек",
@@ -7860,6 +7851,9 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Set new password": "Установить новый пароль",
+    "Choose a new password for your account.": "Выберите новый пароль для своей учётной записи.",
+    "Your password has been updated. Sign in with your new password.": "Пароль обновлён. Войдите с новым паролем."
   }
 }

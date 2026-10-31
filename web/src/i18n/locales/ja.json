@@ -760,11 +760,6 @@
     "Auth type is invalid": "認証タイプが無効です",
     "Auth value": "認証値",
     "Auth value is required": "認証値は必須です",
-    "auth.resetPasswordConfirm.backToLogin": "ログインに戻る",
-    "auth.resetPasswordConfirm.confirm": "パスワードリセットを確認",
-    "auth.resetPasswordConfirm.description": "新しいパスワードを生成するには、リセット要求を確認してください。",
-    "auth.resetPasswordConfirm.retry": "再試行 ({{seconds}}秒)",
-    "auth.resetPasswordConfirm.success": "パスワードが正常にリセットされました",
     "Authentication": "認証",
     "Authentication for upstream requests; channel credentials may still be used.": "上流サービスへの認証方式です。チャネルの認証情報が使われる場合もあります。",
     "Authentication Method": "認証方式",
@@ -4814,7 +4809,6 @@
     "Password / Access Token": "パスワード / アクセストークン",
     "Password authentication is disabled.": "パスワード認証は無効になっています。",
     "Password changed successfully": "パスワードが正常に変更されました",
-    "Password copied to clipboard: {{password}}": "パスワードがクリップボードにコピーされました：{{password}}",
     "Password has been copied to clipboard": "パスワードがクリップボードにコピーされました",
     "Password Login": "パスワードログイン",
     "Password login has been disabled by administrator": "管理者によりパスワードログインが無効化されています",
@@ -4824,9 +4818,7 @@
     "Password must contain between 8 and 128 characters.": "パスワードは8～128文字で入力してください。",
     "Password Registration": "パスワード登録",
     "Password registration has been disabled by administrator, please use third-party account verification": "管理者によりパスワードでの登録が無効化されています。外部アカウント認証で登録してください",
-    "Password reset and copied to clipboard: {{password}}": "パスワードがリセットされ、クリップボードにコピーされました：{{password}}",
     "Password reset link is invalid or has expired": "パスワード再設定リンクが無効か、期限切れです",
-    "Password reset: {{password}}": "パスワードがリセットされました：{{password}}",
     "Password set successfully": "パスワードを設定しました",
     "Password settings have changed. Reload the page and try again.": "パスワード設定が変わりました。ページを再読み込みしてお試しください。",
     "Passwords do not match": "パスワードが一致しません",
@@ -7696,7 +7688,6 @@
     "Waffo Public Key (Sandbox)": "Waffo公開鍵（サンドボックス）",
     "WaffoPancakeProductId is not configured for this plan": "このプランには WaffoPancakeProductId が設定されていません",
     "Waiting": "待機中",
-    "Waiting for email...": "メールを待っています...",
     "Waiting for two comparable samples. Counter resets restart the sampling window.": "比較可能な2回のサンプルを待っています。カウンターのリセット後は集計をやり直します。",
     "Waiting requests": "待機中のリクエスト",
     "Wallet": "ウォレット",
@@ -7860,6 +7851,9 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V 4",
-    "Zoom": "ズーム"
+    "Zoom": "ズーム",
+    "Set new password": "新しいパスワードを設定",
+    "Choose a new password for your account.": "アカウントの新しいパスワードを設定してください。",
+    "Your password has been updated. Sign in with your new password.": "パスワードを更新しました。新しいパスワードでサインインしてください。"
   }
 }

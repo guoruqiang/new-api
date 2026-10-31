@@ -760,11 +760,6 @@
     "Auth type is invalid": "Auth type is invalid",
     "Auth value": "Auth value",
     "Auth value is required": "Auth value is required",
-    "auth.resetPasswordConfirm.backToLogin": "Return to login",
-    "auth.resetPasswordConfirm.confirm": "Confirm reset password",
-    "auth.resetPasswordConfirm.description": "Confirm the reset request to generate a new password.",
-    "auth.resetPasswordConfirm.retry": "Retry ({{seconds}}s)",
-    "auth.resetPasswordConfirm.success": "Your password has been reset successfully",
     "Authentication": "Authentication",
     "Authentication for upstream requests; channel credentials may still be used.": "Authentication for upstream requests; channel credentials may still be used.",
     "Authentication Method": "Authentication Method",
@@ -4814,7 +4809,6 @@
     "Password / Access Token": "Password / Access Token",
     "Password authentication is disabled.": "Password authentication is disabled.",
     "Password changed successfully": "Password changed successfully",
-    "Password copied to clipboard: {{password}}": "Password copied to clipboard: {{password}}",
     "Password has been copied to clipboard": "Password has been copied to clipboard",
     "Password Login": "Password Login",
     "Password login has been disabled by administrator": "Password login has been disabled by administrator",
@@ -4824,9 +4818,7 @@
     "Password must contain between 8 and 128 characters.": "Password must contain between 8 and 128 characters.",
     "Password Registration": "Password Registration",
     "Password registration has been disabled by administrator, please use third-party account verification": "Password registration has been disabled by administrator, please use third-party account verification",
-    "Password reset and copied to clipboard: {{password}}": "Password reset and copied to clipboard: {{password}}",
     "Password reset link is invalid or has expired": "Password reset link is invalid or has expired",
-    "Password reset: {{password}}": "Password reset: {{password}}",
     "Password set successfully": "Password set successfully",
     "Password settings have changed. Reload the page and try again.": "Password settings have changed. Reload the page and try again.",
     "Passwords do not match": "Passwords do not match",
@@ -7696,7 +7688,6 @@
     "Waffo Public Key (Sandbox)": "Waffo Public Key (Sandbox)",
     "WaffoPancakeProductId is not configured for this plan": "WaffoPancakeProductId is not configured for this plan",
     "Waiting": "Waiting",
-    "Waiting for email...": "Waiting for email...",
     "Waiting for two comparable samples. Counter resets restart the sampling window.": "Waiting for two comparable samples. Counter resets restart the sampling window.",
     "Waiting requests": "Waiting requests",
     "Wallet": "Wallet",
@@ -7860,6 +7851,9 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Set new password": "Set new password",
+    "Choose a new password for your account.": "Choose a new password for your account.",
+    "Your password has been updated. Sign in with your new password.": "Your password has been updated. Sign in with your new password."
   }
 }

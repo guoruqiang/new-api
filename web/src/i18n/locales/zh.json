@@ -760,11 +760,6 @@
     "Auth type is invalid": "认证类型无效",
     "Auth value": "认证值",
     "Auth value is required": "认证值不能为空",
-    "auth.resetPasswordConfirm.backToLogin": "返回登录",
-    "auth.resetPasswordConfirm.confirm": "确认重置密码",
-    "auth.resetPasswordConfirm.description": "确认重置请求以生成新密码。",
-    "auth.resetPasswordConfirm.retry": "重试 ({{seconds}}s)",
-    "auth.resetPasswordConfirm.success": "您的密码已成功重置",
     "Authentication": "身份验证",
     "Authentication for upstream requests; channel credentials may still be used.": "用于调用上游服务的认证方式；插件仍可能使用渠道凭据。",
     "Authentication Method": "认证方式",
@@ -4814,7 +4809,6 @@
     "Password / Access Token": "密码 / 访问令牌",
     "Password authentication is disabled.": "密码认证已禁用。",
     "Password changed successfully": "密码更改成功",
-    "Password copied to clipboard: {{password}}": "密码已复制到剪贴板：{{password}}",
     "Password has been copied to clipboard": "密码已复制到剪贴板",
     "Password Login": "密码登录",
     "Password login has been disabled by administrator": "管理员关闭了密码登录",
@@ -4824,9 +4818,7 @@
     "Password must contain between 8 and 128 characters.": "密码长度必须为 8–128 个字符。",
     "Password Registration": "密码注册",
     "Password registration has been disabled by administrator, please use third-party account verification": "管理员关闭了通过密码进行注册，请使用第三方账户验证的形式进行注册",
-    "Password reset and copied to clipboard: {{password}}": "密码已重置并复制到剪贴板：{{password}}",
     "Password reset link is invalid or has expired": "重置链接非法或已过期",
-    "Password reset: {{password}}": "密码已重置：{{password}}",
     "Password set successfully": "密码设置成功",
     "Password settings have changed. Reload the page and try again.": "密码设置已变化，请刷新页面后重试。",
     "Passwords do not match": "密码不匹配",
@@ -7696,7 +7688,6 @@
     "Waffo Public Key (Sandbox)": "Waffo 公钥（沙盒）",
     "WaffoPancakeProductId is not configured for this plan": "该套餐未配置 WaffoPancakeProductId",
     "Waiting": "等待中",
-    "Waiting for email...": "等待电子邮件...",
     "Waiting for two comparable samples. Counter resets restart the sampling window.": "等待两次可比较的采样，计数重置后将重新开始统计。",
     "Waiting requests": "排队中请求",
     "Wallet": "钱包",
@@ -7860,6 +7851,9 @@
     "Zhipu": "智谱",
     "Zhipu GLM": "智谱GLM",
     "Zhipu V4": "智谱 V4",
-    "Zoom": "缩放"
+    "Zoom": "缩放",
+    "Set new password": "设置新密码",
+    "Choose a new password for your account.": "为你的账号设置一个新密码。",
+    "Your password has been updated. Sign in with your new password.": "密码已更新，请使用新密码登录。"
   }
 }
