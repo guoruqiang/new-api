@@ -584,10 +584,14 @@ func TestRiskBuiltinHardRules(t *testing.T) {
 		})
 	}
 	all := auditPolicy(t, DefaultPolicyPayload())
-	for text, category := range map[string]string{"色情小说": "nsfw", "破限预设": "jailbreak", "注册机": "crack", "木马": "custom", "思维链": "distill"} {
+	for text, category := range map[string]string{"色情小说": "nsfw", "破限预设": "jailbreak", "注册机": "crack", "木马": "custom", "思维链": "distill", "渗透内网": "custom", "钓鱼邮件": "custom"} {
 		hit, ok := matchRules(text, all.rules, func(string) bool { return true })
 		require.True(t, ok, text)
 		assert.Equal(t, category, hit.Category, text)
+	}
+	for _, text := range []string{"市场渗透率", "渗透压", "周末去钓鱼"} {
+		_, ok := matchRules(text, all.rules, func(string) bool { return true })
+		assert.False(t, ok, text)
 	}
 	p := precise
 	for _, text := range []string{"ssh-keygen", "monkeygen", "keygen-safe", "distillation of water"} {
@@ -642,6 +646,7 @@ func TestRiskPolicyValidationAndQuestionUpgrade(t *testing.T) {
 		{"RE2 lookbehind", func(p *PolicyPayload) { p.Distill.Patterns = []string{`(?<=a)b`} }, "distill.patterns"},
 		{"long needle", func(p *PolicyPayload) { p.Distill.Needles = []string{strings.Repeat("中", 401)} }, "distill.needles"},
 		{"threshold", func(p *PolicyPayload) { p.Model.Threshold = 2 }, "model.threshold"},
+		{"moderation threshold", func(p *PolicyPayload) { p.Model.ModerationThresholds = map[string]float64{"sexual": -0.1} }, "model.moderation_thresholds.sexual"},
 		{"tail window too small", func(p *PolicyPayload) { p.Model.MaxAuditChars = 255 }, "model.max_audit_chars"},
 		{"tail window too large", func(p *PolicyPayload) { p.Model.MaxAuditChars = 64001 }, "model.max_audit_chars"},
 	} {
@@ -1478,24 +1483,43 @@ func TestRiskScanAndModelDocument(t *testing.T) {
 }
 
 func TestRiskWorstHitAndModeration(t *testing.T) {
+	m := DefaultPolicyPayload().Model
 	asked := []askedQuestion{{id: "jailbreak", category: "jailbreak"}, {id: "mine", category: "custom"}}
-	hit, ok := worstHit(ClassifyResult{Scores: map[string]float64{"jailbreak": 0.4, "mine": 0.2}}, asked, 0.5, false)
+	hit, ok := worstHit(ClassifyResult{Scores: map[string]float64{"jailbreak": 0.4, "mine": 0.2}}, asked, m, false)
 	require.True(t, ok)
 	assert.Equal(t, modelHit{category: "custom", score: 0.2}, hit)
-	_, ok = worstHit(ClassifyResult{Scores: map[string]float64{"jailbreak": 0.6, "mine": 0.9}}, asked, 0.5, false)
+	_, ok = worstHit(ClassifyResult{Scores: map[string]float64{"jailbreak": 0.6, "mine": 0.9}}, asked, m, false)
 	assert.False(t, ok)
 
-	result, err := parseOpenAIModeration([]byte(`{"model":"omni-moderation-latest","results":[{"flagged":true,
-		"categories":{"sexual":true,"violence":false},"category_scores":{"sexual":0.9,"violence":0.7}}]}`))
+	stored, err := ParsePolicyPayload([]byte(`{"model":{"moderation_thresholds":{"violence":0.1}}}`))
 	require.NoError(t, err)
-	hit, ok = worstHit(result, nil, 0.5, true)
-	require.True(t, ok)
-	assert.Equal(t, "nsfw", hit.category)
-	assert.InDelta(t, 0.1, hit.score, 1e-9)
-	result, err = parseOpenAIModeration([]byte(`{"results":[{"categories":{"violence":false},"category_scores":{"violence":0.99}}]}`))
-	require.NoError(t, err)
-	_, ok = worstHit(result, nil, 0.5, true)
-	assert.False(t, ok, "only OpenAI flags decide a moderation violation")
+	assert.Equal(t, map[string]float64{"violence": 0.1}, stored.Model.ModerationThresholds, "stored thresholds replace the defaults")
+	for _, tc := range []struct {
+		name       string
+		thresholds map[string]float64
+		scores     string
+		category   string
+		safety     float64
+	}{
+		{"confident sexual content", m.ModerationThresholds, `{"sexual":0.9,"violence":0.1}`, "nsfw", 0.1},
+		{"sexual content involving minors", m.ModerationThresholds, `{"sexual/minors":0.7}`, "nsfw", 0.3},
+		{"borderline sexual content stays below the default", m.ModerationThresholds, `{"sexual":0.7}`, "", 0},
+		// A transcript describing an assault or a safety policy listing hate
+		// categories carries such content without asking for it.
+		{"categories without a threshold never count", m.ModerationThresholds, `{"violence":0.99,"hate":0.95,"harassment":0.9,"illicit/violent":0.9,"self-harm":0.9}`, "", 0},
+		{"an enabled category is a safety violation", stored.Model.ModerationThresholds, `{"sexual":0.99,"violence":0.95}`, "safety", 0.05},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := parseOpenAIModeration([]byte(`{"model":"omni-moderation-latest","results":[{"flagged":true,"category_scores":` + tc.scores + `}]}`))
+			require.NoError(t, err)
+			cfg := m
+			cfg.ModerationThresholds = tc.thresholds
+			hit, ok := worstHit(result, nil, cfg, true)
+			require.Equal(t, tc.category != "", ok)
+			assert.Equal(t, tc.category, hit.category)
+			assert.InDelta(t, tc.safety, hit.score, 1e-9)
+		})
+	}
 	_, err = parseOpenAIModeration([]byte(`{"results":[]}`))
 	assert.Error(t, err)
 	assert.Equal(t, "http://m.example/v1/moderations", OpenAIModerationURL("http://m.example"))

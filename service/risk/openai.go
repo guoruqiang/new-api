@@ -24,31 +24,22 @@ func OpenAIModerationURL(base string) string {
 	}
 }
 
-// parseOpenAIModeration keeps OpenAI's per-category flags, which decide the
-// violation, and converts risk scores to the gateway's high-is-safe scores.
+// parseOpenAIModeration converts OpenAI's risk scores to the gateway's
+// high-is-safe scores; OpenAI's own flags are not used.
 func parseOpenAIModeration(body []byte) (ClassifyResult, error) {
 	var doc struct {
 		Model   string `json:"model"`
 		Results []struct {
-			Categories map[string]bool    `json:"categories"`
-			Scores     map[string]float64 `json:"category_scores"`
+			Scores map[string]float64 `json:"category_scores"`
 		} `json:"results"`
 	}
 	if err := common.Unmarshal(body, &doc); err != nil || len(doc.Results) == 0 {
 		return ClassifyResult{}, unavailable("malformed moderation response")
 	}
 	row := doc.Results[0]
-	result := ClassifyResult{Model: doc.Model, Flags: row.Categories, Scores: make(map[string]float64, len(row.Scores))}
+	result := ClassifyResult{Model: doc.Model, Scores: make(map[string]float64, len(row.Scores))}
 	for category, score := range row.Scores {
 		result.Scores[category] = 1 - score
 	}
 	return result, nil
-}
-
-// moderationCategory maps an OpenAI category to a violation category.
-func moderationCategory(category string) string {
-	if category == "sexual" || category == "sexual/minors" {
-		return "nsfw"
-	}
-	return "safety"
 }

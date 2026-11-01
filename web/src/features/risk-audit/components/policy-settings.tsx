@@ -42,7 +42,7 @@ import { formatNumber } from '@/lib/format'
 import { getServerErrorStatus } from '@/lib/server-error-message'
 
 import { riskWrite } from '../api'
-import { LABELS, type PolicySection } from '../constants'
+import { LABELS, MODERATION_CATEGORIES, type PolicySection } from '../constants'
 import { useRiskDraft } from '../hooks/use-risk-draft'
 import { policySchema } from '../lib/schema'
 import type {
@@ -682,15 +682,13 @@ export function PolicySettings(props: {
                     }
                   />
                 </FieldGroup>
-                <p className='text-muted-foreground text-sm'>
-                  {openaiModeration
-                    ? t(
-                        'OpenAI category flags decide whether a request is a violation. Displayed safety scores equal 1 minus the OpenAI risk score.'
-                      )
-                    : t(
-                        'Lower model safety scores mean higher risk. A score below the safety threshold confirms a violation.'
-                      )}
-                </p>
+                {!openaiModeration && (
+                  <p className='text-muted-foreground text-sm'>
+                    {t(
+                      'Lower model safety scores mean higher risk. A score below the safety threshold confirms a violation.'
+                    )}
+                  </p>
+                )}
                 <p className='text-muted-foreground text-sm'>
                   {openaiModeration
                     ? t(
@@ -703,20 +701,65 @@ export function PolicySettings(props: {
               </FieldSet>
               <Separator />
               {openaiModeration ? (
-                <Alert role='status'>
-                  <AlertDescription>
-                    <p>
+                <>
+                  <FieldSet className='min-w-0 gap-3'>
+                    <FieldLegend variant='label'>
+                      {t('Category thresholds')}
+                    </FieldLegend>
+                    <FieldGroup className='grid gap-4 sm:grid-cols-2 lg:grid-cols-3'>
+                      {Object.entries(MODERATION_CATEGORIES).map(
+                        ([category, label]) => (
+                          <NumberField
+                            key={category}
+                            disabled={disabled}
+                            label={label}
+                            value={
+                              m.moderation_thresholds[category] ?? Number.NaN
+                            }
+                            step={0.01}
+                            max={1}
+                            onChange={(threshold) => {
+                              const others = Object.entries(
+                                m.moderation_thresholds
+                              ).filter(([key]) => key !== category)
+                              update('model', {
+                                moderation_thresholds: Object.fromEntries(
+                                  Number.isNaN(threshold)
+                                    ? others
+                                    : [...others, [category, threshold]]
+                                ),
+                              })
+                            }}
+                          />
+                        )
+                      )}
+                    </FieldGroup>
+                    <p className='text-muted-foreground text-sm'>
                       {t(
-                        'OpenAI uses fixed content categories: sexual content, harassment, hate, violence, self-harm and illicit content. Custom questions are preserved but not used by this provider.'
+                        'A category confirms a violation when its safety score (1 minus the OpenAI risk score) is below its threshold; an empty category is ignored. Sexual categories count as explicit content, the others as safety.'
                       )}
                     </p>
-                    <p>
+                    <p className='text-muted-foreground text-sm'>
                       {t(
-                        'Jailbreak, distillation and custom intent rules are not covered. Requests the provider cannot judge follow the failure action without confirming a violation.'
+                        'Transcripts, news and safety policies also raise violence, hate and similar scores without asking for such content, so enable those categories only when your policy forbids the content itself.'
                       )}
                     </p>
-                  </AlertDescription>
-                </Alert>
+                  </FieldSet>
+                  <Alert role='status'>
+                    <AlertDescription>
+                      <p>
+                        {t(
+                          'OpenAI classifies content in fixed categories, not the intent of a request. Custom questions are preserved but not used by this provider.'
+                        )}
+                      </p>
+                      <p>
+                        {t(
+                          'Jailbreak, distillation and other intent rules still select requests, but OpenAI checks them only against these categories.'
+                        )}
+                      </p>
+                    </AlertDescription>
+                  </Alert>
+                </>
               ) : (
                 <QuestionBank
                   disabled={disabled}

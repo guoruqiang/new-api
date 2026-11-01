@@ -64,16 +64,19 @@ const (
 )
 
 type ModelConfig struct {
-	Enabled       bool       `json:"enabled"`
-	ProviderID    int        `json:"provider_id"`
-	Model         string     `json:"model"`
-	Questions     []Question `json:"questions"`
-	Threshold     float64    `json:"threshold"`
-	FailAction    string     `json:"fail_action"`
-	BudgetMS      int        `json:"budget_ms"`
-	MaxAttempts   int        `json:"max_attempts"`
-	DedupSec      int        `json:"dedup_sec"`
-	MaxAuditChars int        `json:"max_audit_chars"`
+	Enabled    bool       `json:"enabled"`
+	ProviderID int        `json:"provider_id"`
+	Model      string     `json:"model"`
+	Questions  []Question `json:"questions"`
+	Threshold  float64    `json:"threshold"`
+	// ModerationThresholds replace Threshold for OpenAI Moderation, per
+	// category; a category without a threshold never confirms a violation.
+	ModerationThresholds map[string]float64 `json:"moderation_thresholds"`
+	FailAction           string             `json:"fail_action"`
+	BudgetMS             int                `json:"budget_ms"`
+	MaxAttempts          int                `json:"max_attempts"`
+	DedupSec             int                `json:"dedup_sec"`
+	MaxAuditChars        int                `json:"max_audit_chars"`
 }
 
 // PolicyPayload is one immutable policy revision as stored and edited.
@@ -105,12 +108,15 @@ func DefaultPolicyPayload() PolicyPayload {
 			Patterns:       []string{},
 		},
 		Model: ModelConfig{
-			Threshold:     0.5,
-			FailAction:    FailActionPass,
-			BudgetMS:      2000,
-			MaxAttempts:   2,
-			DedupSec:      600,
-			MaxAuditChars: 16000,
+			Threshold: 0.5,
+			// Automatic rejection and deduction need high confidence: sexual
+			// content at an OpenAI risk of 0.8, involving minors at 0.6.
+			ModerationThresholds: map[string]float64{"sexual": 0.2, "sexual/minors": 0.4},
+			FailAction:           FailActionPass,
+			BudgetMS:             2000,
+			MaxAttempts:          2,
+			DedupSec:             600,
+			MaxAuditChars:        16000,
 		},
 	}
 }
@@ -122,8 +128,15 @@ func ParsePolicyPayload(raw []byte) (PolicyPayload, error) {
 	if len(raw) == 0 {
 		return payload, nil
 	}
+	// Stored moderation thresholds replace the defaults rather than merging
+	// into them, so a category turned off stays off.
+	defaults := payload.Model.ModerationThresholds
+	payload.Model.ModerationThresholds = nil
 	if err := common.Unmarshal(raw, &payload); err != nil {
 		return PolicyPayload{}, err
+	}
+	if payload.Model.ModerationThresholds == nil {
+		payload.Model.ModerationThresholds = defaults
 	}
 	NormalizePolicyPayload(&payload)
 	return payload, nil
@@ -261,6 +274,11 @@ func ValidatePolicyPayload(p PolicyPayload) []*common.Message {
 	}
 	if m.Threshold < 0 || m.Threshold > 1 {
 		problems = append(problems, common.NewMessage("{{field}} must be between {{min}} and {{max}}", map[string]any{"field": "model.threshold", "min": 0, "max": 1}))
+	}
+	for category, threshold := range m.ModerationThresholds {
+		if threshold < 0 || threshold > 1 {
+			problems = append(problems, common.NewMessage("{{field}} must be between {{min}} and {{max}}", map[string]any{"field": "model.moderation_thresholds." + category, "min": 0, "max": 1}))
+		}
 	}
 	if m.FailAction != FailActionPass && m.FailAction != FailActionBlock {
 		problems = append(problems, common.NewMessage("Model failure action must be pass or block"))

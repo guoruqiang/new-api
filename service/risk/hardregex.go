@@ -20,12 +20,13 @@ const (
 
 // BuiltinHardRules are vm2api's HARD_POLICY_RULES rewritten for RE2 plus a
 // few broad keywords. Only the keygen rule used look-around; it now captures
-// the keyword in group 1.
+// the keyword in group 1. 渗透 skips 渗透率/压/性/力, and 钓鱼 needs a phishing
+// noun, because their everyday senses dominate ordinary text.
 var BuiltinHardRules = []HardRule{
 	{Category: "nsfw", Source: `(?:色情|性爱|裸照|淫秽)|\b(?:porn|nsfw|sexual|nude)\b`, Enabled: true},
 	{Category: "jailbreak", Source: `(?:越狱|破限)|\bjailbreak\b`, Enabled: true},
 	{Category: "crack", Source: `(?:破解|注册机|激活码)|\b(?:keygen|warez|crack)\b`, Enabled: true},
-	{Category: "custom", Source: `(?:渗透|提权|木马|勒索|钓鱼)|\b(?:exploit|ransomware|phishing|ddos|privilege\s+escalation)\b`, Enabled: true},
+	{Category: "custom", Source: `(?:渗透(?:$|[^率压性力])|提权|木马|勒索|钓鱼(?:网站|网页|邮件|链接|页面|攻击|短信))|\b(?:exploit|ransomware|phishing|ddos|privilege\s+escalation)\b`, Enabled: true},
 	{Category: "distill", Source: `(?:蒸馏|思维链)|\b(?:distill|chain[- ]of[- ]thought)\b`, Enabled: true},
 	{Category: "jailbreak", Source: `\b(?:jailbreak|dan)\s+mode\b`, Enabled: true},
 	{Category: "jailbreak", Source: `\bignore\s+(?:all\s+)?(?:previous|prior|above)\s+(?:instructions|rules|prompts)\b`, Enabled: true},

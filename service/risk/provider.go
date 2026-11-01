@@ -344,11 +344,9 @@ type ClassifyRequest struct {
 	MaxAttempts int
 }
 
-// ClassifyResult carries safety scores. OpenAI additionally returns its
-// category flags, which determine violations independently of score thresholds.
+// ClassifyResult carries safety scores: high means safe.
 type ClassifyResult struct {
 	Scores map[string]float64
-	Flags  map[string]bool
 	Model  string
 }
 
@@ -551,30 +549,40 @@ type modelHit struct {
 	score    float64
 }
 
-// worstHit returns the lowest-scoring question below threshold, or for
-// OpenAI the lowest-scoring flagged category. Question order breaks ties.
-func worstHit(result ClassifyResult, asked []askedQuestion, threshold float64, moderation bool) (modelHit, bool) {
+// moderationCategories are OpenAI Moderation's categories, in the order that
+// breaks ties.
+var moderationCategories = []string{"sexual", "sexual/minors", "harassment", "harassment/threatening", "hate", "hate/threatening",
+	"illicit", "illicit/violent", "self-harm", "self-harm/intent", "self-harm/instructions", "violence", "violence/graphic"}
+
+// worstHit returns the lowest safety score below its threshold: per question,
+// or for OpenAI per category against m.ModerationThresholds, where sexual
+// categories are nsfw violations and the others safety violations. Order
+// breaks ties.
+func worstHit(result ClassifyResult, asked []askedQuestion, m ModelConfig, moderation bool) (modelHit, bool) {
 	var hit modelHit
 	found := false
-	consider := func(category string, score float64) {
-		if !found || score < hit.score {
+	consider := func(category string, score, threshold float64) {
+		if score < threshold && (!found || score < hit.score) {
 			hit, found = modelHit{category: category, score: score}, true
 		}
 	}
 	if moderation {
-		for category, flagged := range result.Flags {
-			if flagged {
-				consider(category, result.Scores[category])
+		for _, category := range moderationCategories {
+			score, ok := result.Scores[category]
+			if !ok {
+				continue
 			}
-		}
-		if found {
-			hit.category = moderationCategory(hit.category)
+			violation := "safety"
+			if strings.HasPrefix(category, "sexual") {
+				violation = "nsfw"
+			}
+			consider(violation, score, m.ModerationThresholds[category])
 		}
 		return hit, found
 	}
 	for _, q := range asked {
-		if score, ok := result.Scores[q.id]; ok && score < threshold {
-			consider(q.category, score)
+		if score, ok := result.Scores[q.id]; ok {
+			consider(q.category, score, m.Threshold)
 		}
 	}
 	return hit, found

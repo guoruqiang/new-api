@@ -146,7 +146,7 @@ func evaluate(ctx context.Context, ev evaluation) Decision {
 		d.ProviderModel = result.Model
 	}
 	d.Scores = result.Scores
-	worst, violated := worstHit(result, p.asked, m.Threshold, moderation)
+	worst, violated := worstHit(result, p.asked, m, moderation)
 	if !violated {
 		d.Reason = ReasonModelSafe
 		return d
@@ -161,7 +161,7 @@ func classify(ctx context.Context, ev evaluation, provider ProviderConfig, model
 	if ev.useCache && m.DedupSec > 0 {
 		key = verdictKey(ev.binding.Policy, provider, modelName, document)
 		if cached, found, _ := verdictCache.Get(key); found {
-			return ClassifyResult{Scores: cached.scores, Flags: cached.flags, Model: cached.model}, nil
+			return ClassifyResult{Scores: cached.scores, Model: cached.model}, nil
 		}
 	}
 	callCtx, cancel := context.WithTimeout(ctx, time.Duration(m.BudgetMS)*time.Millisecond)
@@ -172,7 +172,7 @@ func classify(ctx context.Context, ev evaluation, provider ProviderConfig, model
 	}
 	result, err := ev.classifier(provider).Classify(callCtx, req)
 	if err == nil && key != "" {
-		verdictCache.SetWithTTL(key, cachedVerdict{scores: result.Scores, flags: result.Flags, model: result.Model}, time.Duration(m.DedupSec)*time.Second)
+		verdictCache.SetWithTTL(key, cachedVerdict{scores: result.Scores, model: result.Model}, time.Duration(m.DedupSec)*time.Second)
 	}
 	return result, err
 }

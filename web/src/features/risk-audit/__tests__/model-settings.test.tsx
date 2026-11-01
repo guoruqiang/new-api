@@ -134,6 +134,30 @@ it('saves an OpenAI provider with a model override that has no omni-moderation p
   )
 })
 
+it('saves edited OpenAI category thresholds and drops a cleared category', async () => {
+  const write = mockSave()
+  const user = userEvent.setup()
+  renderSettings({
+    providers: decisionProviders,
+    initial: {
+      ...policy,
+      model: { ...policy.model, enabled: true, provider_id: 2 },
+    },
+  })
+  const sexual = screen.getByRole('spinbutton', { name: 'Sexual' })
+  const violence = screen.getByRole('spinbutton', { name: 'Violence' })
+  expect(sexual).toHaveValue(0.2)
+  expect(violence).toHaveValue(null)
+  await user.clear(sexual)
+  fireEvent.change(violence, { target: { value: '0.1' } })
+  await user.click(screen.getByRole('button', { name: 'Save and enable' }))
+  await waitFor(() => expect(write).toHaveBeenCalledOnce())
+  expect(
+    (write.mock.calls[0][0].data as { payload: Policy }).payload.model
+      .moderation_thresholds
+  ).toEqual({ 'sexual/minors': 0.4, violence: 0.1 })
+})
+
 it('shows no automatic confirmation, near-miss or custom question fields for the decision model', () => {
   renderSettings({ providers: decisionProviders })
   for (const name of [
@@ -319,6 +343,7 @@ it('disables keyword rule mutations for read-only operators', () => {
 it('matches server bounds, strips removed fields and counts Unicode code points', () => {
   for (const patch of [
     { threshold: 1.1 },
+    { moderation_thresholds: { sexual: 1.1 } },
     { budget_ms: 199 },
     { max_attempts: 11 },
     { dedup_sec: 3601 },

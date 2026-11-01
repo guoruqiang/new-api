@@ -89,6 +89,22 @@ export const LABELS: Record<string, string> = {
   ws_select: 'WebSocket-selected group',
   ws_locked: 'WebSocket-locked group',
 }
+// OpenAI Moderation categories, in the order the server breaks ties.
+export const MODERATION_CATEGORIES: Record<string, string> = {
+  sexual: 'Sexual',
+  'sexual/minors': 'Sexual (minors)',
+  harassment: 'Harassment',
+  'harassment/threatening': 'Harassment (threatening)',
+  hate: 'Hate',
+  'hate/threatening': 'Hate (threatening)',
+  illicit: 'Illicit',
+  'illicit/violent': 'Illicit (violent)',
+  'self-harm': 'Self-harm',
+  'self-harm/intent': 'Self-harm (intent)',
+  'self-harm/instructions': 'Self-harm (instructions)',
+  violence: 'Violence',
+  'violence/graphic': 'Violence (graphic)',
+}
 export const NOTIFICATION_LABELS: Record<string, string> = {
   pending: 'Notification pending',
   sent: 'Notification sent',

@@ -117,6 +117,7 @@ export const policySchema = z
       model: z.string(),
       questions: z.array(questionSchema).max(24).nullable(),
       threshold: z.number().min(0).max(1),
+      moderation_thresholds: z.record(z.string(), z.number().min(0).max(1)),
       fail_action: z.enum(['pass', 'block']),
       budget_ms: z.number().int().min(200).max(8000),
       max_attempts: z.number().int().min(1).max(10),

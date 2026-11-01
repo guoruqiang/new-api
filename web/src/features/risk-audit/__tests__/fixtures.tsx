@@ -52,6 +52,7 @@ export const policy: Policy = {
     model: '',
     questions: null,
     threshold: 0.5,
+    moderation_thresholds: { sexual: 0.2, 'sexual/minors': 0.4 },
     fail_action: 'pass',
     budget_ms: 2000,
     max_attempts: 2,
