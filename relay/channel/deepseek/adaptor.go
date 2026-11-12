@@ -106,6 +106,13 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	if request == nil {
 		return nil, errors.New("request is nil")
 	}
+	// DeepSeek Chat rejects the developer role; it carries the same
+	// instructions as a system message.
+	for i := range request.Messages {
+		if request.Messages[i].Role == "developer" {
+			request.Messages[i].Role = "system"
+		}
+	}
 	if err := applyDeepSeekV4OpenAIThinkingSuffix(info, request); err != nil {
 		return nil, err
 	}
@@ -155,8 +162,9 @@ func applyDeepSeekV4ClaudeThinkingSuffix(info *relaycommon.RelayInfo, request *d
 	}
 	request.Model = baseModel
 	request.Thinking = &dto.Thinking{Type: thinkingType}
-	// Only effort is set or removed; other output_config members stay.
-	outputConfig := make(map[string]any)
+	// Only effort is set or removed; other output_config members stay raw,
+	// which keeps a format schema's property order.
+	outputConfig := make(map[string]common.RawMessage)
 	if len(request.OutputConfig) > 0 && common.GetJsonType(request.OutputConfig) == "object" {
 		if err := common.Unmarshal(request.OutputConfig, &outputConfig); err != nil {
 			return fmt.Errorf("invalid output_config: %w", err)
@@ -164,7 +172,11 @@ func applyDeepSeekV4ClaudeThinkingSuffix(info *relaycommon.RelayInfo, request *d
 	}
 	delete(outputConfig, "effort")
 	if effort != "" {
-		outputConfig["effort"] = effort
+		encodedEffort, err := common.Marshal(effort)
+		if err != nil {
+			return fmt.Errorf("error marshalling output_config: %w", err)
+		}
+		outputConfig["effort"] = encodedEffort
 	}
 	request.OutputConfig = nil
 	if len(outputConfig) > 0 {
