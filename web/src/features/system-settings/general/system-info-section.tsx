@@ -44,11 +44,13 @@ import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
 import { useSettingsForm } from '../hooks/use-settings-form'
 import { useUpdateOption } from '../hooks/use-update-option'
+import { isValidConsoleAddress } from './console-address'
 import { isValidTaskPublicAddress } from './task-public-address'
 
 const _systemInfoSchema = z.object({
   SystemName: z.string().min(1),
   ServerAddress: z.string().optional(),
+  ConsoleAddress: z.string().refine(isValidConsoleAddress),
   TaskPublicAddress: z.string().refine(isValidTaskPublicAddress),
   Logo: z.string().url().optional().or(z.literal('')),
   Footer: z.string().optional(),
@@ -81,6 +83,7 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
   const normalizedDefaults: SystemInfoFormValues = {
     SystemName: normalizeValue(defaultValues.SystemName),
     ServerAddress: normalizeValue(defaultValues.ServerAddress),
+    ConsoleAddress: normalizeValue(defaultValues.ConsoleAddress),
     TaskPublicAddress: normalizeValue(defaultValues.TaskPublicAddress),
     Logo: normalizeValue(defaultValues.Logo),
     Footer: normalizeValue(defaultValues.Footer),
@@ -100,6 +103,12 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
       error: () => t('System name is required'),
     }),
     ServerAddress: z.string().optional(),
+    ConsoleAddress: z.string().refine(isValidConsoleAddress, {
+      error: () =>
+        t(
+          'Console address must be an HTTPS origin, or an HTTP loopback origin for local development'
+        ),
+    }),
     TaskPublicAddress: z.string().refine(isValidTaskPublicAddress, {
       error: () =>
         t(
@@ -130,7 +139,14 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
       onSubmit: async (_data, changedFields) => {
         for (const [key, value] of Object.entries(changedFields)) {
           let v = normalizeValue(value)
-          if (key === 'ServerAddress' || key === 'TaskPublicAddress') {
+          if (key === 'ConsoleAddress') {
+            v = v.trim()
+          }
+          if (
+            key === 'ServerAddress' ||
+            key === 'ConsoleAddress' ||
+            key === 'TaskPublicAddress'
+          ) {
             v = v.replace(/\/+$/, '')
           }
           await updateOption.mutateAsync({
@@ -185,6 +201,28 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
                     <FormDescription>
                       {t(
                         'The public URL of your server, used for OAuth callbacks, webhooks, and other external integrations'
+                      )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='ConsoleAddress'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Console Address')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder='https://console.example.com'
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Public console URL for email links, referrals, payment returns, and OAuth authorization. Leave empty to keep existing addresses.'
                       )}
                     </FormDescription>
                     <FormMessage />
